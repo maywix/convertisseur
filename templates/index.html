@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Convertisseur Pro</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<div class="main-wrapper">
+    <header>
+        <h1>Agentic <span class="accent">Converter</span></h1>
+        <p>Traitement par lots • Compression avancée • Multiformat</p>
+    </header>
+
+    <div class="app-container">
+        
+        <!-- Left Panel: Configuration -->
+        <aside class="config-panel">
+            <div class="tabs">
+                <button class="tab active" data-action="convert">Convertir</button>
+                <button class="tab" data-action="compress">Compresser</button>
+            </div>
+
+            <div id="settings-area">
+                <!-- Conversion Settings -->
+                <div id="convert-settings" class="settings-group">
+                    <label>Format de destination</label>
+                    <select id="global-format-select">
+                        <option value="" disabled selected>Choisir un format...</option>
+                        <!-- Populated by JS -->
+                    </select>
+                </div>
+
+                <!-- Compression Settings -->
+                <div id="compress-settings" class="settings-group hidden">
+                    <label>Mode de compression</label>
+                    
+                    <div class="radio-group">
+                        <label>
+                            <input type="radio" name="comp-mode" value="crf" checked>
+                            <span>Qualité (Standard)</span>
+                        </label>
+                        <label>
+                            <input type="radio" name="comp-mode" value="size">
+                            <span>Taille Cible (MB)</span>
+                        </label>
+                        <label>
+                            <input type="radio" name="comp-mode" value="percent">
+                            <span>Réduction (%)</span>
+                        </label>
+                        <label>
+                            <input type="radio" name="comp-mode" value="res">
+                            <span>Résolution</span>
+                        </label>
+                    </div>
+
+                    <!-- Dynamic Input Area -->
+                    <div id="comp-input-area" class="input-dynamic">
+                        <!-- Default CRF Slider -->
+                        <div id="input-crf">
+                            <input type="range" id="crf-slider" min="1" max="3" value="2">
+                            <div class="range-labels">
+                                <span>Faible</span><span>Moyen</span><span>Forte</span>
+                            </div>
+                        </div>
+                        
+                        <!-- Size Input -->
+                        <div id="input-size" class="hidden">
+                            <input type="number" id="target-size" placeholder="Ex: 50" min="1">
+                            <span class="unit">MB</span>
+                        </div>
+
+                        <!-- Percent Input -->
+                        <div id="input-percent" class="hidden">
+                            <input type="range" id="percent-slider" min="10" max="90" value="50">
+                            <div class="value-display"><span id="percent-val">50</span>% de réduction</div>
+                        </div>
+
+                        <!-- Resolution Select -->
+                        <div id="input-res" class="hidden">
+                            <select id="res-select">
+                                <option value="1080">1080p (FHD)</option>
+                                <option value="720">720p (HD)</option>
+                                <option value="480">480p (SD)</option>
+                                <option value="360">360p (Low)</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <button id="start-btn" class="primary-btn" disabled>
+                Lancer le traitement
+            </button>
+        </aside>
+
+        <!-- Right Panel: File Queue -->
+        <main class="queue-panel">
+            <div class="upload-zone" id="drop-zone">
+                <div class="icon">☁️</div>
+                <h3>Glisser-déposer vos fichiers ici</h3>
+                <p>ou cliquez pour parcourir (Illimité)</p>
+                <input type="file" id="file-input" multiple hidden>
+            </div>
+
+            <div class="file-list-header">
+                <h3>File d'attente <span id="file-count">(0)</span></h3>
+                <button id="clear-btn" class="text-btn">Tout effacer</button>
+            </div>
+
+            <div id="file-list" class="file-list">
+                <!-- File Items will be injected here -->
+                <div class="empty-state">Aucun fichier en attente</div>
+            </div>
+        </main>
+
+    </div>
+</div>
+
+<!-- Template for a file item -->
+<template id="file-item-template">
+    <div class="file-item">
+        <div class="file-icon">📄</div>
+        <div class="file-info">
+            <div class="file-name">nom_du_fichier.mp4</div>
+            <div class="file-meta">15.4 MB • En attente</div>
+            <div class="progress-bar-bg"><div class="progress-bar-fill"></div></div>
+        </div>
+        <div class="file-actions">
+            <button class="remove-btn">✕</button>
+            <a href="#" class="download-btn hidden">⬇</a>
+        </div>
+    </div>
+</template>
+
+<script src="{{ url_for('static', filename='js/script.js') }}"></script>
+</body>
+</html>
