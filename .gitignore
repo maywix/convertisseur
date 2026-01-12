@@ -1,9 +1,29 @@
-venv/
+# python
 __pycache__/
 *.pyc
-.DS_Store
-uploads/*
-processed/*
-!uploads/.gitkeep
-!processed/.gitkeep
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+libs/
+
+# runtime data
+data/
+uploads/
+processed/
 server.log
+
+# bun / node tooling
+.bun/
+bun.lockb
+
+# frontend build artifacts
+static/dist/*.map
+
+# os / ide
+.DS_Store
+.idea/
+.vscode/

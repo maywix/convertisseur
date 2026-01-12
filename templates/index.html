@@ -100,7 +100,7 @@
         <!-- Right Panel: File Queue -->
         <main class="queue-panel">
             <div class="upload-zone" id="drop-zone">
-                <div class="icon">☁️</div>
+                <div class="icon">upload</div>
                 <h3>Glisser-déposer vos fichiers ici</h3>
                 <p>ou cliquez pour parcourir (Illimité)</p>
                 <input type="file" id="file-input" multiple hidden>
@@ -123,19 +123,19 @@
 <!-- Template for a file item -->
 <template id="file-item-template">
     <div class="file-item">
-        <div class="file-icon">📄</div>
+        <div class="file-icon">file</div>
         <div class="file-info">
             <div class="file-name">nom_du_fichier.mp4</div>
             <div class="file-meta">15.4 MB • En attente</div>
             <div class="progress-bar-bg"><div class="progress-bar-fill"></div></div>
         </div>
         <div class="file-actions">
-            <button class="remove-btn">✕</button>
-            <a href="#" class="download-btn hidden">⬇</a>
+            <button class="remove-btn" type="button">x</button>
+            <a href="#" class="download-btn hidden">dl</a>
         </div>
     </div>
 </template>
 
-<script src="{{ url_for('static', filename='js/script.js') }}"></script>
+<script src="{{ url_for('static', filename='dist/script.js') }}"></script>
 </body>
 </html>

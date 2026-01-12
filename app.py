@@ -1,216 +1,806 @@
-import os
-import subprocess
-import shutil
 import json
-from flask import Flask, render_template, request, send_from_directory, jsonify
-from werkzeug.utils import secure_filename
-from pypdf import PdfReader, PdfWriter
+import logging
+import os
+import sqlite3
+import subprocess
+import sys
+import threading
+import time
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+
+BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+LIBS_DIR = os.path.join(BASE_DIR, "libs")
+if os.path.isdir(LIBS_DIR) and LIBS_DIR not in sys.path:
+    sys.path.insert(0, LIBS_DIR)
+
+from flask import Flask, g, jsonify, make_response, render_template, request, send_file
 from PIL import Image
+from pypdf import PdfReader, PdfWriter
+from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
-app.config['UPLOAD_FOLDER'] = os.path.abspath('uploads')
-app.config['PROCESSED_FOLDER'] = os.path.abspath('processed')
-app.config['MAX_CONTENT_LENGTH'] = 10000 * 1024 * 1024  # Limit 10GB
 
-# Ensure directories exist
-os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-os.makedirs(app.config['PROCESSED_FOLDER'], exist_ok=True)
+UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
+PROCESSED_DIR = os.path.join(BASE_DIR, "processed")
+DATA_DIR = os.path.join(BASE_DIR, "data")
+DB_PATH = os.path.join(DATA_DIR, "jobs.sqlite3")
 
-def get_video_info(path):
-    """Get video duration and bitrate using ffprobe."""
+MAX_CONTENT_LENGTH_BYTES = 10000 * 1024 * 1024
+RETENTION_SECONDS = int(os.environ.get("RETENTION_SECONDS", str(3 * 60 * 60)))
+CLEANUP_INTERVAL_SECONDS = int(os.environ.get("CLEANUP_INTERVAL_SECONDS", str(5 * 60)))
+
+MAX_ENQUEUED_JOBS = int(os.environ.get("MAX_ENQUEUED_JOBS", "50"))
+
+app.config["UPLOAD_FOLDER"] = UPLOAD_DIR
+app.config["PROCESSED_FOLDER"] = PROCESSED_DIR
+app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH_BYTES
+
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+os.makedirs(PROCESSED_DIR, exist_ok=True)
+os.makedirs(DATA_DIR, exist_ok=True)
+
+_background_lock = threading.Lock()
+_background_started = False
+
+
+def _setup_logging() -> None:
+    level = os.environ.get("LOG_LEVEL", "INFO").upper().strip()
+    logging.basicConfig(
+        level=getattr(logging, level, logging.INFO),
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
+
+
+_setup_logging()
+
+CPU_THREADS = os.cpu_count() or 1
+
+VIDEO_WORKERS = 1
+AUDIO_WORKERS = CPU_THREADS
+IMAGE_WORKERS = max(1, CPU_THREADS // 2)
+PDF_WORKERS = max(1, CPU_THREADS // 2)
+
+video_executor = ThreadPoolExecutor(max_workers=VIDEO_WORKERS)
+audio_executor = ThreadPoolExecutor(max_workers=AUDIO_WORKERS)
+image_executor = ThreadPoolExecutor(max_workers=IMAGE_WORKERS)
+pdf_executor = ThreadPoolExecutor(max_workers=PDF_WORKERS)
+
+logging.info(
+    "workers cpu=%s video=%s audio=%s image=%s pdf=%s",
+    CPU_THREADS,
+    VIDEO_WORKERS,
+    AUDIO_WORKERS,
+    IMAGE_WORKERS,
+    PDF_WORKERS,
+)
+
+
+def _now_ts() -> int:
+    return int(time.time())
+
+
+def _new_id() -> str:
+    return uuid.uuid4().hex
+
+
+def _db_connect() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _db_init() -> None:
+    with _db_connect() as conn:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS jobs (
+              id TEXT PRIMARY KEY,
+              session_id TEXT NOT NULL,
+              media_type TEXT,
+              original_filename TEXT NOT NULL,
+              action TEXT NOT NULL,
+              target_format TEXT,
+              comp_mode TEXT,
+              comp_value TEXT,
+              status TEXT NOT NULL,
+              error TEXT,
+              created_at INTEGER NOT NULL,
+              started_at INTEGER,
+              done_at INTEGER,
+              expires_at INTEGER,
+              input_path TEXT NOT NULL,
+              output_path TEXT,
+              output_filename TEXT
+            );
+            """
+        )
+        try:
+            conn.execute("ALTER TABLE jobs ADD COLUMN media_type TEXT;")
+        except sqlite3.OperationalError:
+            pass
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_jobs_session_created
+            ON jobs(session_id, created_at);
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_jobs_expires
+            ON jobs(expires_at);
+            """
+        )
+
+
+def _db_get_job(job_id: str) -> sqlite3.Row | None:
+    with _db_connect() as conn:
+        row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        return row
+
+
+def _db_get_job_for_session(job_id: str, session_id: str) -> sqlite3.Row | None:
+    with _db_connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM jobs WHERE id = ? AND session_id = ?",
+            (job_id, session_id),
+        ).fetchone()
+        return row
+
+
+def _db_count_active_for_session(session_id: str) -> int:
+    with _db_connect() as conn:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS n
+            FROM jobs
+            WHERE session_id = ?
+            AND status IN ('queued', 'processing')
+            """,
+            (session_id,),
+        ).fetchone()
+        return int(row["n"])
+
+
+def _db_list_jobs_for_session(session_id: str, limit: int = 100) -> list[dict]:
+    now_ts = _now_ts()
+    with _db_connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM jobs
+            WHERE session_id = ?
+            AND (expires_at IS NULL OR expires_at > ?)
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (session_id, now_ts, limit),
+        ).fetchall()
+
+    out: list[dict] = []
+    for r in rows:
+        out.append(
+            {
+                "id": r["id"],
+                "media_type": r["media_type"],
+                "original_filename": r["original_filename"],
+                "status": r["status"],
+                "error": r["error"],
+                "created_at": r["created_at"],
+                "started_at": r["started_at"],
+                "done_at": r["done_at"],
+                "expires_at": r["expires_at"],
+                "output_filename": r["output_filename"],
+                "download_url": f"/download/{r['id']}" if r["status"] == "done" else None,
+            }
+        )
+    return out
+
+
+def _db_update_job(
+    job_id: str,
+    *,
+    status: str | None = None,
+    error: str | None = None,
+    started_at: int | None = None,
+    done_at: int | None = None,
+    expires_at: int | None = None,
+    output_path: str | None = None,
+    output_filename: str | None = None,
+) -> None:
+    fields: list[str] = []
+    values: list[object] = []
+
+    if status is not None:
+        fields.append("status = ?")
+        values.append(status)
+
+    if error is not None:
+        fields.append("error = ?")
+        values.append(error)
+
+    if started_at is not None:
+        fields.append("started_at = ?")
+        values.append(started_at)
+
+    if done_at is not None:
+        fields.append("done_at = ?")
+        values.append(done_at)
+
+    if expires_at is not None:
+        fields.append("expires_at = ?")
+        values.append(expires_at)
+
+    if output_path is not None:
+        fields.append("output_path = ?")
+        values.append(output_path)
+
+    if output_filename is not None:
+        fields.append("output_filename = ?")
+        values.append(output_filename)
+
+    if not fields:
+        return
+
+    values.append(job_id)
+    sql = f"UPDATE jobs SET {', '.join(fields)} WHERE id = ?"
+    with _db_connect() as conn:
+        conn.execute(sql, tuple(values))
+
+
+def _db_delete_job(job_id: str) -> None:
+    with _db_connect() as conn:
+        conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+
+
+def _db_collect_expired_jobs(now_ts: int) -> list[sqlite3.Row]:
+    with _db_connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM jobs
+            WHERE expires_at IS NOT NULL
+            AND expires_at <= ?
+            """,
+            (now_ts,),
+        ).fetchall()
+        return rows
+
+
+def _cleanup_loop() -> None:
+    while True:
+        try:
+            now_ts = _now_ts()
+            rows = _db_collect_expired_jobs(now_ts)
+            for r in rows:
+                in_path = r["input_path"]
+                out_path = r["output_path"]
+
+                if in_path and os.path.exists(in_path):
+                    try:
+                        os.remove(in_path)
+                    except OSError:
+                        pass
+
+                if out_path and os.path.exists(out_path):
+                    try:
+                        os.remove(out_path)
+                    except OSError:
+                        pass
+
+                _db_delete_job(r["id"])
+        except Exception as e:
+            logging.exception("cleanup failed")
+
+        time.sleep(CLEANUP_INTERVAL_SECONDS)
+
+
+def _start_background_tasks_once() -> None:
+    global _background_started
+    if _background_started:
+        return
+    with _background_lock:
+        if _background_started:
+            return
+        t = threading.Thread(target=_cleanup_loop, daemon=True)
+        t.start()
+        _background_started = True
+
+
+def _session_id_from_request() -> tuple[str, bool]:
+    sid = request.cookies.get("session_id")
+    if sid and len(sid) >= 16:
+        return sid, False
+    return _new_id(), True
+
+
+@app.before_request
+def _load_session() -> None:
+    _start_background_tasks_once()
+    sid, is_new = _session_id_from_request()
+    g.session_id = sid
+    g._set_session_cookie = is_new
+
+
+@app.after_request
+def _save_session(response):
+    if getattr(g, "_set_session_cookie", False):
+        response.set_cookie(
+            "session_id",
+            g.session_id,
+            max_age=60 * 60 * 24 * 30,
+            httponly=True,
+            samesite="Lax",
+            secure=request.is_secure,
+        )
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+def _get_video_info(path: str) -> dict | None:
     try:
         cmd = [
-            'ffprobe', '-v', 'error', '-select_streams', 'v:0',
-            '-show_entries', 'format=duration,bit_rate:stream=width,height',
-            '-of', 'json', path
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "format=duration,bit_rate:stream=width,height",
+            "-of",
+            "json",
+            path,
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        data = json.loads(result.stdout)
-        
-        duration = float(data['format'].get('duration', 0))
-        bitrate = int(data['format'].get('bit_rate', 0))
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        data = json.loads(result.stdout or "{}")
+
+        duration = float((data.get("format") or {}).get("duration", 0) or 0)
+        bitrate = int((data.get("format") or {}).get("bit_rate", 0) or 0)
         width = 0
         height = 0
-        if 'streams' in data and len(data['streams']) > 0:
-            width = int(data['streams'][0].get('width', 0))
-            height = int(data['streams'][0].get('height', 0))
-            
-        return {'duration': duration, 'bitrate': bitrate, 'width': width, 'height': height}
-    except Exception as e:
-        print(f"Error reading metadata: {e}")
+        streams = data.get("streams") or []
+        if streams:
+            width = int(streams[0].get("width", 0) or 0)
+            height = int(streams[0].get("height", 0) or 0)
+
+        return {"duration": duration, "bitrate": bitrate, "width": width, "height": height}
+    except Exception:
         return None
 
-@app.route('/')
-def index():
-    return render_template('index.html')
 
-@app.route('/process', methods=['POST'])
-def process_file():
-    file = request.files.get('file')
-    action = request.form.get('action')
-    target_format = request.form.get('format')
-    
-    # Advanced Compression Options
-    comp_mode = request.form.get('comp_mode') # 'crf', 'size', 'percent', 'res'
-    comp_value = request.form.get('comp_value') # Value associated with mode
+def _safe_error_message(err: Exception) -> str:
+    msg = str(err).strip()
+    if not msg:
+        msg = "erreur inconnue"
+    if len(msg) > 800:
+        msg = msg[:800] + "..."
+    return msg
 
-    if not file or not file.filename:
-        return jsonify({'error': 'No file uploaded'}), 400
 
-    filename = secure_filename(file.filename)
-    input_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-    file.save(input_path)
+def _validate_action(action: str | None) -> str | None:
+    if action in {"convert", "compress"}:
+        return action
+    return None
 
-    base_name, ext = os.path.splitext(filename)
-    ext = ext.lower()
-    
-    # Output filename
-    if action == 'convert':
-        output_filename = f"converted_{base_name}.{target_format}"
-    else:
-        output_filename = f"compressed_{base_name}{ext}"
 
-    output_path = os.path.join(app.config['PROCESSED_FOLDER'], output_filename)
+def _process_with_ffmpeg(
+    *,
+    input_path: str,
+    output_path: str,
+    ext: str,
+    action: str,
+    comp_mode: str | None,
+    comp_value: str | None,
+) -> None:
+    cmd: list[str] = ["ffmpeg", "-y", "-i", input_path]
 
-    try:
-        # --- VIDEO & AUDIO HANDLING ---
-        if ext in ['.mp4', '.mkv', '.avi', '.mov', '.webm', '.mp3', '.wav', '.flac', '.ogg', '.m4a']:
-            cmd = ['ffmpeg', '-y', '-i', input_path]
-            
-            # Helper to detect type
-            is_video = ext in ['.mp4', '.mkv', '.avi', '.mov', '.webm']
+    is_video = ext in {".mp4", ".mkv", ".avi", ".mov", ".webm"}
+    if action == "compress":
+        if is_video:
+            cmd.extend(["-vcodec", "libx264", "-preset", "medium"])
+            info = _get_video_info(input_path)
 
-            if action == 'compress':
-                if is_video:
-                    cmd.extend(['-vcodec', 'libx264', '-preset', 'medium'])
-                    
-                    info = get_video_info(input_path)
-                    
-                    if comp_mode == 'size' and info and info['duration'] > 0:
-                        # Target Size in MB
-                        try:
-                            target_size_mb = float(comp_value or 0)
-                        except ValueError:
-                            target_size_mb = 0
-                            
-                        if target_size_mb > 0:
-                            target_bitrate = int((target_size_mb * 8 * 1024 * 1024) / info['duration'])
-                            # Safety: Don't go below 100k
-                            target_bitrate = max(target_bitrate, 100000)
-                            cmd.extend(['-b:v', str(target_bitrate)])
-                        else:
-                             # Fallback to default CRF if size invalid
-                             cmd.extend(['-crf', '23'])
-                        
-                    elif comp_mode == 'percent' and info and info['bitrate'] > 0:
-                        # Percentage reduction (e.g., 50 means 50% size)
-                        try:
-                            percent = float(comp_value or 0)
-                        except ValueError:
-                            percent = 0
-                            
-                        if percent > 0:
-                            target_bitrate = int(info['bitrate'] * (1 - percent/100))
-                            target_bitrate = max(target_bitrate, 100000)
-                            cmd.extend(['-b:v', str(target_bitrate)])
-                        else:
-                             cmd.extend(['-crf', '23'])
-                        
-                    elif comp_mode == 'res':
-                        target_height = comp_value or '720'
-                        cmd.extend(['-vf', f'scale=-2:{target_height}', '-crf', '23'])
-                        
-                    else:
-                        # Default CRF Mode
-                        crf_map = {'low': '23', 'medium': '28', 'high': '35'}
-                        val = comp_value or 'medium'
-                        crf = crf_map.get(val, '23')
-                        cmd.extend(['-crf', crf])
+            if comp_mode == "size" and info and info["duration"] > 0:
+                try:
+                    target_size_mb = float(comp_value or 0)
+                except ValueError:
+                    target_size_mb = 0
 
+                if target_size_mb > 0:
+                    target_bitrate = int((target_size_mb * 8 * 1024 * 1024) / info["duration"])
+                    target_bitrate = max(target_bitrate, 100000)
+                    cmd.extend(["-b:v", str(target_bitrate)])
                 else:
-                    # Audio Compression
-                    cmd.extend(['-b:a', '128k'])
+                    cmd.extend(["-crf", "23"])
 
-            elif action == 'convert':
-                # FFmpeg auto-conversion
+            elif comp_mode == "percent" and info and info["bitrate"] > 0:
+                try:
+                    percent = float(comp_value or 0)
+                except ValueError:
+                    percent = 0
+
+                if percent > 0:
+                    target_bitrate = int(info["bitrate"] * (1 - percent / 100))
+                    target_bitrate = max(target_bitrate, 100000)
+                    cmd.extend(["-b:v", str(target_bitrate)])
+                else:
+                    cmd.extend(["-crf", "23"])
+
+            elif comp_mode == "res":
+                target_height = str(comp_value or "720")
+                cmd.extend(["-vf", f"scale=-2:{target_height}", "-crf", "23"])
+
+            else:
+                crf_map = {"low": "23", "medium": "28", "high": "35"}
+                val = (comp_value or "medium").strip()
+                crf = crf_map.get(val, "23")
+                cmd.extend(["-crf", crf])
+
+        else:
+            cmd.extend(["-b:a", "128k"])
+
+    cmd.append(output_path)
+
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        if stderr:
+            raise RuntimeError(stderr.splitlines()[-1])
+        raise RuntimeError("ffmpeg a echoue")
+
+
+def _process_pdf(
+    *,
+    input_path: str,
+    output_path: str,
+    action: str,
+    target_format: str | None,
+    comp_value: str | None,
+) -> None:
+    if action == "compress":
+        reader = PdfReader(input_path)
+        writer = PdfWriter()
+
+        for page in reader.pages:
+            writer.add_page(page)
+            page.compress_content_streams()
+
+        if (comp_value or "").strip() == "high":
+            writer.add_metadata({})
+        else:
+            if reader.metadata:
+                writer.add_metadata(reader.metadata)
+
+        with open(output_path, "wb") as f:
+            writer.write(f)
+        return
+
+    if action == "convert":
+        if (target_format or "").lower() != "txt":
+            raise ValueError("conversion pdf vers ce format non supportee")
+
+        reader = PdfReader(input_path)
+        text = ""
+        for page in reader.pages:
+            t = page.extract_text()
+            if t:
+                text += t + "\n"
+        with open(output_path, "w") as f:
+            f.write(text)
+        return
+
+    raise ValueError("action non supportee")
+
+
+def _process_image(
+    *,
+    input_path: str,
+    output_path: str,
+    action: str,
+    target_format: str | None,
+    comp_mode: str | None,
+    comp_value: str | None,
+) -> None:
+    img = Image.open(input_path)
+
+    if action == "compress":
+        q_map = {"low": 85, "medium": 60, "high": 30}
+        val = (comp_value or "medium").strip()
+        quality = q_map.get(val, 60)
+
+        if comp_mode == "percent":
+            try:
+                p_val = float(comp_value or 0)
+                quality = max(10, 100 - int(p_val))
+            except ValueError:
                 pass
 
-            cmd.append(output_path)
-            subprocess.run(cmd, check=True, stderr=subprocess.PIPE)
+        img.save(output_path, quality=quality, optimize=True)
+        return
 
-        # --- PDF HANDLING ---
-        elif ext == '.pdf':
-            if action == 'compress':
-                reader = PdfReader(input_path)
-                writer = PdfWriter()
-                
-                for page in reader.pages:
-                    writer.add_page(page)
-                    page.compress_content_streams()
-                
-                if comp_value == 'high':
-                     writer.add_metadata({})
-                else:
-                    if reader.metadata:
-                        writer.add_metadata(reader.metadata)
+    if action == "convert":
+        tf = (target_format or "").lower().strip()
+        if tf == "pdf":
+            if img.mode == "RGBA":
+                img = img.convert("RGB")
+            img.save(output_path, "PDF", resolution=100.0)
+            return
 
-                with open(output_path, "wb") as f:
-                    writer.write(f)
-            
-            elif action == 'convert':
-                 if target_format == 'txt':
-                    reader = PdfReader(input_path)
-                    text = ""
-                    for page in reader.pages:
-                        t = page.extract_text()
-                        if t: text += t + "\n"
-                    with open(output_path, "w") as f:
-                        f.write(text)
-                 else:
-                     return jsonify({'error': 'Conversion PDF vers ce format non supportée'}), 400
+        if tf in {"jpg", "jpeg"} and img.mode == "RGBA":
+            img = img.convert("RGB")
+        img.save(output_path)
+        return
 
-        # --- IMAGE HANDLING ---
-        elif ext in ['.jpg', '.jpeg', '.png', '.webp', '.bmp']:
-            img = Image.open(input_path)
-            
-            if action == 'compress':
-                q_map = {'low': 85, 'medium': 60, 'high': 30}
-                val = comp_value or 'medium'
-                quality = q_map.get(val, 60)
-                
-                if comp_mode == 'percent':
-                     try:
-                        p_val = float(comp_value or 0)
-                        quality = max(10, 100 - int(p_val))
-                     except ValueError:
-                        pass
-                
-                img.save(output_path, quality=quality, optimize=True)
-            
-            elif action == 'convert':
-                if target_format == 'pdf':
-                    if img.mode == 'RGBA': img = img.convert('RGB')
-                    img.save(output_path, "PDF", resolution=100.0)
-                else:
-                    if target_format in ['jpg', 'jpeg'] and img.mode == 'RGBA':
-                        img = img.convert('RGB')
-                    img.save(output_path)
+    raise ValueError("action non supportee")
+
+
+def _media_type_from_filename(name: str) -> str:
+    _, ext = os.path.splitext(name)
+    ext = (ext or "").lower()
+
+    if ext in {".mp4", ".mkv", ".avi", ".mov", ".webm"}:
+        return "video"
+    if ext in {".mp3", ".wav", ".flac", ".ogg", ".m4a"}:
+        return "audio"
+    if ext == ".pdf":
+        return "pdf"
+    if ext in {".jpg", ".jpeg", ".png", ".webp", ".bmp"}:
+        return "image"
+
+    return "unknown"
+
+
+def _executor_for_media_type(media_type: str) -> ThreadPoolExecutor:
+    if media_type == "video":
+        return video_executor
+    if media_type == "audio":
+        return audio_executor
+    if media_type == "pdf":
+        return pdf_executor
+    return image_executor
+
+
+def _maybe_test_sleep(media_type: str) -> None:
+    # delai optionnel pour rendre les tests de concurrence observables
+    env_key = f"TEST_SLEEP_{media_type.upper()}_SECONDS"
+    raw = os.environ.get(env_key, "").strip()
+    if not raw:
+        return
+    try:
+        sec = float(raw)
+    except ValueError:
+        return
+    if sec > 0:
+        time.sleep(sec)
+
+
+def _run_job(job_id: str) -> None:
+    job = _db_get_job(job_id)
+    if not job:
+        return
+
+    input_path = job["input_path"]
+    action = job["action"]
+    target_format = job["target_format"]
+    comp_mode = job["comp_mode"]
+    comp_value = job["comp_value"]
+    media_type = job["media_type"] or "unknown"
+
+    started_at = _now_ts()
+    _db_update_job(job_id, status="processing", started_at=started_at)
+    logging.info("job start %s type=%s", job_id, media_type)
+
+    try:
+        _maybe_test_sleep(media_type)
+        _, ext = os.path.splitext(job["original_filename"])
+        ext = (ext or "").lower()
+
+        if action == "convert":
+            out_ext = f".{(target_format or '').lower().strip()}"
+            output_filename = f"{job_id}{out_ext}"
         else:
-             return jsonify({'error': 'Format non supporté'}), 400
+            output_filename = f"{job_id}{ext}"
 
-        return jsonify({
-            'success': True,
-            'download_url': f'/download/{os.path.basename(output_filename)}',
-            'filename': os.path.basename(output_filename)
-        })
+        output_path = os.path.join(PROCESSED_DIR, output_filename)
+
+        if ext in {".mp4", ".mkv", ".avi", ".mov", ".webm", ".mp3", ".wav", ".flac", ".ogg", ".m4a"}:
+            _process_with_ffmpeg(
+                input_path=input_path,
+                output_path=output_path,
+                ext=ext,
+                action=action,
+                comp_mode=comp_mode,
+                comp_value=comp_value,
+            )
+
+        elif ext == ".pdf":
+            _process_pdf(
+                input_path=input_path,
+                output_path=output_path,
+                action=action,
+                target_format=target_format,
+                comp_value=comp_value,
+            )
+
+        elif ext in {".jpg", ".jpeg", ".png", ".webp", ".bmp"}:
+            _process_image(
+                input_path=input_path,
+                output_path=output_path,
+                action=action,
+                target_format=target_format,
+                comp_mode=comp_mode,
+                comp_value=comp_value,
+            )
+        else:
+            raise ValueError("format non supporte")
+
+        done_at = _now_ts()
+        expires_at = done_at + RETENTION_SECONDS
+        _db_update_job(
+            job_id,
+            status="done",
+            done_at=done_at,
+            expires_at=expires_at,
+            output_path=output_path,
+            output_filename=output_filename,
+            error="",
+        )
+        logging.info("job done %s type=%s", job_id, media_type)
 
     except Exception as e:
-        print(e)
-        return jsonify({'error': str(e)}), 500
+        msg = _safe_error_message(e)
+        expires_at = _now_ts() + RETENTION_SECONDS
+        _db_update_job(job_id, status="error", error=msg, expires_at=expires_at)
+        logging.info("job error %s type=%s %s", job_id, media_type, msg)
 
-@app.route('/download/<filename>')
-def download_file(filename):
-    return send_from_directory(app.config['PROCESSED_FOLDER'], filename, as_attachment=True)
+    finally:
+        if input_path and os.path.exists(input_path):
+            try:
+                os.remove(input_path)
+            except OSError:
+                pass
 
-if __name__ == '__main__':
+
+@app.route("/")
+def index():
+    return render_template("index.html")
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify(
+        {
+            "ok": True,
+            "cpu_threads": CPU_THREADS,
+            "workers": {
+                "video": VIDEO_WORKERS,
+                "audio": AUDIO_WORKERS,
+                "image": IMAGE_WORKERS,
+                "pdf": PDF_WORKERS,
+            },
+            "retention_seconds": RETENTION_SECONDS,
+        }
+    )
+
+
+@app.route("/jobs", methods=["GET"])
+def list_jobs():
+    try:
+        limit = int(request.args.get("limit", "100"))
+    except ValueError:
+        limit = 100
+    limit = max(1, min(200, limit))
+    return jsonify({"jobs": _db_list_jobs_for_session(g.session_id, limit=limit)})
+
+
+@app.route("/jobs", methods=["POST"])
+def create_job():
+    file = request.files.get("file")
+    action = _validate_action(request.form.get("action"))
+    target_format = (request.form.get("format") or "").strip().lower()
+
+    comp_mode = (request.form.get("comp_mode") or "").strip()
+    comp_value = (request.form.get("comp_value") or "").strip()
+
+    if not file or not file.filename:
+        return jsonify({"error": "aucun fichier fourni"}), 400
+
+    if not action:
+        return jsonify({"error": "action invalide"}), 400
+
+    if action == "convert" and not target_format:
+        return jsonify({"error": "format de destination manquant"}), 400
+
+    if _db_count_active_for_session(g.session_id) >= MAX_ENQUEUED_JOBS:
+        return jsonify({"error": "trop de jobs en attente"}), 429
+
+    job_id = _new_id()
+    original_filename = secure_filename(file.filename)
+    media_type = _media_type_from_filename(original_filename)
+    input_filename = f"{job_id}__{original_filename}"
+    input_path = os.path.join(UPLOAD_DIR, input_filename)
+    file.save(input_path)
+
+    created_at = _now_ts()
+    with _db_connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO jobs (
+              id, session_id, media_type, original_filename,
+              action, target_format, comp_mode, comp_value,
+              status, error, created_at, input_path
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', '', ?, ?)
+            """,
+            (
+                job_id,
+                g.session_id,
+                media_type,
+                original_filename,
+                action,
+                target_format if action == "convert" else None,
+                comp_mode or None,
+                comp_value or None,
+                created_at,
+                input_path,
+            ),
+        )
+
+    ex = _executor_for_media_type(media_type)
+    ex.submit(_run_job, job_id)
+    return jsonify({"job_id": job_id}), 202
+
+
+@app.route("/jobs/<job_id>", methods=["GET"])
+def get_job(job_id: str):
+    row = _db_get_job_for_session(job_id, g.session_id)
+    if not row:
+        return jsonify({"error": "job introuvable"}), 404
+
+    return jsonify(
+        {
+            "id": row["id"],
+            "media_type": row["media_type"],
+            "original_filename": row["original_filename"],
+            "status": row["status"],
+            "error": row["error"],
+            "created_at": row["created_at"],
+            "started_at": row["started_at"],
+            "done_at": row["done_at"],
+            "expires_at": row["expires_at"],
+            "output_filename": row["output_filename"],
+            "download_url": f"/download/{row['id']}" if row["status"] == "done" else None,
+        }
+    )
+
+
+@app.route("/download/<job_id>", methods=["GET"])
+def download_job(job_id: str):
+    row = _db_get_job_for_session(job_id, g.session_id)
+    if not row:
+        return jsonify({"error": "job introuvable"}), 404
+
+    if row["status"] != "done":
+        return jsonify({"error": "job non termine"}), 400
+
+    now_ts = _now_ts()
+    expires_at = row["expires_at"]
+    if expires_at is not None and int(expires_at) <= now_ts:
+        return jsonify({"error": "fichier expire"}), 410
+
+    out_path = row["output_path"]
+    if not out_path or not os.path.exists(out_path):
+        return jsonify({"error": "fichier manquant"}), 404
+
+    download_name = row["output_filename"] or os.path.basename(out_path)
+    resp = make_response(send_file(out_path, as_attachment=True, download_name=download_name))
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+_db_init()
+
+
+if __name__ == "__main__":
     app.run(debug=True, port=5001)
