@@ -44,6 +44,26 @@ _background_lock = threading.Lock()
 _background_started = False
 
 
+VIDEO_EXTENSIONS = {
+    ".mp4", ".mov", ".avi", ".mkv", ".webm", ".wmv", ".flv", ".m4v",
+    ".mpeg", ".mpg", ".3gp", ".3g2", ".ts", ".mts", ".m2ts", ".vob",
+    ".ogv", ".divx", ".xvid", ".asf", ".rm", ".rmvb", ".f4v"
+}
+
+AUDIO_EXTENSIONS = {
+    ".mp3", ".wav", ".m4a", ".flac", ".aac", ".ogg", ".wma", ".aiff",
+    ".aif", ".opus", ".ac3", ".dts", ".amr", ".ape", ".mka", ".mpa",
+    ".au", ".ra", ".mid", ".midi"
+}
+
+IMAGE_EXTENSIONS = {
+    ".png", ".jpg", ".jpeg", ".gif", ".tiff", ".tif", ".bmp", ".psd",
+    ".heic", ".heif", ".webp", ".ico", ".jp2", ".j2k", ".jpf", ".jpm",
+    ".raw", ".cr2", ".nef", ".arw", ".dng", ".orf", ".rw2", ".pef",
+    ".tga", ".sgi", ".qtif", ".pict", ".icns"
+}
+
+
 def _setup_logging() -> None:
     level = os.environ.get("LOG_LEVEL", "INFO").upper().strip()
     logging.basicConfig(
@@ -118,6 +138,10 @@ def _db_init() -> None:
         )
         try:
             conn.execute("ALTER TABLE jobs ADD COLUMN media_type TEXT;")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE jobs ADD COLUMN params TEXT;")
         except sqlite3.OperationalError:
             pass
         conn.execute(
@@ -392,13 +416,29 @@ def _process_with_ffmpeg(
     action: str,
     comp_mode: str | None,
     comp_value: str | None,
+    params: dict | None = None,
 ) -> None:
     cmd: list[str] = ["ffmpeg", "-y", "-i", input_path]
+    params = params or {}
 
-    is_video = ext in {".mp4", ".mkv", ".avi", ".mov", ".webm"}
+    is_video = ext in VIDEO_EXTENSIONS
+    
+    # Advanced Params Application
+    if params.get("fps"):
+        cmd.extend(["-r", str(params["fps"])])
+    
+    if params.get("audio_sample_rate"):
+        cmd.extend(["-ar", str(params["audio_sample_rate"])])
+
+    if params.get("audio_channels"):
+        cmd.extend(["-ac", str(params["audio_channels"])])
+
+    # Preset logic
+    preset = params.get("video_preset", "medium")
+
     if action == "compress":
         if is_video:
-            cmd.extend(["-vcodec", "libx264", "-preset", "medium"])
+            cmd.extend(["-vcodec", "libx264", "-preset", preset])
             info = _get_video_info(input_path)
 
             if comp_mode == "size" and info and info["duration"] > 0:
@@ -436,9 +476,29 @@ def _process_with_ffmpeg(
                 val = (comp_value or "medium").strip()
                 crf = crf_map.get(val, "23")
                 cmd.extend(["-crf", crf])
+            
+            # Audio bitrate for video compression
+            if params.get("audio_bitrate"):
+                cmd.extend(["-b:a", params["audio_bitrate"]])
 
         else:
-            cmd.extend(["-b:a", "128k"])
+            # Audio compression
+            audio_br = params.get("audio_bitrate", "128k")
+            cmd.extend(["-b:a", audio_br])
+    
+    elif action == "convert":
+         # Apply params for conversion too if present
+        if is_video:
+             # Basic sensible default for video conversion if not specified, but let ffmpeg decide mostly
+             # If user specified preset, use it
+             if params.get("video_preset"):
+                 cmd.extend(["-preset", preset])
+             if params.get("audio_bitrate"):
+                 cmd.extend(["-b:a", params["audio_bitrate"]])
+        else:
+             # Audio conversion
+             if params.get("audio_bitrate"):
+                 cmd.extend(["-b:a", params["audio_bitrate"]])
 
     cmd.append(output_path)
 
@@ -539,13 +599,13 @@ def _media_type_from_filename(name: str) -> str:
     _, ext = os.path.splitext(name)
     ext = (ext or "").lower()
 
-    if ext in {".mp4", ".mkv", ".avi", ".mov", ".webm"}:
+    if ext in VIDEO_EXTENSIONS:
         return "video"
-    if ext in {".mp3", ".wav", ".flac", ".ogg", ".m4a"}:
+    if ext in AUDIO_EXTENSIONS:
         return "audio"
     if ext == ".pdf":
         return "pdf"
-    if ext in {".jpg", ".jpeg", ".png", ".webp", ".bmp"}:
+    if ext in IMAGE_EXTENSIONS:
         return "image"
 
     return "unknown"
@@ -585,6 +645,7 @@ def _run_job(job_id: str) -> None:
     target_format = job["target_format"]
     comp_mode = job["comp_mode"]
     comp_value = job["comp_value"]
+    params = json.loads(job["params"] or "{}") if "params" in job.keys() else {}
     media_type = job["media_type"] or "unknown"
 
     started_at = _now_ts()
@@ -604,7 +665,7 @@ def _run_job(job_id: str) -> None:
 
         output_path = os.path.join(PROCESSED_DIR, output_filename)
 
-        if ext in {".mp4", ".mkv", ".avi", ".mov", ".webm", ".mp3", ".wav", ".flac", ".ogg", ".m4a"}:
+        if ext in VIDEO_EXTENSIONS or ext in AUDIO_EXTENSIONS:
             _process_with_ffmpeg(
                 input_path=input_path,
                 output_path=output_path,
@@ -612,6 +673,7 @@ def _run_job(job_id: str) -> None:
                 action=action,
                 comp_mode=comp_mode,
                 comp_value=comp_value,
+                params=params,
             )
 
         elif ext == ".pdf":
@@ -623,7 +685,7 @@ def _run_job(job_id: str) -> None:
                 comp_value=comp_value,
             )
 
-        elif ext in {".jpg", ".jpeg", ".png", ".webp", ".bmp"}:
+        elif ext in IMAGE_EXTENSIONS:
             _process_image(
                 input_path=input_path,
                 output_path=output_path,
@@ -712,6 +774,18 @@ def create_job():
     if action == "convert" and not target_format:
         return jsonify({"error": "format de destination manquant"}), 400
 
+    params = {}
+    if request.form.get("fps"):
+        params["fps"] = request.form.get("fps")
+    if request.form.get("video_preset"):
+        params["video_preset"] = request.form.get("video_preset")
+    if request.form.get("audio_bitrate"):
+        params["audio_bitrate"] = request.form.get("audio_bitrate")
+    if request.form.get("audio_channels"):
+        params["audio_channels"] = request.form.get("audio_channels")
+    if request.form.get("audio_sample_rate"):
+        params["audio_sample_rate"] = request.form.get("audio_sample_rate")
+
     if _db_count_active_for_session(g.session_id) >= MAX_ENQUEUED_JOBS:
         return jsonify({"error": "trop de jobs en attente"}), 429
 
@@ -729,9 +803,9 @@ def create_job():
             INSERT INTO jobs (
               id, session_id, media_type, original_filename,
               action, target_format, comp_mode, comp_value,
-              status, error, created_at, input_path
+              status, error, created_at, input_path, params
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', '', ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', '', ?, ?, ?)
             """,
             (
                 job_id,
@@ -744,6 +818,7 @@ def create_job():
                 comp_value or None,
                 created_at,
                 input_path,
+                json.dumps(params)
             ),
         )
 

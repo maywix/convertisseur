@@ -18,17 +18,100 @@ document.addEventListener('DOMContentLoaded', () => {
     const inputPercent = document.getElementById('input-percent');
     const inputRes = document.getElementById('input-res');
     
+    // Advanced Mode Elements
+    const advancedToggle = document.getElementById('advanced-toggle');
+    const advancedSettings = document.getElementById('advanced-settings');
+    
     let queue = [];
     let currentAction = 'convert';
     let isProcessing = false;
 
-    const commonFormats = ['mp4', 'avi', 'mkv', 'mp3', 'wav', 'pdf', 'jpg', 'png'];
-    commonFormats.forEach(fmt => {
-        const opt = document.createElement('option');
-        opt.value = fmt;
-        opt.textContent = fmt.toUpperCase();
-        formatSelect.appendChild(opt);
-    });
+    const imageExtensions = [
+        "png", "jpg", "jpeg", "gif", "tiff", "tif", "bmp", "psd",
+        "heic", "heif", "webp", "ico", "jp2", "j2k", "jpf", "jpm",
+        "raw", "cr2", "nef", "arw", "dng", "orf", "rw2", "pef",
+        "tga", "sgi", "qtif", "pict", "icns"
+    ];
+
+    const videoExtensions = [
+        "mp4", "mov", "avi", "mkv", "webm", "wmv", "flv", "m4v",
+        "mpeg", "mpg", "3gp", "3g2", "ts", "mts", "m2ts", "vob",
+        "ogv", "divx", "xvid", "asf", "rm", "rmvb", "f4v"
+    ];
+
+    const audioExtensions = [
+        "mp3", "wav", "m4a", "flac", "aac", "ogg", "wma", "aiff",
+        "aif", "opus", "ac3", "dts", "amr", "ape", "mka", "mpa",
+        "au", "ra", "mid", "midi"
+    ];
+
+    function getFileType(filename) {
+        if (!filename) return 'unknown';
+        const ext = filename.split('.').pop().toLowerCase();
+        if (imageExtensions.includes(ext)) return 'image';
+        if (videoExtensions.includes(ext)) return 'video';
+        if (audioExtensions.includes(ext)) return 'audio';
+        return 'unknown';
+    }
+
+    function addOptGroup(label, formats) {
+        const group = document.createElement('optgroup');
+        group.label = label;
+        formats.forEach(fmt => {
+            const opt = document.createElement('option');
+            opt.value = fmt;
+            opt.textContent = fmt.toUpperCase();
+            group.appendChild(opt);
+        });
+        formatSelect.appendChild(group);
+    }
+
+    function updateFormatOptions() {
+        const currentVal = formatSelect.value;
+        formatSelect.innerHTML = '<option value="">Choisir format...</option>';
+        
+        let hasImage = false;
+        let hasVideo = false;
+        let hasAudio = false;
+
+        if (queue.length > 0) {
+            queue.forEach(item => {
+                const name = item.file ? item.file.name : (item.element.querySelector('.file-name').textContent);
+                const type = getFileType(name);
+                if (type === 'image') hasImage = true;
+                if (type === 'video') hasVideo = true;
+                if (type === 'audio') hasAudio = true;
+            });
+        }
+
+        // If empty or mixed specific combos, show what makes sense
+        if (queue.length === 0) {
+            addOptGroup('Images', imageExtensions);
+            addOptGroup('Video', videoExtensions);
+            addOptGroup('Audio', audioExtensions);
+        } else if (hasImage && !hasVideo && !hasAudio) {
+            addOptGroup('Images', imageExtensions);
+        } else if (hasVideo) {
+            addOptGroup('Video', videoExtensions);
+            addOptGroup('Audio', audioExtensions);
+        } else if (hasAudio) {
+             addOptGroup('Audio', audioExtensions);
+        } else {
+            // Fallback for mixed weirdness
+            addOptGroup('Images', imageExtensions);
+            addOptGroup('Video', videoExtensions);
+            addOptGroup('Audio', audioExtensions);
+        }
+
+        if (currentVal) {
+            // Verify if currentVal is still valid
+            const exists = Array.from(formatSelect.options).some(o => o.value === currentVal);
+            if(exists) formatSelect.value = currentVal;
+        }
+    }
+    
+    // Initialize with all
+    updateFormatOptions();
 
     tabs.forEach(tab => {
         tab.addEventListener('click', () => {
@@ -66,6 +149,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const percentSlider = document.getElementById('percent-slider');
     const percentVal = document.getElementById('percent-val');
     percentSlider.addEventListener('input', (e) => percentVal.textContent = e.target.value);
+
+    advancedToggle.addEventListener('change', (e) => {
+        if(e.target.checked) {
+            advancedSettings.classList.remove('hidden');
+        } else {
+            advancedSettings.classList.add('hidden');
+        }
+    });
 
     dropZone.addEventListener('click', () => fileInput.click());
     dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.style.borderColor = 'var(--accent)'; });
@@ -129,6 +220,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     function updateUI() {
+        updateFormatOptions();
         fileCountEl.textContent = `(${queue.length})`;
         const hasNewFiles = queue.some(x => x.file && x.status === 'pending');
         const convertOk = currentAction !== 'convert' || !!formatSelect.value;
@@ -198,6 +290,21 @@ document.addEventListener('DOMContentLoaded', () => {
                 val = document.getElementById('res-select').value;
             }
             formData.append('comp_value', val);
+        }
+
+        // Append Advanced Params if active
+        if (advancedToggle.checked) {
+            const fps = document.getElementById('adv-fps').value;
+            const preset = document.getElementById('adv-preset').value;
+            const aBitrate = document.getElementById('adv-audio-bitrate').value;
+            const aChannels = document.getElementById('adv-audio-channels').value;
+            const aRate = document.getElementById('adv-audio-rate').value;
+
+            if(fps) formData.append('fps', fps);
+            if(preset) formData.append('video_preset', preset);
+            if(aBitrate) formData.append('audio_bitrate', aBitrate);
+            if(aChannels) formData.append('audio_channels', aChannels);
+            if(aRate) formData.append('audio_sample_rate', aRate);
         }
 
         try {

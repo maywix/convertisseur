@@ -25,6 +25,73 @@
             </div>
 
             <div id="settings-area">
+                <!-- Advanced Mode Toggle -->
+                <div class="advanced-toggle-wrapper">
+                    <label class="switch">
+                        <input type="checkbox" id="advanced-toggle">
+                        <span class="slider round"></span>
+                    </label>
+                    <span class="toggle-label">Mode Avancé</span>
+                </div>
+
+                <!-- Advanced Settings Panel -->
+                <div id="advanced-settings" class="settings-group hidden">
+                    <h4>Paramètres Avancés</h4>
+                    
+                    <div class="input-row">
+                        <div class="input-group">
+                            <label>Framerate (FPS)</label>
+                            <select id="adv-fps">
+                                <option value="">Original</option>
+                                <option value="24">24</option>
+                                <option value="30">30</option>
+                                <option value="60">60</option>
+                            </select>
+                        </div>
+                        <div class="input-group">
+                            <label>Preset Video</label>
+                            <select id="adv-preset">
+                                <option value="">Défaut</option>
+                                <option value="ultrafast">Ultrafast (Rapide/Gros)</option>
+                                <option value="fast">Fast</option>
+                                <option value="medium">Medium</option>
+                                <option value="slow">Slow</option>
+                                <option value="veryslow">Very Slow (Lent/Compact)</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="input-row">
+                        <div class="input-group">
+                            <label>Audio Bitrate</label>
+                            <select id="adv-audio-bitrate">
+                                <option value="">Original</option>
+                                <option value="64k">64k</option>
+                                <option value="128k">128k</option>
+                                <option value="192k">192k</option>
+                                <option value="320k">320k</option>
+                            </select>
+                        </div>
+                        <div class="input-group">
+                            <label>Audio Channels</label>
+                            <select id="adv-audio-channels">
+                                <option value="">Original</option>
+                                <option value="1">Mono</option>
+                                <option value="2">Stereo</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="input-group">
+                        <label>Sample Rate (Hz)</label>
+                        <select id="adv-audio-rate">
+                            <option value="">Original</option>
+                            <option value="44100">44100</option>
+                            <option value="48000">48000</option>
+                        </select>
+                    </div>
+                </div>
+
                 <!-- Conversion Settings -->
                 <div id="convert-settings" class="settings-group">
                     <label>Format de destination</label>
