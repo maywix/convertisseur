@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Progress } from '@/components/ui/progress'
 import { Button } from '@/components/ui/button'
+import { IconDownload, IconX } from '@/components/icons'
 import type { QueueItem } from '@/types'
 import { formatSize, getFileType } from '@/types'
 
@@ -81,8 +82,8 @@ export function FileItem({ item, onRemove }: FileItemProps) {
             </div>
 
             {/* Info */}
-            <div className="flex-1 min-w-0">
-                <div className="font-medium text-sm truncate">
+            <div className="flex-1 min-w-0 overflow-hidden">
+                <div className="font-medium text-sm truncate pr-6" title={item.relativePath || item.file.name}>
                     {item.relativePath || item.file.name}
                 </div>
                 <div className={`text-xs mt-1 ${item.status === 'done' ? 'text-emerald-500' :
@@ -102,15 +103,16 @@ export function FileItem({ item, onRemove }: FileItemProps) {
             </div>
 
             {/* Actions */}
-            <div className="flex flex-col gap-1">
+            <div className="flex flex-col gap-1 shrink-0 items-center">
                 {item.status !== 'done' && (
                     <Button
                         variant="ghost"
                         size="icon"
                         onClick={() => onRemove(item.id)}
                         className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                        aria-label="Retirer le fichier"
                     >
-                        ✕
+                        <IconX size={16} />
                     </Button>
                 )}
                 {item.status === 'done' && item.downloadUrl && (
@@ -118,8 +120,9 @@ export function FileItem({ item, onRemove }: FileItemProps) {
                         href={item.downloadUrl}
                         download={item.outputFilename || undefined}
                         className="flex items-center justify-center h-8 w-8 bg-emerald-500 text-white rounded-md hover:bg-emerald-600 transition-colors"
+                        aria-label="Télécharger le fichier converti"
                     >
-                        ⬇
+                        <IconDownload size={16} />
                     </a>
                 )}
             </div>

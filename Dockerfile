@@ -6,6 +6,7 @@ WORKDIR /build
 # System build dependencies
 RUN apk add --no-cache \
     build-base \
+    bash \
     git \
     nasm \
     yasm \
@@ -13,6 +14,7 @@ RUN apk add --no-cache \
     openssl-libs-static \
     pkgconf \
     wget \
+    curl \
     zlib-dev \
     libjpeg-turbo-dev \
     freetype-dev \
@@ -50,6 +52,17 @@ ENV PATH="/opt/venv/bin:$PATH"
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
+# Bun install
+ENV BUN_INSTALL=/root/.bun
+ENV PATH="$BUN_INSTALL/bin:$PATH"
+RUN curl -fsSL https://bun.sh/install | /bin/bash
+
+# Frontend build (React + Vite via Bun)
+COPY frontend/package.json ./frontend/
+COPY frontend/package-lock.json ./frontend/
+COPY frontend ./frontend
+RUN cd frontend && bun install && bun run build
+
 # STAGE 2: Runtime
 FROM python:3.12-alpine
 
@@ -70,6 +83,7 @@ RUN apk add --no-cache \
 # Copy compiled artifacts
 COPY --from=builder /tmp/ffmpeg /usr/local
 COPY --from=builder /opt/venv /opt/venv
+COPY --from=builder /build/frontend/dist /app/frontend/dist
 
 # Environment setup
 ENV PATH="/opt/venv/bin:$PATH"

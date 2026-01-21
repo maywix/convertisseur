@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from 'react'
 import { cn } from '@/lib/utils'
+import { IconFolder } from '@/components/icons'
 
 interface UploadZoneProps {
     onFilesAdded: (files: FileList | File[]) => void
@@ -69,7 +70,9 @@ export function UploadZone({ onFilesAdded }: UploadZoneProps) {
                 isDragging ? 'bg-primary/10 border-primary' : 'hover:bg-muted/50'
             )}
         >
-            <div className="text-4xl mb-3">📁</div>
+            <div className="flex items-center justify-center mb-3">
+                <IconFolder size={32} />
+            </div>
             <h3 className="text-lg font-semibold mb-1">Glisser-déposer vos fichiers ici</h3>
             <p className="text-sm text-muted-foreground">ou cliquez pour parcourir (Illimité)</p>
             <input

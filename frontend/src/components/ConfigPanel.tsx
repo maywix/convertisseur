@@ -1,12 +1,14 @@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Combobox } from '@/components/ui/combobox'
 import { Switch } from '@/components/ui/switch'
 import { Slider } from '@/components/ui/slider'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import type { ConvertSettings, CompressSettings, MediaCategory } from '@/types'
 import { VIDEO_FORMATS, AUDIO_FORMATS, IMAGE_FORMATS } from '@/types'
 import { cn } from '@/lib/utils'
+import { IconAudio, IconImage, IconVideo } from '@/components/icons'
 
 interface ConfigPanelProps {
     currentAction: 'convert' | 'compress'
@@ -66,7 +68,7 @@ export function ConfigPanel({
                                     onClick={() => onCategoryChange(cat)}
                                 >
                                     <span className="text-lg mb-1">
-                                        {cat === 'video' ? '🎬' : cat === 'audio' ? '🎵' : '🖼️'}
+                                        {cat === 'video' ? <IconVideo size={18} /> : cat === 'audio' ? <IconAudio size={18} /> : <IconImage size={18} />}
                                     </span>
                                     <span className="text-xs capitalize">{cat === 'video' ? 'Vidéo' : cat === 'audio' ? 'Audio' : 'Image'}</span>
                                 </Button>
@@ -79,16 +81,14 @@ export function ConfigPanel({
                         <label className="text-sm font-semibold text-muted-foreground block mb-2">
                             2. Format de sortie
                         </label>
-                        <Select value={convertSettings.format} onValueChange={onFormatChange} disabled={!convertSettings.category}>
-                            <SelectTrigger>
-                                <SelectValue placeholder={convertSettings.category ? "Sélectionnez un format..." : "Sélectionnez un type d'abord..."} />
-                            </SelectTrigger>
-                            <SelectContent>
-                                {formats.map((fmt) => (
-                                    <SelectItem key={fmt} value={fmt}>{fmt.toUpperCase()}</SelectItem>
-                                ))}
-                            </SelectContent>
-                        </Select>
+                        <Combobox
+                            options={formats.map((fmt) => ({ label: fmt.toUpperCase(), value: fmt }))}
+                            placeholder={convertSettings.category ? 'Choisir un format...' : "Sélectionnez un type d'abord..."}
+                            emptyMessage="Aucun format"
+                            value={convertSettings.format}
+                            onChange={onFormatChange}
+                            className="w-full"
+                        />
                     </div>
 
                     {/* GIF Settings */}

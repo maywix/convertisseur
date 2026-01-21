@@ -18,7 +18,7 @@ LIBS_DIR = os.path.join(BASE_DIR, "libs")
 if os.path.isdir(LIBS_DIR) and LIBS_DIR not in sys.path:
     sys.path.insert(0, LIBS_DIR)
 
-from flask import Flask, g, jsonify, make_response, render_template, request, send_file
+from flask import Flask, g, jsonify, make_response, render_template, request, send_file, send_from_directory
 from PIL import Image, ImageOps
 from pypdf import PdfReader, PdfWriter
 from werkzeug.utils import secure_filename
@@ -37,6 +37,8 @@ UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 PROCESSED_DIR = os.path.join(BASE_DIR, "processed")
 DATA_DIR = os.path.join(BASE_DIR, "data")
 DB_PATH = os.path.join(DATA_DIR, "jobs.sqlite3")
+FRONTEND_DIST_DIR = os.path.join(BASE_DIR, "frontend", "dist")
+DIST_INDEX_PATH = os.path.join(FRONTEND_DIST_DIR, "index.html")
 
 MAX_CONTENT_LENGTH_BYTES = 10000 * 1024 * 1024
 RETENTION_SECONDS = int(os.environ.get("RETENTION_SECONDS", str(3 * 60 * 60)))
@@ -978,9 +980,26 @@ def _run_job(job_id: str) -> None:
                 pass
 
 
-@app.route("/")
-def index():
+def _serve_frontend(path: str = ""):
+    """Serve the built React frontend when available, fallback to Jinja template."""
+    if os.path.exists(DIST_INDEX_PATH):
+        # Prevent path traversal and serve fingerprinted assets directly
+        safe_path = os.path.normpath(path or "").lstrip("/")
+        if safe_path.startswith(".."):
+            safe_path = ""
+
+        candidate = os.path.join(FRONTEND_DIST_DIR, safe_path)
+        if safe_path and os.path.isfile(candidate):
+            return send_from_directory(FRONTEND_DIST_DIR, safe_path)
+        return send_from_directory(FRONTEND_DIST_DIR, "index.html")
+
     return render_template("index.html")
+
+
+@app.route("/", defaults={"path": ""})
+@app.route("/<path:path>")
+def index(path: str):
+    return _serve_frontend(path)
 
 
 @app.errorhandler(RequestEntityTooLarge)

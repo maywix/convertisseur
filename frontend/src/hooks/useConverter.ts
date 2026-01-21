@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import type { QueueItem, ConvertSettings, CompressSettings, MediaCategory, JobResponse } from '@/types'
+import { VIDEO_FORMATS, AUDIO_FORMATS, IMAGE_FORMATS } from '@/types'
 
 const MAX_CONCURRENT_UPLOADS = 8
 const POLL_INTERVAL_MS = 1500
@@ -12,6 +13,7 @@ export function useConverter() {
     const [queue, setQueue] = useState<QueueItem[]>([])
     const [currentAction, setCurrentAction] = useState<'convert' | 'compress'>('convert')
     const [isProcessing, setIsProcessing] = useState(false)
+    const [hasStarted, setHasStarted] = useState(false)
     const pollingRef = useRef<number | null>(null)
     const uploadingRef = useRef(false)
 
@@ -113,10 +115,11 @@ export function useConverter() {
         formData.append('action', item.action)
 
         if (item.action === 'convert') {
-            formData.append('format', item.targetFormat || '')
+            const targetFormat = item.targetFormat || convertSettings.format
+            formData.append('format', targetFormat)
 
             // GIF settings
-            if (convertSettings.category === 'video' && item.targetFormat === 'gif') {
+            if (convertSettings.category === 'video' && targetFormat === 'gif') {
                 formData.append('gif_speed', convertSettings.gifSpeed)
                 formData.append('gif_fps', convertSettings.gifFps)
                 formData.append('gif_resolution', convertSettings.gifResolution)
@@ -137,7 +140,7 @@ export function useConverter() {
                 if (convertSettings.imageMaxSize) {
                     formData.append('image_max_size', convertSettings.imageMaxSize)
                 }
-                if (item.targetFormat === 'ico' && convertSettings.icoSize) {
+                if (targetFormat === 'ico' && convertSettings.icoSize) {
                     formData.append('ico_size', convertSettings.icoSize)
                 }
             }
@@ -253,20 +256,20 @@ export function useConverter() {
         if (isProcessing || !canStart) return
 
         setIsProcessing(true)
+        setHasStarted(true)
         uploadingRef.current = true
 
-        // Update pending items with current settings
-        setQueue((prev) =>
-            prev.map((item) =>
-                item.status === 'pending'
-                    ? {
-                        ...item,
-                        action: currentAction,
-                        targetFormat: currentAction === 'convert' ? convertSettings.format : null,
-                    }
-                    : item
-            )
+        // Update pending items with current settings and reuse the same snapshot for uploads
+        const updatedQueue = queue.map((item) =>
+            item.status === 'pending'
+                ? {
+                    ...item,
+                    action: currentAction,
+                    targetFormat: currentAction === 'convert' ? convertSettings.format : null,
+                }
+                : item
         )
+        setQueue(updatedQueue)
 
         // Start polling
         if (!pollingRef.current) {
@@ -274,7 +277,7 @@ export function useConverter() {
         }
 
         // Get pending items
-        const pendingItems = queue.filter((item) => item.status === 'pending')
+        const pendingItems = updatedQueue.filter((item) => item.status === 'pending')
         let index = 0
         const activeUploads: Promise<void>[] = []
 
@@ -319,10 +322,18 @@ export function useConverter() {
     }, [])
 
     const setCategory = useCallback((category: MediaCategory) => {
+        const defaultFormat = category === 'video'
+            ? VIDEO_FORMATS[0]
+            : category === 'audio'
+                ? AUDIO_FORMATS[0]
+                : category === 'image'
+                    ? IMAGE_FORMATS[0]
+                    : ''
+
         setConvertSettings((prev) => ({
             ...prev,
             category,
-            format: '', // Reset format when category changes
+            format: defaultFormat,
         }))
     }, [])
 
@@ -337,6 +348,7 @@ export function useConverter() {
         convertSettings,
         compressSettings,
         isProcessing,
+        hasStarted,
         // Computed
         pendingCount,
         completedCount,

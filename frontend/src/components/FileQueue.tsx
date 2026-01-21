@@ -3,6 +3,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { UploadZone } from './UploadZone'
 import { FileItem } from './FileItem'
 import type { QueueItem } from '@/types'
+import { IconDownload, IconTrash } from '@/components/icons'
 
 interface FileQueueProps {
     queue: QueueItem[]
@@ -32,17 +33,19 @@ export function FileQueue({ queue, onFilesAdded, onRemove, onClearAll, hasComple
                         size="sm"
                         onClick={handleDownloadAll}
                         disabled={!hasCompletedFiles}
-                        className="text-xs"
+                        className="text-xs gap-2"
                     >
-                        📦 Tout télécharger
+                        <IconDownload size={14} />
+                        Tout télécharger
                     </Button>
                     <Button
                         variant="ghost"
                         size="sm"
                         onClick={onClearAll}
-                        className="text-xs text-destructive hover:text-destructive"
+                        className="text-xs text-destructive hover:text-destructive gap-2"
                     >
-                        🗑️ Tout effacer
+                        <IconTrash size={14} />
+                        Tout effacer
                     </Button>
                 </div>
             </div>

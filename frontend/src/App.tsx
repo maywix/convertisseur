@@ -10,6 +10,7 @@ function App() {
     convertSettings,
     compressSettings,
     isProcessing,
+    hasStarted,
     completedCount,
     totalCount,
     hasCompletedFiles,
@@ -25,17 +26,22 @@ function App() {
     setCompressSettings,
   } = useConverter()
 
+  // Show progress bar only after the user has started at least once
+  const showProgress = hasStarted && totalCount > 0
+
   return (
     <div className="dark min-h-screen bg-background text-foreground">
       {/* Total Progress Bar */}
-      <TotalProgress
-        completed={completedCount}
-        total={totalCount}
-        isProcessing={isProcessing}
-      />
+      {showProgress && (
+        <TotalProgress
+          completed={completedCount}
+          total={totalCount}
+          isProcessing={isProcessing}
+        />
+      )}
 
       {/* Main Content */}
-      <div className={`max-w-6xl mx-auto px-4 py-6 ${totalCount > 0 ? 'pt-20' : ''}`}>
+      <div className={`max-w-5xl mx-auto px-6 lg:px-10 py-6 ${showProgress ? 'pt-20' : ''}`}>
         {/* Header */}
         <header className="text-center mb-8">
           <h1 className="text-3xl md:text-4xl font-bold tracking-tight">
@@ -47,7 +53,7 @@ function App() {
         </header>
 
         {/* App Container */}
-        <div className="grid lg:grid-cols-[300px_1fr] gap-6 items-start">
+        <div className="grid lg:grid-cols-[320px_1fr] gap-8 items-start max-w-5xl mx-auto">
           {/* Config Panel */}
           <div className="order-2 lg:order-1">
             <ConfigPanel
