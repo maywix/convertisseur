@@ -20,6 +20,21 @@ document.addEventListener('DOMContentLoaded', () => {
     const inputPercent = document.getElementById('input-percent');
     const inputRes = document.getElementById('input-res');
 
+    // Image resolution controls
+    const imageResSelect = document.getElementById('image-res-select');
+    const imageResCustomWrapper = document.getElementById('image-res-custom-wrapper');
+    const imageResCustomInput = document.getElementById('image-res-custom');
+
+    const icoSettings = document.getElementById('ico-settings');
+    const icoSizeSelect = document.getElementById('ico-size-select');
+    const icoCustomWrapper = document.getElementById('ico-custom-wrapper');
+    const icoCustomInput = document.getElementById('ico-custom-size');
+
+    // Compress image resolution controls
+    const compressImageResSelect = document.getElementById('compress-image-res-select');
+    const compressImageResCustomWrapper = document.getElementById('compress-image-res-custom-wrapper');
+    const compressImageResCustomInput = document.getElementById('compress-image-res-custom');
+
     // Advanced Mode Elements
     const advancedToggle = document.getElementById('advanced-toggle');
     const advancedSettings = document.getElementById('advanced-settings');
@@ -126,11 +141,70 @@ document.addEventListener('DOMContentLoaded', () => {
         } else {
             imageQualitySettings.classList.add('hidden');
         }
+
+        updateImageConditionalUI();
+    }
+
+    function toggleCustomInput(selectEl, wrapperEl) {
+        if (!selectEl || !wrapperEl) return;
+        if (selectEl.value === 'custom') {
+            wrapperEl.classList.remove('hidden');
+        } else {
+            wrapperEl.classList.add('hidden');
+        }
+    }
+
+    function getMaxDimension(selectEl, customInput) {
+        if (!selectEl) return null;
+        const val = selectEl.value;
+        if (!val || val === 'original') return null;
+        if (val === 'custom') {
+            if (!customInput) return null;
+            const customVal = parseInt(customInput.value, 10);
+            return Number.isFinite(customVal) && customVal > 0 ? customVal : null;
+        }
+        const parsed = parseInt(val, 10);
+        return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+    }
+
+    function getIcoSizeValue() {
+        if (!icoSizeSelect) return null;
+        const val = icoSizeSelect.value;
+        if (val === 'custom') {
+            const customVal = parseInt(icoCustomInput?.value || '', 10);
+            return Number.isFinite(customVal) && customVal > 0 ? customVal : null;
+        }
+        if (val === 'original') return 'original';
+        const parsed = parseInt(val, 10);
+        return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+    }
+
+    function updateImageConditionalUI() {
+        toggleCustomInput(imageResSelect, imageResCustomWrapper);
+        toggleCustomInput(compressImageResSelect, compressImageResCustomWrapper);
+        toggleCustomInput(icoSizeSelect, icoCustomWrapper);
+
+        const isImageConvert = currentAction === 'convert' && selectedCategory === 'image';
+        if (icoSettings) {
+            if (isImageConvert && formatSelect.value === 'ico') {
+                icoSettings.classList.remove('hidden');
+            } else {
+                icoSettings.classList.add('hidden');
+            }
+        }
     }
 
     formatSelect.addEventListener('change', () => {
         updateGifSettingsVisibility();
         updateUI();
+    });
+
+    [imageResSelect, icoSizeSelect, compressImageResSelect].forEach(el => {
+        el?.addEventListener('change', updateImageConditionalUI);
+    });
+
+    [imageResCustomInput, icoCustomInput, compressImageResCustomInput].forEach(el => {
+        el?.addEventListener('input', () => {});
     });
 
     // Tab switching
@@ -151,6 +225,9 @@ document.addEventListener('DOMContentLoaded', () => {
             updateGifSettingsVisibility();
         });
     });
+
+    // Initialize UI state
+    updateImageConditionalUI();
 
     // Compression mode radio handlers
     compModeRadios.forEach(radio => {
@@ -469,6 +546,21 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 }
             }
+
+            // Image resize params (convert mode)
+            if (selectedCategory === 'image') {
+                const maxDim = getMaxDimension(imageResSelect, imageResCustomInput);
+                if (maxDim) {
+                    formData.append('image_max_size', String(maxDim));
+                }
+
+                if (targetFormat === 'ico') {
+                    const icoVal = getIcoSizeValue();
+                    if (icoVal) {
+                        formData.append('ico_size', String(icoVal));
+                    }
+                }
+            }
         } else {
             // Compress mode
             let mode = 'crf';
@@ -502,6 +594,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (aBitrate) formData.append('audio_bitrate', aBitrate);
                 if (aChannels) formData.append('audio_channels', aChannels);
                 if (aRate) formData.append('audio_sample_rate', aRate);
+            }
+
+            // Image resize params (compress mode)
+            const maxDimCompress = getMaxDimension(compressImageResSelect, compressImageResCustomInput);
+            if (maxDimCompress) {
+                formData.append('image_max_size', String(maxDimCompress));
             }
         }
 

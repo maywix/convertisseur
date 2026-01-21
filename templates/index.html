@@ -101,6 +101,55 @@
                                 </select>
                             </div>
                             <p class="settings-note">💡 La transparence est préservée automatiquement (PNG, WebP)</p>
+
+                            <div class="input-row">
+                                <div class="input-group">
+                                    <label>Résolution</label>
+                                    <select id="image-res-select">
+                                        <option value="original" selected>Originale (aucun redimensionnement)</option>
+                                        <option value="3840">4K (3840 px)</option>
+                                        <option value="2560">QHD (2560 px)</option>
+                                        <option value="1920">1080p (1920 px)</option>
+                                        <option value="1440">1440 px</option>
+                                        <option value="1280">1280 px</option>
+                                        <option value="1080">1080 px</option>
+                                        <option value="720">720 px</option>
+                                        <option value="480">480 px</option>
+                                        <option value="360">360 px</option>
+                                        <option value="256">256 px (favicon)</option>
+                                        <option value="custom">Custom</option>
+                                    </select>
+                                </div>
+                                <div class="input-group hidden" id="image-res-custom-wrapper">
+                                    <label>Custom (max côté)</label>
+                                    <input type="number" id="image-res-custom" placeholder="Ex: 2048" min="16" max="8000">
+                                </div>
+                            </div>
+
+                            <div id="ico-settings" class="settings-group hidden">
+                                <h4>Options ICO / Favicon</h4>
+                                <div class="input-row">
+                                    <div class="input-group">
+                                        <label>Taille cible</label>
+                                        <select id="ico-size-select">
+                                            <option value="256" selected>256 px (recommandé)</option>
+                                            <option value="128">128 px</option>
+                                            <option value="64">64 px</option>
+                                            <option value="48">48 px</option>
+                                            <option value="32">32 px</option>
+                                            <option value="24">24 px</option>
+                                            <option value="16">16 px</option>
+                                            <option value="original">Original (capé à 256 px)</option>
+                                            <option value="custom">Custom</option>
+                                        </select>
+                                    </div>
+                                    <div class="input-group hidden" id="ico-custom-wrapper">
+                                        <label>Custom</label>
+                                        <input type="number" id="ico-custom-size" placeholder="16-256" min="16" max="256">
+                                    </div>
+                                </div>
+                                <p class="settings-note">Limite ICO: 256 px max. L'image est conservée au format carré sans l'agrandir.</p>
+                            </div>
                         </div>
                     </div>
 
@@ -224,6 +273,34 @@
                                     <option value="48000">48000</option>
                                 </select>
                             </div>
+                        </div>
+
+                        <div id="compress-image-options" class="settings-group">
+                            <h4>Options Image</h4>
+                            <div class="input-row">
+                                <div class="input-group">
+                                    <label>Résolution</label>
+                                    <select id="compress-image-res-select">
+                                        <option value="original" selected>Originale (aucun redimensionnement)</option>
+                                        <option value="3840">4K (3840 px)</option>
+                                        <option value="2560">QHD (2560 px)</option>
+                                        <option value="1920">1080p (1920 px)</option>
+                                        <option value="1440">1440 px</option>
+                                        <option value="1280">1280 px</option>
+                                        <option value="1080">1080 px</option>
+                                        <option value="720">720 px</option>
+                                        <option value="480">480 px</option>
+                                        <option value="360">360 px</option>
+                                        <option value="256">256 px (favicon)</option>
+                                        <option value="custom">Custom</option>
+                                    </select>
+                                </div>
+                                <div class="input-group hidden" id="compress-image-res-custom-wrapper">
+                                    <label>Custom (max côté)</label>
+                                    <input type="number" id="compress-image-res-custom" placeholder="Ex: 2048" min="16" max="8000">
+                                </div>
+                            </div>
+                            <p class="settings-note">S'applique uniquement aux images. Aucun redimensionnement si "Originale".</p>
                         </div>
                     </div>
                 </div>

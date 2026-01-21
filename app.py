@@ -18,7 +18,7 @@ if os.path.isdir(LIBS_DIR) and LIBS_DIR not in sys.path:
     sys.path.insert(0, LIBS_DIR)
 
 from flask import Flask, g, jsonify, make_response, render_template, request, send_file
-from PIL import Image
+from PIL import Image, ImageOps
 from pypdf import PdfReader, PdfWriter
 from werkzeug.utils import secure_filename
 
@@ -72,6 +72,9 @@ IMAGE_EXTENSIONS = {
     ".raw", ".cr2", ".nef", ".arw", ".dng", ".orf", ".rw2", ".pef",
     ".tga", ".sgi", ".qtif", ".pict", ".icns"
 }
+
+_RESAMPLING = getattr(Image, "Resampling", Image)
+_LANCZOS = getattr(_RESAMPLING, "LANCZOS", getattr(Image, "LANCZOS", Image.BICUBIC))
 
 
 def _setup_logging() -> None:
@@ -631,6 +634,20 @@ def _process_pdf(
     raise ValueError("action non supportee")
 
 
+def _resize_preserve_aspect(img: Image.Image, max_dim: int) -> Image.Image:
+    """Downscale image to fit within max_dim while keeping aspect ratio. No upscaling."""
+    if not max_dim or max_dim <= 0:
+        return img
+
+    width, height = img.size
+    if width <= max_dim and height <= max_dim:
+        return img
+
+    target = (max_dim, max_dim)
+    resized = ImageOps.contain(img, target, method=_LANCZOS)
+    return resized
+
+
 def _process_image(
     *,
     input_path: str,
@@ -644,6 +661,17 @@ def _process_image(
     params = params or {}
     
     with Image.open(input_path) as img:
+        # Optional resize (applies to both convert & compress)
+        target_max = None
+        if params.get("image_max_size") is not None:
+            try:
+                target_max = int(str(params.get("image_max_size")).strip())
+            except ValueError:
+                target_max = None
+
+        if target_max and target_max > 0:
+            img = _resize_preserve_aspect(img, target_max)
+
         # Check if image has transparency
         has_alpha = img.mode in ('RGBA', 'LA', 'PA') or (img.mode == 'P' and 'transparency' in img.info)
         
@@ -714,6 +742,24 @@ def _process_image(
             if tf == "pdf":
                 rgb_img = img.convert("RGB") if has_alpha else img
                 rgb_img.save(output_path, "PDF", resolution=100.0)
+                return
+
+            if tf == "ico":
+                ico_raw = params.get("ico_size")
+                ico_size: int | None
+                if isinstance(ico_raw, str) and ico_raw.strip().lower() == "original":
+                    ico_size = min(max(img.size), 256)
+                else:
+                    try:
+                        ico_size = int(ico_raw) if ico_raw is not None else 256
+                    except (TypeError, ValueError):
+                        ico_size = 256
+
+                ico_size = max(16, min(ico_size or 256, 256))
+                ico_img = _resize_preserve_aspect(img, ico_size)
+                if ico_img.mode not in ("RGBA", "LA"):
+                    ico_img = ico_img.convert("RGBA")
+                ico_img.save(output_path, format="ICO", sizes=[(ico_size, ico_size)])
                 return
 
             # Handle transparency when converting
@@ -969,6 +1015,10 @@ def create_job():
         params["gif_resolution"] = request.form.get("gif_resolution")
     if request.form.get("image_quality"):
         params["image_quality"] = request.form.get("image_quality")
+    if request.form.get("image_max_size"):
+        params["image_max_size"] = request.form.get("image_max_size")
+    if request.form.get("ico_size"):
+        params["ico_size"] = request.form.get("ico_size")
 
     if _db_count_active_for_session(g.session_id) >= MAX_ENQUEUED_JOBS:
         return jsonify({"error": "trop de jobs en attente"}), 429
