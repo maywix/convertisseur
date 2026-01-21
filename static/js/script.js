@@ -473,7 +473,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-    const MAX_CONCURRENT_UPLOADS = 6;
+    const MAX_CONCURRENT_UPLOADS = 8;
 
     async function processQueue() {
         // Filter pending items
