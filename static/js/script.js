@@ -105,8 +105,9 @@ document.addEventListener('DOMContentLoaded', () => {
             formatSelect.appendChild(opt);
         });
 
-        updateGifSettingsVisibility();
-        updateUI();
+        // Trigger change event to sync all dependent UI
+        const changeEvent = new Event('change', { bubbles: true });
+        formatSelect.dispatchEvent(changeEvent);
     }
 
     function updateGifSettingsVisibility() {
