@@ -4,6 +4,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const fileListEl = document.getElementById('file-list');
     const startBtn = document.getElementById('start-btn');
     const clearBtn = document.getElementById('clear-btn');
+    const downloadAllBtn = document.getElementById('download-all-btn');
     const fileCountEl = document.getElementById('file-count');
     const template = document.getElementById('file-item-template');
 
@@ -12,6 +13,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const compressSettings = document.getElementById('compress-settings');
     const formatSelect = document.getElementById('global-format-select');
     const compModeRadios = document.querySelectorAll('input[name="comp-mode"]');
+    const categoryButtons = document.querySelectorAll('.cat-btn');
 
     const inputCrf = document.getElementById('input-crf');
     const inputSize = document.getElementById('input-size');
@@ -22,10 +24,17 @@ document.addEventListener('DOMContentLoaded', () => {
     const advancedToggle = document.getElementById('advanced-toggle');
     const advancedSettings = document.getElementById('advanced-settings');
     const gifSettings = document.getElementById('gif-settings');
+    const imageQualitySettings = document.getElementById('image-quality-settings');
 
     let queue = [];
     let currentAction = 'convert';
+    let selectedCategory = null;
     let isProcessing = false;
+
+    // Format definitions
+    const videoFormats = ["mp4", "mov", "avi", "mkv", "webm", "wmv", "flv", "m4v", "mpeg", "gif", "ts"];
+    const audioFormats = ["mp3", "wav", "m4a", "flac", "aac", "ogg", "wma", "opus"];
+    const imageFormats = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff", "ico"];
 
     const imageExtensions = [
         "png", "jpg", "jpeg", "gif", "tiff", "tif", "bmp", "psd",
@@ -55,83 +64,73 @@ document.addEventListener('DOMContentLoaded', () => {
         return 'unknown';
     }
 
-    function addOptGroup(label, formats) {
-        const group = document.createElement('optgroup');
-        group.label = label;
-        formats.forEach(fmt => {
+    // Category button handlers
+    categoryButtons.forEach(btn => {
+        btn.addEventListener('click', () => {
+            categoryButtons.forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            selectedCategory = btn.dataset.category;
+            updateFormatOptions();
+        });
+    });
+
+    function updateFormatOptions() {
+        formatSelect.innerHTML = '';
+        
+        if (!selectedCategory) {
+            formatSelect.innerHTML = '<option value="" disabled selected>Sélectionnez un type d\'abord...</option>';
+            return;
+        }
+
+        let formats = [];
+        let label = '';
+        
+        if (selectedCategory === 'video') {
+            formats = videoFormats;
+            label = 'Formats Vidéo';
+        } else if (selectedCategory === 'audio') {
+            formats = audioFormats;
+            label = 'Formats Audio';
+        } else if (selectedCategory === 'image') {
+            formats = imageFormats;
+            label = 'Formats Image';
+        }
+
+        // Auto-select the first format option for better UX
+        formats.forEach((fmt, index) => {
             const opt = document.createElement('option');
             opt.value = fmt;
             opt.textContent = fmt.toUpperCase();
-            group.appendChild(opt);
+            if (index === 0) opt.selected = true;
+            formatSelect.appendChild(opt);
         });
-        formatSelect.appendChild(group);
-    }
 
-    function updateFormatOptions() {
-        const currentVal = formatSelect.value;
-        formatSelect.innerHTML = '<option value="">Choisir format...</option>';
-
-        let hasImage = false;
-        let hasVideo = false;
-        let hasAudio = false;
-
-        if (queue.length > 0) {
-            queue.forEach(item => {
-                const name = item.file ? item.file.name : (item.element.querySelector('.file-name').textContent);
-                const type = getFileType(name);
-                if (type === 'image') hasImage = true;
-                if (type === 'video') hasVideo = true;
-                if (type === 'audio') hasAudio = true;
-            });
-        }
-
-        // If empty or mixed specific combos, show what makes sense
-        if (queue.length === 0) {
-            addOptGroup('Images', imageExtensions);
-            addOptGroup('Video', videoExtensions);
-            addOptGroup('Audio', audioExtensions);
-        } else if (hasImage && !hasVideo && !hasAudio) {
-            addOptGroup('Images', imageExtensions);
-        } else if (hasVideo) {
-            addOptGroup('Video', videoExtensions);
-            addOptGroup('Audio', audioExtensions);
-        } else if (hasAudio) {
-            addOptGroup('Audio', audioExtensions);
-        } else {
-            // Fallback for mixed weirdness
-            addOptGroup('Images', imageExtensions);
-            addOptGroup('Video', videoExtensions);
-            addOptGroup('Audio', audioExtensions);
-        }
-
-        if (currentVal) {
-            // Verify if currentVal is still valid
-            const exists = Array.from(formatSelect.options).some(o => o.value === currentVal);
-            if (exists) formatSelect.value = currentVal;
-            else formatSelect.value = "";
-        }
         updateGifSettingsVisibility();
+        updateUI();
     }
 
     function updateGifSettingsVisibility() {
         const format = formatSelect.value;
-        const hasVideo = queue.some(item => {
-            const name = item.file ? item.file.name : (item.element ? item.element.querySelector('.file-name').textContent : "");
-            return getFileType(name) === 'video';
-        });
-
-        if (currentAction === 'convert' && format === 'gif' && hasVideo) {
+        // GIF settings for video->GIF conversion
+        if (currentAction === 'convert' && format === 'gif' && selectedCategory === 'video') {
             gifSettings.classList.remove('hidden');
         } else {
             gifSettings.classList.add('hidden');
         }
+        // Image quality settings for image category
+        if (currentAction === 'convert' && selectedCategory === 'image') {
+            imageQualitySettings.classList.remove('hidden');
+        } else {
+            imageQualitySettings.classList.add('hidden');
+        }
     }
 
-    formatSelect.addEventListener('change', updateGifSettingsVisibility);
+    formatSelect.addEventListener('change', () => {
+        updateGifSettingsVisibility();
+        updateUI();
+    });
 
-    // Initialize with all
-    updateFormatOptions();
-
+    // Tab switching
     tabs.forEach(tab => {
         tab.addEventListener('click', () => {
             tabs.forEach(t => t.classList.remove('active'));
@@ -150,6 +149,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
+    // Compression mode radio handlers
     compModeRadios.forEach(radio => {
         radio.addEventListener('change', (e) => {
             inputCrf.classList.add('hidden');
@@ -170,6 +170,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const percentVal = document.getElementById('percent-val');
     percentSlider.addEventListener('input', (e) => percentVal.textContent = e.target.value);
 
+    // Advanced toggle (only for compress mode)
     advancedToggle.addEventListener('change', (e) => {
         if (e.target.checked) {
             advancedSettings.classList.remove('hidden');
@@ -178,6 +179,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+    // Drag and drop
     dropZone.addEventListener('click', () => fileInput.click());
     dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.style.borderColor = 'var(--accent)'; });
     dropZone.addEventListener('dragleave', () => { dropZone.style.borderColor = 'var(--border)'; });
@@ -189,13 +191,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
     fileInput.addEventListener('change', (e) => {
         if (e.target.files.length) addFilesToQueue(e.target.files);
-        fileInput.value = ''; // Reset to allow re-uploading same file
+        fileInput.value = '';
     });
 
-    function addFilesToQueue(files) {
+    async function addFilesToQueue(files) {
         if (queue.length === 0) fileListEl.innerHTML = '';
 
-        Array.from(files).forEach(file => {
+        for (const file of Array.from(files)) {
             const id = Math.random().toString(36).substring(7);
 
             const clone = template.content.cloneNode(true);
@@ -205,6 +207,36 @@ document.addEventListener('DOMContentLoaded', () => {
             el.querySelector('.file-meta').textContent = formatSize(file.size) + ' • En attente';
 
             el.querySelector('.remove-btn').addEventListener('click', () => removeFile(id));
+
+            // Generate thumbnail
+            const thumbImg = el.querySelector('.thumb-img');
+            const thumbPlaceholder = el.querySelector('.thumb-placeholder');
+            
+            const fileType = getFileType(file.name);
+            
+            if (fileType === 'image') {
+                // For images, generate thumbnail from file
+                try {
+                    const thumbUrl = await generateImageThumbnail(file);
+                    thumbImg.src = thumbUrl;
+                    thumbImg.style.display = 'block';
+                    thumbPlaceholder.style.display = 'none';
+                } catch (e) {
+                    thumbPlaceholder.textContent = '🖼️';
+                }
+            } else if (fileType === 'video') {
+                thumbPlaceholder.textContent = '🎬';
+                thumbPlaceholder.style.display = 'flex';
+                thumbImg.style.display = 'none';
+            } else if (fileType === 'audio') {
+                thumbPlaceholder.textContent = '🎵';
+                thumbPlaceholder.style.display = 'flex';
+                thumbImg.style.display = 'none';
+            } else {
+                thumbPlaceholder.textContent = '📄';
+                thumbPlaceholder.style.display = 'flex';
+                thumbImg.style.display = 'none';
+            }
 
             fileListEl.appendChild(el);
 
@@ -216,9 +248,43 @@ document.addEventListener('DOMContentLoaded', () => {
                 element: el,
                 existing: false
             });
-        });
+        }
 
         updateUI();
+    }
+
+    function generateImageThumbnail(file) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const img = new Image();
+                img.onload = () => {
+                    const canvas = document.createElement('canvas');
+                    const size = 90;
+                    let width = img.width;
+                    let height = img.height;
+                    
+                    // Calculate aspect ratio
+                    if (width > height) {
+                        height = (height / width) * size;
+                        width = size;
+                    } else {
+                        width = (width / height) * size;
+                        height = size;
+                    }
+                    
+                    canvas.width = width;
+                    canvas.height = height;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0, width, height);
+                    resolve(canvas.toDataURL('image/jpeg', 0.7));
+                };
+                img.onerror = reject;
+                img.src = e.target.result;
+            };
+            reader.onerror = reject;
+            reader.readAsDataURL(file);
+        });
     }
 
     function removeFile(id) {
@@ -233,19 +299,55 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    clearBtn.addEventListener('click', () => {
+    clearBtn.addEventListener('click', async () => {
+        if (!confirm('Supprimer tous les fichiers (originaux et convertis) du serveur ?')) {
+            return;
+        }
+        
+        // Call server to delete all files
+        try {
+            const resp = await fetch('/clear-all', { method: 'DELETE' });
+            const data = await resp.json();
+            console.log(`Deleted ${data.deleted} jobs from server`);
+        } catch (e) {
+            console.error('Failed to clear server files:', e);
+        }
+        
+        // Clear local queue
         queue = [];
         fileListEl.innerHTML = '<div class="empty-state">Aucun fichier en attente</div>';
         updateUI();
     });
 
+    // Download All button
+    downloadAllBtn.addEventListener('click', () => {
+        // Check if there are any completed files
+        const hasCompleted = queue.some(x => x.status === 'done');
+        if (!hasCompleted) {
+            alert('Aucun fichier terminé à télécharger');
+            return;
+        }
+        
+        // Trigger download
+        window.location.href = '/download-all';
+    });
+
     function updateUI() {
-        updateFormatOptions();
         fileCountEl.textContent = `(${queue.length})`;
         const hasNewFiles = queue.some(x => x.file && x.status === 'pending');
-        const convertOk = currentAction !== 'convert' || !!formatSelect.value;
-        startBtn.disabled = !hasNewFiles || isProcessing || !convertOk;
-        updateGifSettingsVisibility();
+        const hasCompleted = queue.some(x => x.status === 'done');
+        
+        let canStart = false;
+        if (currentAction === 'convert') {
+            // For convert: need category selected AND format selected
+            canStart = hasNewFiles && selectedCategory && formatSelect.value;
+        } else {
+            // For compress: just need files
+            canStart = hasNewFiles;
+        }
+        
+        startBtn.disabled = !canStart || isProcessing;
+        downloadAllBtn.disabled = !hasCompleted;
     }
 
     function formatSize(bytes) {
@@ -258,45 +360,117 @@ document.addEventListener('DOMContentLoaded', () => {
 
     startBtn.addEventListener('click', () => {
         if (isProcessing || queue.length === 0) return;
-        isProcessing = true;
-        startBtn.disabled = true;
-        startBtn.textContent = "Traitement en cours...";
 
-        processNextInQueue(0).catch(() => {
-            isProcessing = false;
-            startBtn.textContent = "Lancer le traitement";
-            updateUI();
+        // Snapshot current action/format so user changes mid-flight don't break uploads
+        const actionSnapshot = currentAction;
+        const formatSnapshot = formatSelect.value;
+
+        if (actionSnapshot === 'convert' && !formatSnapshot) {
+            return; // Guard: UI should already prevent this
+        }
+
+        queue.forEach(item => {
+            if (item.status === 'pending') {
+                item.action = actionSnapshot;
+                item.targetFormat = actionSnapshot === 'convert' ? formatSnapshot : null;
+            }
+        });
+
+        isProcessing = true;
+        
+        // Start global polling if not already running
+        startGlobalPolling();
+        
+        startBtn.disabled = true;
+        startBtn.textContent = "Conversion en cours...";
+
+        processQueue().finally(() => {
+            // Processing/Uploads submitted
+             isProcessing = false;
+             // We keep button disabled if logic requires, but usually we allow more
+             // In this flow, we wait for polling to finish to reset UI fully?
+             // Or we let user add more files.
         });
     });
 
-    async function processNextInQueue(index) {
-        if (index >= queue.length) {
-            isProcessing = false;
-            startBtn.disabled = false;
-            startBtn.textContent = "Lancer le traitement";
-            alert("Traitement de la file termine !");
-            return;
-        }
+    const MAX_CONCURRENT_UPLOADS = 6;
 
-        const item = queue[index];
-        if (item.status === 'done' || item.status === 'error' || item.existing) {
-            processNextInQueue(index + 1);
-            return;
+    async function processQueue() {
+        // Filter pending items
+        const pendingItems = queue.filter(item => item.status === 'pending');
+        if (pendingItems.length === 0) return;
+
+        let index = 0;
+        const activeUploads = [];
+
+        while (index < pendingItems.length || activeUploads.length > 0) {
+            while (activeUploads.length < MAX_CONCURRENT_UPLOADS && index < pendingItems.length) {
+                const p = uploadItem(pendingItems[index++]).then(() => {
+                    activeUploads.splice(activeUploads.indexOf(p), 1);
+                });
+                activeUploads.push(p);
+            }
+            if (activeUploads.length === 0) break;
+            await Promise.race(activeUploads);
         }
+    }
+
+    async function uploadItem(item) {
+        if (item.status !== 'pending') return;
 
         const metaEl = item.element.querySelector('.file-meta');
         const barEl = item.element.querySelector('.progress-bar-fill');
+
+        const action = item.action || currentAction;
+        const targetFormat = item.targetFormat || formatSelect.value;
+        
+        // Validate format before upload for convert action
+        if (action === 'convert' && !targetFormat) {
+            console.warn('Upload blocked: missing format', { action, targetFormat, currentAction, formatSelectValue: formatSelect.value, file: item.file?.name });
+            item.status = 'error';
+            barEl.style.backgroundColor = "var(--danger)";
+            metaEl.textContent = "Erreur: format de destination manquant (aucun format)";
+            return;
+        }
+        
         metaEl.textContent = "envoi...";
         barEl.style.width = "25%";
 
         const formData = new FormData();
         formData.append('file', item.file);
-        formData.append('action', currentAction);
+        formData.append('action', action);
 
-        if (currentAction === 'convert') {
-            formData.append('format', formatSelect.value);
+        if (action === 'convert') {
+            formData.append('format', targetFormat);
+
+            // GIF params
+            if (gifSettings && !gifSettings.classList.contains('hidden')) {
+                const gSpeedEl = document.getElementById('gif-speed');
+                const gFpsEl = document.getElementById('gif-fps');
+                const gResEl = document.getElementById('gif-resolution');
+
+                if (gSpeedEl && gSpeedEl.value) formData.append('gif_speed', gSpeedEl.value);
+                if (gFpsEl && gFpsEl.value) formData.append('gif_fps', gFpsEl.value);
+                if (gResEl && gResEl.value) formData.append('gif_resolution', gResEl.value);
+            }
+            
+            // Image quality params
+            if (imageQualitySettings && !imageQualitySettings.classList.contains('hidden')) {
+                const imageQualitySelect = document.getElementById('image-quality');
+                if (imageQualitySelect) {
+                    const qVal = imageQualitySelect.value;
+                    if (qVal === 'lossless') {
+                        formData.append('lossless', 'true');
+                    } else {
+                        formData.append('image_quality', qVal);
+                    }
+                }
+            }
         } else {
-            const mode = document.querySelector('input[name="comp-mode"]:checked').value;
+            // Compress mode
+            let mode = 'crf';
+            const checked = document.querySelector('input[name="comp-mode"]:checked');
+            if (checked) mode = checked.value;
             formData.append('comp_mode', mode);
 
             let val = '';
@@ -311,35 +485,25 @@ document.addEventListener('DOMContentLoaded', () => {
                 val = document.getElementById('res-select').value;
             }
             formData.append('comp_value', val);
-        }
 
-        // Append Advanced Params if active
-        if (advancedToggle.checked) {
-            const fps = document.getElementById('adv-fps').value;
-            const preset = document.getElementById('adv-preset').value;
-            const aBitrate = document.getElementById('adv-audio-bitrate').value;
-            const aChannels = document.getElementById('adv-audio-channels').value;
-            const aRate = document.getElementById('adv-audio-rate').value;
+            // Advanced params for compress mode only
+            if (advancedToggle.checked) {
+                const fps = document.getElementById('adv-fps').value;
+                const preset = document.getElementById('adv-preset').value;
+                const aBitrate = document.getElementById('adv-audio-bitrate').value;
+                const aChannels = document.getElementById('adv-audio-channels').value;
+                const aRate = document.getElementById('adv-audio-rate').value;
 
-            if (fps) formData.append('fps', fps);
-            if (preset) formData.append('video_preset', preset);
-            if (aBitrate) formData.append('audio_bitrate', aBitrate);
-            if (aChannels) formData.append('audio_channels', aChannels);
-            if (aRate) formData.append('audio_sample_rate', aRate);
-        }
-
-        // Append GIF params if visible/active
-        if (!gifSettings.classList.contains('hidden')) {
-            const gSpeed = document.getElementById('gif-speed').value;
-            const gFps = document.getElementById('gif-fps').value;
-            const gRes = document.getElementById('gif-resolution').value;
-
-            if (gSpeed) formData.append('gif_speed', gSpeed);
-            if (gFps) formData.append('gif_fps', gFps);
-            if (gRes) formData.append('gif_resolution', gRes);
+                if (fps) formData.append('fps', fps);
+                if (preset) formData.append('video_preset', preset);
+                if (aBitrate) formData.append('audio_bitrate', aBitrate);
+                if (aChannels) formData.append('audio_channels', aChannels);
+                if (aRate) formData.append('audio_sample_rate', aRate);
+            }
         }
 
         try {
+            console.debug('Uploading item', { action, targetFormat, name: item.file?.name });
             const response = await fetch('/jobs', {
                 method: 'POST',
                 body: formData
@@ -350,8 +514,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 item.jobId = data.job_id;
                 item.status = 'queued';
                 barEl.style.width = "35%";
-                metaEl.textContent = "en attente...";
-                await pollJobUntilDone(item);
+                metaEl.textContent = "en file d'attente...";
+                // No await pollJob here!
             } else {
                 throw new Error(data.error);
             }
@@ -361,54 +525,82 @@ document.addEventListener('DOMContentLoaded', () => {
             metaEl.textContent = "Erreur: " + error.message;
             metaEl.style.color = "var(--danger)";
         }
-
-        processNextInQueue(index + 1);
     }
 
-    async function pollJobUntilDone(item) {
-        const metaEl = item.element.querySelector('.file-meta');
-        const barEl = item.element.querySelector('.progress-bar-fill');
+    let pollingInterval = null;
+    function startGlobalPolling() {
+        if (pollingInterval) return;
+        pollingInterval = setInterval(updateAllJobs, 1500);
+    }
 
-        const jobId = item.jobId;
-        if (!jobId) return;
+    async function updateAllJobs() {
+        // Find items that need updates
+        const activeItems = queue.filter(item => 
+            (item.status === 'queued' || item.status === 'processing') && item.jobId
+        );
+        
+        if (activeItems.length === 0 && !isProcessing) {
+            // Stop polling if nothing is active and we are not currently uploading
+            // Only stop if ALL done
+            const anyPending = queue.some(x => x.status === 'pending');
+            if (!anyPending) {
+                clearInterval(pollingInterval);
+                pollingInterval = null;
+                startBtn.disabled = false;
+                startBtn.textContent = "Lancer le traitement";
+                updateUI();
+                return;
+            }
+        }
+        
+        if (activeItems.length === 0) return;
 
-        while (true) {
-            const resp = await fetch(`/jobs/${jobId}`);
+        try {
+            const resp = await fetch('/jobs?limit=200');
+            if(!resp.ok) return;
             const data = await resp.json();
-            if (!resp.ok) {
-                throw new Error(data.error || 'erreur');
-            }
+            const jobsMap = new Map();
+            (data.jobs || []).forEach(j => jobsMap.set(j.id, j));
 
-            if (data.status === 'queued') {
-                metaEl.textContent = "en attente...";
-                barEl.style.width = "40%";
-            } else if (data.status === 'processing') {
-                metaEl.textContent = "traitement...";
-                barEl.style.width = "70%";
-            } else if (data.status === 'done') {
-                item.status = 'done';
-                barEl.style.width = "100%";
-                barEl.style.backgroundColor = "var(--success)";
-                metaEl.textContent = "termine";
-                metaEl.style.color = "var(--success)";
+            activeItems.forEach(item => {
+                const job = jobsMap.get(item.jobId);
+                if (!job) return;
 
-                const dlBtn = item.element.querySelector('.download-btn');
-                dlBtn.href = data.download_url;
-                dlBtn.classList.remove('hidden');
-                if (data.output_filename) {
-                    dlBtn.setAttribute('download', data.output_filename);
+                const metaEl = item.element.querySelector('.file-meta');
+                const barEl = item.element.querySelector('.progress-bar-fill');
+
+                if (job.status === 'processing') {
+                    if (item.status !== 'processing') {
+                         item.status = 'processing';
+                         metaEl.textContent = "traitement en cours...";
+                         barEl.style.width = "70%";
+                    }
+                } else if (job.status === 'done') {
+                    item.status = 'done';
+                    barEl.style.width = "100%";
+                    barEl.style.backgroundColor = "var(--success)";
+                    metaEl.textContent = "terminé";
+                    metaEl.style.color = "var(--success)";
+
+                    const dlBtn = item.element.querySelector('.download-btn');
+                    dlBtn.href = job.download_url;
+                    dlBtn.classList.remove('hidden');
+                    if (job.output_filename) {
+                        dlBtn.setAttribute('download', job.output_filename);
+                    }
+                    if (item.element.querySelector('.remove-btn')) {
+                        item.element.querySelector('.remove-btn').remove();
+                    }
+                    updateUI();
+                } else if (job.status === 'error') {
+                    item.status = 'error';
+                    barEl.style.backgroundColor = "var(--danger)";
+                    metaEl.textContent = "erreur: " + (job.error || 'echec');
+                    metaEl.style.color = "var(--danger)";
                 }
-                item.element.querySelector('.remove-btn').remove();
-                return;
-            } else if (data.status === 'error') {
-                item.status = 'error';
-                barEl.style.backgroundColor = "var(--danger)";
-                metaEl.textContent = "erreur: " + (data.error || 'erreur');
-                metaEl.style.color = "var(--danger)";
-                return;
-            }
-
-            await sleep(1000);
+            });
+        } catch (e) {
+            console.error("Polling error", e);
         }
     }
 
@@ -436,6 +628,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 const barEl = el.querySelector('.progress-bar-fill');
                 const metaEl = el.querySelector('.file-meta');
+                const thumbPlaceholder = el.querySelector('.thumb-placeholder');
+                const thumbImg = el.querySelector('.thumb-img');
+                
+                // Set placeholder icon based on type
+                const fileType = getFileType(job.original_filename || '');
+                if (fileType === 'video') thumbPlaceholder.textContent = '🎬';
+                else if (fileType === 'audio') thumbPlaceholder.textContent = '🎵';
+                else if (fileType === 'image') thumbPlaceholder.textContent = '🖼️';
+                else thumbPlaceholder.textContent = '📄';
+                
+                thumbPlaceholder.style.display = 'flex';
+                thumbImg.style.display = 'none';
 
                 if (job.status === 'done') {
                     barEl.style.width = "100%";
@@ -458,7 +662,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     metaEl.style.color = "var(--danger)";
                 }
 
-                el.querySelector('.remove-btn').addEventListener('click', () => removeFile(id));
+                el.querySelector('.remove-btn')?.addEventListener('click', () => removeFile(id));
                 fileListEl.appendChild(el);
 
                 queue.push({
@@ -473,15 +677,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
             updateUI();
         } catch (e) {
+            console.error('Failed to load existing jobs', e);
         }
     }
 
     function statusLabel(status, error) {
         if (status === 'queued') return 'en attente';
         if (status === 'processing') return 'traitement';
-        if (status === 'done') return 'termine';
+        if (status === 'done') return 'terminé';
         if (status === 'error') return 'erreur: ' + (error || 'erreur');
-        return status || 'etat inconnu';
+        return status || 'état inconnu';
     }
 
     loadExistingJobs().catch(() => { });

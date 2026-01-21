@@ -1,4 +1,5 @@
 import atexit
+import io
 import json
 import logging
 import os
@@ -8,6 +9,7 @@ import sys
 import threading
 import time
 import uuid
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
@@ -19,6 +21,13 @@ from flask import Flask, g, jsonify, make_response, render_template, request, se
 from PIL import Image
 from pypdf import PdfReader, PdfWriter
 from werkzeug.utils import secure_filename
+
+# Register HEIF/HEIC support
+try:
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+except ImportError:
+    pass
 
 app = Flask(__name__)
 
@@ -77,15 +86,21 @@ _setup_logging()
 
 CPU_THREADS = os.cpu_count() or 1
 
+# Video: 1 worker (FFmpeg scales internally with multiple cores)
 VIDEO_WORKERS = 1
+# Audio: 1 worker per CPU thread
 AUDIO_WORKERS = CPU_THREADS
-IMAGE_WORKERS = max(1, CPU_THREADS // 2)
-PDF_WORKERS = max(1, CPU_THREADS // 2)
+# Image: Use more workers for better parallelism (CPU bound but fast)
+IMAGE_WORKERS = max(4, CPU_THREADS)
+# PDF: 4 workers
+PDF_WORKERS = 4
 
 video_executor = ThreadPoolExecutor(max_workers=VIDEO_WORKERS)
 audio_executor = ThreadPoolExecutor(max_workers=AUDIO_WORKERS)
 image_executor = ThreadPoolExecutor(max_workers=IMAGE_WORKERS)
 pdf_executor = ThreadPoolExecutor(max_workers=PDF_WORKERS)
+
+logging.info(f"Worker pool config: video={VIDEO_WORKERS}, audio={AUDIO_WORKERS}, image={IMAGE_WORKERS}, pdf={PDF_WORKERS} (CPU={CPU_THREADS})")
 
 
 def _shutdown_executors() -> None:
@@ -227,6 +242,8 @@ def _db_list_jobs_for_session(session_id: str, limit: int = 100) -> list[dict]:
                 "done_at": r["done_at"],
                 "expires_at": r["expires_at"],
                 "output_filename": r["output_filename"],
+                "output_path": r["output_path"],
+                "input_path": r["input_path"],
                 "download_url": f"/download/{r['id']}" if r["status"] == "done" else None,
             }
         )
@@ -555,6 +572,8 @@ def _process_with_ffmpeg(
 
     cmd.append(output_path)
 
+    logging.info(f"FFmpeg command: {' '.join(cmd)}")
+    
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         stderr = (result.stderr or "").strip()
@@ -620,12 +639,33 @@ def _process_image(
     target_format: str | None,
     comp_mode: str | None,
     comp_value: str | None,
+    params: dict | None = None,
 ) -> None:
+    params = params or {}
+    
     with Image.open(input_path) as img:
+        # Check if image has transparency
+        has_alpha = img.mode in ('RGBA', 'LA', 'PA') or (img.mode == 'P' and 'transparency' in img.info)
+        
         if action == "compress":
-            q_map = {"low": 85, "medium": 60, "high": 30}
-            val = (comp_value or "medium").strip()
-            quality = q_map.get(val, 60)
+            # Quality mapping: "lossless", "90", "80", "70", "60", "50"
+            quality_val = params.get("image_quality", comp_value or "80")
+            
+            # Handle old CRF-style values
+            if quality_val in ("low", "medium", "high"):
+                q_map = {"low": 90, "medium": 70, "high": 50}
+                quality = q_map.get(quality_val, 70)
+                lossless = False
+            elif quality_val == "lossless":
+                quality = 100
+                lossless = True
+            else:
+                try:
+                    quality = int(quality_val)
+                    quality = max(10, min(100, quality))
+                except ValueError:
+                    quality = 80
+                lossless = False
 
             if comp_mode == "percent":
                 try:
@@ -633,19 +673,68 @@ def _process_image(
                     quality = max(10, 100 - int(p_val))
                 except ValueError:
                     pass
+                lossless = False
 
-            img.save(output_path, quality=quality, optimize=True)
+            # Determine output format from path
+            _, out_ext = os.path.splitext(output_path)
+            out_ext = out_ext.lower()
+            
+            # Handle transparency preservation
+            if out_ext in ('.png',):
+                # PNG supports transparency and lossless
+                if lossless:
+                    img.save(output_path, optimize=True, compress_level=9)
+                else:
+                    # PNG doesn't have quality, use compression level
+                    img.save(output_path, optimize=True, compress_level=6)
+            elif out_ext in ('.webp',):
+                # WebP supports both transparency and quality
+                if lossless:
+                    img.save(output_path, lossless=True)
+                else:
+                    img.save(output_path, quality=quality, lossless=False)
+            elif out_ext in ('.jpg', '.jpeg'):
+                # JPEG doesn't support transparency - convert to RGB
+                save_img = img.convert("RGB") if has_alpha else img
+                save_img.save(output_path, quality=quality, optimize=True)
+            elif out_ext in ('.gif',):
+                # GIF - keep palette and transparency
+                img.save(output_path, optimize=True)
+            else:
+                # Default: try with quality if supported
+                try:
+                    img.save(output_path, quality=quality, optimize=True)
+                except TypeError:
+                    img.save(output_path, optimize=True)
             return
 
         if action == "convert":
             tf = (target_format or "").lower().strip()
+            
             if tf == "pdf":
-                rgb_img = img.convert("RGB") if img.mode == "RGBA" else img
+                rgb_img = img.convert("RGB") if has_alpha else img
                 rgb_img.save(output_path, "PDF", resolution=100.0)
                 return
 
-            save_img = img.convert("RGB") if tf in {"jpg", "jpeg"} and img.mode == "RGBA" else img
-            save_img.save(output_path)
+            # Handle transparency when converting
+            if tf in {"jpg", "jpeg"}:
+                # JPEG doesn't support transparency
+                save_img = img.convert("RGB") if has_alpha else img
+                save_img.save(output_path, quality=95)
+            elif tf in {"png"}:
+                # PNG preserves transparency
+                img.save(output_path, optimize=True)
+            elif tf in {"webp"}:
+                # WebP preserves transparency
+                img.save(output_path, quality=95, lossless=False)
+            elif tf in {"gif"}:
+                # GIF - convert to palette mode
+                if img.mode == 'RGBA':
+                    # Convert RGBA to P mode with transparency
+                    img = img.convert('P', palette=Image.ADAPTIVE, colors=255)
+                img.save(output_path, optimize=True)
+            else:
+                img.save(output_path)
             return
 
         raise ValueError("action non supportee")
@@ -770,6 +859,7 @@ def _run_job(job_id: str) -> None:
                 target_format=target_format,
                 comp_mode=comp_mode,
                 comp_value=comp_value,
+                params=params,
             )
         else:
             raise ValueError("format non supporte")
@@ -849,6 +939,13 @@ def create_job():
         return jsonify({"error": "action invalide"}), 400
 
     if action == "convert" and not target_format:
+        # Log what we received to debug missing format cases
+        logging.warning(
+            "missing target format: action=%s filename=%s form_keys=%s",
+            action,
+            getattr(file, "filename", None),
+            list(request.form.keys()),
+        )
         return jsonify({"error": "format de destination manquant"}), 400
 
     params = {}
@@ -870,6 +967,8 @@ def create_job():
         params["gif_fps"] = request.form.get("gif_fps")
     if request.form.get("gif_resolution"):
         params["gif_resolution"] = request.form.get("gif_resolution")
+    if request.form.get("image_quality"):
+        params["image_quality"] = request.form.get("image_quality")
 
     if _db_count_active_for_session(g.session_id) >= MAX_ENQUEUED_JOBS:
         return jsonify({"error": "trop de jobs en attente"}), 429
@@ -957,6 +1056,74 @@ def download_job(job_id: str):
     resp = make_response(send_file(out_path, as_attachment=True, download_name=download_name))
     resp.headers["Cache-Control"] = "no-store"
     return resp
+
+
+@app.route("/download-all", methods=["GET"])
+def download_all():
+    """Download all completed jobs as a ZIP file."""
+    rows = _db_list_jobs_for_session(g.session_id, limit=500)
+    
+    # Filter only done jobs with valid output paths
+    done_jobs = []
+    for r in rows:
+        if r["status"] == "done" and r["output_path"] and os.path.exists(r["output_path"]):
+            done_jobs.append(r)
+    
+    if not done_jobs:
+        return jsonify({"error": "aucun fichier à télécharger"}), 404
+    
+    # Create ZIP in memory
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for job in done_jobs:
+            out_path = job["output_path"]
+            filename = job["output_filename"] or os.path.basename(out_path)
+            # Avoid duplicate filenames by prefixing with job ID if needed
+            arcname = f"{job['id'][:8]}_{filename}"
+            zf.write(out_path, arcname)
+    
+    zip_buffer.seek(0)
+    
+    resp = make_response(send_file(
+        zip_buffer,
+        mimetype='application/zip',
+        as_attachment=True,
+        download_name='converted_files.zip'
+    ))
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@app.route("/clear-all", methods=["DELETE"])
+def clear_all_jobs():
+    """Delete all jobs and their files for the current session."""
+    rows = _db_list_jobs_for_session(g.session_id, limit=500)
+    
+    deleted_count = 0
+    for r in rows:
+        job_id = r["id"]
+        
+        # Delete input file
+        in_path = r.get("input_path")
+        if in_path and os.path.exists(in_path):
+            try:
+                os.remove(in_path)
+            except OSError:
+                pass
+        
+        # Delete output file
+        out_path = r.get("output_path")
+        if out_path and os.path.exists(out_path):
+            try:
+                os.remove(out_path)
+            except OSError:
+                pass
+        
+        # Delete from database
+        _db_delete_job(job_id)
+        deleted_count += 1
+    
+    return jsonify({"deleted": deleted_count})
 
 
 _db_init()
