@@ -105,9 +105,11 @@ document.addEventListener('DOMContentLoaded', () => {
             formatSelect.appendChild(opt);
         });
 
-        // Trigger change event to sync all dependent UI
-        const changeEvent = new Event('change', { bubbles: true });
-        formatSelect.dispatchEvent(changeEvent);
+        // Trigger change event asynchronously to sync all dependent UI after DOM updates
+        setTimeout(() => {
+            const changeEvent = new Event('change', { bubbles: true });
+            formatSelect.dispatchEvent(changeEvent);
+        }, 0);
     }
 
     function updateGifSettingsVisibility() {
