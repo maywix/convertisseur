@@ -27,123 +27,84 @@
                 </div>
 
                 <div id="settings-area">
-                    <!-- Advanced Mode Toggle -->
-                    <div class="advanced-toggle-wrapper">
-                        <label class="switch">
-                            <input type="checkbox" id="advanced-toggle">
-                            <span class="slider round"></span>
-                        </label>
-                        <span class="toggle-label">Mode Avancé</span>
-                    </div>
 
-                    <!-- Advanced Settings Panel -->
-                    <div id="advanced-settings" class="settings-group hidden">
-                        <h4>Paramètres Avancés</h4>
-
-                        <div class="input-row">
-                            <div class="input-group">
-                                <label>Framerate (FPS)</label>
-                                <select id="adv-fps">
-                                    <option value="">Original</option>
-                                    <option value="24">24</option>
-                                    <option value="30">30</option>
-                                    <option value="60">60</option>
-                                </select>
-                            </div>
-                            <div class="input-group">
-                                <label>Preset Video</label>
-                                <select id="adv-preset">
-                                    <option value="">Défaut</option>
-                                    <option value="ultrafast">Ultrafast (Rapide/Gros)</option>
-                                    <option value="fast">Fast</option>
-                                    <option value="medium">Medium</option>
-                                    <option value="slow">Slow</option>
-                                    <option value="veryslow">Very Slow (Lent/Compact)</option>
-                                </select>
-                            </div>
-                        </div>
-
-                        <div class="input-row">
-                            <div class="input-group">
-                                <label>Audio Bitrate</label>
-                                <select id="adv-audio-bitrate">
-                                    <option value="">Original</option>
-                                    <option value="64k">64k</option>
-                                    <option value="128k">128k</option>
-                                    <option value="192k">192k</option>
-                                    <option value="320k">320k</option>
-                                </select>
-                            </div>
-                            <div class="input-group">
-                                <label>Audio Channels</label>
-                                <select id="adv-audio-channels">
-                                    <option value="">Original</option>
-                                    <option value="1">Mono</option>
-                                    <option value="2">Stereo</option>
-                                </select>
-                            </div>
-                        </div>
-
-                        <div class="input-group">
-                            <label>Sample Rate (Hz)</label>
-                            <select id="adv-audio-rate">
-                                <option value="">Original</option>
-                                <option value="44100">44100</option>
-                                <option value="48000">48000</option>
-                            </select>
-                        </div>
-                    </div>
-
-                    <!-- GIF Conversion Settings -->
-                    <div id="gif-settings" class="settings-group hidden">
-                        <h4>Paramètres GIF</h4>
-
-                        <div class="input-row">
-                            <div class="input-group">
-                                <label>Vitesse</label>
-                                <select id="gif-speed">
-                                    <option value="1.0">Normal (1x)</option>
-                                    <option value="0.5">2x plus rapide</option>
-                                    <option value="0.25">4x plus rapide</option>
-                                    <option value="0.1" selected>10x plus rapide</option>
-                                    <option value="2.0">2x plus lent</option>
-                                </select>
-                            </div>
-                            <div class="input-group">
-                                <label>Framerate (FPS)</label>
-                                <select id="gif-fps">
-                                    <option value="10">10</option>
-                                    <option value="15">15</option>
-                                    <option value="20" selected>20</option>
-                                    <option value="24">24</option>
-                                    <option value="30">30</option>
-                                    <option value="60">60</option>
-                                </select>
-                            </div>
-                        </div>
-
-                        <div class="input-group">
-                            <label>Résolution</label>
-                            <select id="gif-resolution">
-                                <option value="1080">1080p</option>
-                                <option value="720">720p</option>
-                                <option value="480" selected>480p</option>
-                                <option value="360">360p</option>
-                                <option value="240">240p</option>
-                            </select>
-                        </div>
-                    </div>
-
-                    <!-- Conversion Settings -->
+                    <!-- CONVERT MODE: Category -> Format Selection -->
                     <div id="convert-settings" class="settings-group">
-                        <label>Format de destination</label>
-                        <select id="global-format-select">
-                            <option value="" disabled selected>Choisir un format...</option>
-                            <!-- Populated by JS -->
-                        </select>
+                        <!-- Step 1: Category Selection -->
+                        <div class="step-section">
+                            <label>1. Type de média</label>
+                            <div class="category-buttons">
+                                <button class="cat-btn" data-category="video">🎬 Vidéo</button>
+                                <button class="cat-btn" data-category="audio">🎵 Audio</button>
+                                <button class="cat-btn" data-category="image">🖼️ Image</button>
+                            </div>
+                        </div>
+
+                        <!-- Step 2: Format/Codec Selection -->
+                        <div class="step-section" id="format-step">
+                            <label>2. Format de sortie</label>
+                            <select id="global-format-select">
+                                <option value="" disabled selected>Sélectionnez un type d'abord...</option>
+                            </select>
+                        </div>
+
+                        <!-- GIF Settings (shown when GIF selected for video) -->
+                        <div id="gif-settings" class="settings-group hidden">
+                            <h4>Paramètres GIF</h4>
+                            <div class="input-row">
+                                <div class="input-group">
+                                    <label>Vitesse</label>
+                                    <select id="gif-speed">
+                                        <option value="1.0">Normal (1x)</option>
+                                        <option value="0.5">2x plus rapide</option>
+                                        <option value="0.25">4x plus rapide</option>
+                                        <option value="0.1" selected>10x plus rapide</option>
+                                        <option value="2.0">2x plus lent</option>
+                                    </select>
+                                </div>
+                                <div class="input-group">
+                                    <label>Framerate (FPS)</label>
+                                    <select id="gif-fps">
+                                        <option value="10">10</option>
+                                        <option value="15">15</option>
+                                        <option value="20" selected>20</option>
+                                        <option value="24">24</option>
+                                        <option value="30">30</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="input-group">
+                                <label>Résolution</label>
+                                <select id="gif-resolution">
+                                    <option value="1080">1080p</option>
+                                    <option value="720">720p</option>
+                                    <option value="480" selected>480p</option>
+                                    <option value="360">360p</option>
+                                    <option value="240">240p</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <!-- Image Quality Settings (shown when image category selected) -->
+                        <div id="image-quality-settings" class="settings-group hidden">
+                            <h4>Qualité Image</h4>
+                            <div class="input-group">
+                                <label>Qualité</label>
+                                <select id="image-quality">
+                                    <option value="lossless">🔒 Sans perte (Lossless)</option>
+                                    <option value="95">95% (Très haute)</option>
+                                    <option value="90" selected>90% (Haute)</option>
+                                    <option value="80">80% (Bonne)</option>
+                                    <option value="70">70% (Moyenne)</option>
+                                    <option value="60">60% (Économique)</option>
+                                    <option value="50">50% (Compressée)</option>
+                                </select>
+                            </div>
+                            <p class="settings-note">💡 La transparence est préservée automatiquement (PNG, WebP)</p>
+                        </div>
                     </div>
 
-                    <!-- Compression Settings -->
+                    <!-- COMPRESS MODE: Full compression options -->
                     <div id="compress-settings" class="settings-group hidden">
                         <label>Mode de compression</label>
 
@@ -198,6 +159,72 @@
                                 </select>
                             </div>
                         </div>
+
+                        <!-- Advanced Toggle for Compress Mode -->
+                        <div class="advanced-toggle-wrapper">
+                            <label class="switch">
+                                <input type="checkbox" id="advanced-toggle">
+                                <span class="slider round"></span>
+                            </label>
+                            <span class="toggle-label">Options Avancées</span>
+                        </div>
+
+                        <!-- Advanced Settings Panel (only for compress) -->
+                        <div id="advanced-settings" class="settings-group hidden">
+                            <h4>Paramètres Avancés</h4>
+
+                            <div class="input-row">
+                                <div class="input-group">
+                                    <label>Framerate (FPS)</label>
+                                    <select id="adv-fps">
+                                        <option value="">Original</option>
+                                        <option value="24">24</option>
+                                        <option value="30">30</option>
+                                        <option value="60">60</option>
+                                    </select>
+                                </div>
+                                <div class="input-group">
+                                    <label>Preset Encodage</label>
+                                    <select id="adv-preset">
+                                        <option value="medium">Medium (Défaut)</option>
+                                        <option value="ultrafast">Ultrafast (Rapide)</option>
+                                        <option value="fast">Fast</option>
+                                        <option value="slow">Slow</option>
+                                        <option value="veryslow">Very Slow (Compact)</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div class="input-row">
+                                <div class="input-group">
+                                    <label>Audio Bitrate</label>
+                                    <select id="adv-audio-bitrate">
+                                        <option value="">Original</option>
+                                        <option value="64k">64k</option>
+                                        <option value="128k">128k</option>
+                                        <option value="192k">192k</option>
+                                        <option value="320k">320k</option>
+                                    </select>
+                                </div>
+                                <div class="input-group">
+                                    <label>Audio Channels</label>
+                                    <select id="adv-audio-channels">
+                                        <option value="">Original</option>
+                                        <option value="1">Mono</option>
+                                        <option value="2">Stereo</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div class="input-group">
+                                <label>Sample Rate (Hz)</label>
+                                <select id="adv-audio-rate">
+                                    <option value="">Original</option>
+                                    <option value="44100">44100</option>
+                                    <option value="48000">48000</option>
+                                </select>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
@@ -209,7 +236,7 @@
             <!-- Right Panel: File Queue -->
             <main class="queue-panel">
                 <div class="upload-zone" id="drop-zone">
-                    <div class="icon">upload</div>
+                    <div class="icon">📁</div>
                     <h3>Glisser-déposer vos fichiers ici</h3>
                     <p>ou cliquez pour parcourir (Illimité)</p>
                     <input type="file" id="file-input" multiple hidden>
@@ -217,7 +244,10 @@
 
                 <div class="file-list-header">
                     <h3>File d'attente <span id="file-count">(0)</span></h3>
-                    <button id="clear-btn" class="text-btn">Tout effacer</button>
+                    <div class="header-actions">
+                        <button id="download-all-btn" class="text-btn" disabled>📦 Tout télécharger</button>
+                        <button id="clear-btn" class="text-btn danger">🗑️ Tout effacer</button>
+                    </div>
                 </div>
 
                 <div id="file-list" class="file-list">
@@ -229,10 +259,13 @@
         </div>
     </div>
 
-    <!-- Template for a file item -->
+    <!-- Template for a file item with thumbnail -->
     <template id="file-item-template">
         <div class="file-item">
-            <div class="file-icon">file</div>
+            <div class="file-thumb">
+                <img class="thumb-img" src="" alt="">
+                <div class="thumb-placeholder">📄</div>
+            </div>
             <div class="file-info">
                 <div class="file-name">nom_du_fichier.mp4</div>
                 <div class="file-meta">15.4 MB • En attente</div>
@@ -241,13 +274,13 @@
                 </div>
             </div>
             <div class="file-actions">
-                <button class="remove-btn" type="button">x</button>
-                <a href="#" class="download-btn hidden">dl</a>
+                <button class="remove-btn" type="button">✕</button>
+                <a href="#" class="download-btn hidden">⬇</a>
             </div>
         </div>
     </template>
 
-    <script src="{{ url_for('static', filename='dist/script.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/script.js') }}"></script>
 </body>
 
 </html>

@@ -10,6 +10,7 @@ RUN apk add --no-cache \
     nasm \
     yasm \
     openssl-dev \
+    openssl-libs-static \
     pkgconf \
     wget \
     zlib-dev \
@@ -18,24 +19,27 @@ RUN apk add --no-cache \
     lcms2-dev \
     openjpeg-dev \
     tiff-dev \
-    linux-headers
+    linux-headers \
+    libheif-dev \
+    x264-dev \
+    lame-dev \
+    opus-dev
 
-# Compile FFmpeg
-# Using snapshot or stable release.
-# -march=native tells the compiler to optimize for the host CPU (enabling AVX512 if present on build machine)
+# Compile FFmpeg with essential codecs (not fully static due to codec library dependencies)
 RUN git clone --depth 1 https://git.ffmpeg.org/ffmpeg.git ffmpeg_src && \
     cd ffmpeg_src && \
     ./configure \
         --prefix=/tmp/ffmpeg \
         --enable-gpl \
         --enable-nonfree \
-        --enable-libopenssl \
+        --enable-openssl \
+        --enable-libx264 \
+        --enable-libmp3lame \
+        --enable-libopus \
         --disable-debug \
         --disable-doc \
         --disable-ffplay \
-        --pkg-config-flags="--static" \
-        --extra-cflags="-march=native -O3" \
-        --extra-ldflags="-static" && \
+        --extra-cflags="-march=native -O3" && \
     make -j$(nproc) && \
     make install
 
@@ -51,14 +55,17 @@ FROM python:3.12-alpine
 
 WORKDIR /app
 
-# Runtime libraries typically needed by Pillow/Reportlab/FFmpeg
-# We statically linked ffmpeg mostly, but python libs might need these
+# Runtime libraries for FFmpeg codecs and Python libs
 RUN apk add --no-cache \
     libjpeg-turbo \
     zlib \
     freetype \
     libstdc++ \
-    libgomp
+    libgomp \
+    libheif \
+    x264-libs \
+    lame-libs \
+    opus
 
 # Copy compiled artifacts
 COPY --from=builder /tmp/ffmpeg /usr/local
