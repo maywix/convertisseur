@@ -20,8 +20,9 @@ server.log
 .bun/
 bun.lockb
 
-# frontend build artifacts
-static/dist/*.map
+# frontend
+frontend/node_modules/
+frontend/dist/
 
 # os / ide
 .DS_Store
