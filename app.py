@@ -1,3 +1,4 @@
+import atexit
 import json
 import logging
 import os
@@ -85,6 +86,16 @@ video_executor = ThreadPoolExecutor(max_workers=VIDEO_WORKERS)
 audio_executor = ThreadPoolExecutor(max_workers=AUDIO_WORKERS)
 image_executor = ThreadPoolExecutor(max_workers=IMAGE_WORKERS)
 pdf_executor = ThreadPoolExecutor(max_workers=PDF_WORKERS)
+
+
+def _shutdown_executors() -> None:
+    """Gracefully shutdown all thread pool executors on application exit."""
+    for ex in (video_executor, audio_executor, image_executor, pdf_executor):
+        ex.shutdown(wait=False)
+    logging.info("thread pool executors shutdown")
+
+
+atexit.register(_shutdown_executors)
 
 logging.info(
     "workers cpu=%s video=%s audio=%s image=%s pdf=%s",
@@ -284,10 +295,10 @@ def _db_collect_expired_jobs(now_ts: int) -> list[sqlite3.Row]:
             """
             SELECT *
             FROM jobs
-            WHERE expires_at IS NOT NULL
-            AND expires_at <= ?
+            WHERE (expires_at IS NOT NULL AND expires_at <= ?)
+            OR (created_at <= ?)
             """,
-            (now_ts,),
+            (now_ts, now_ts - 86400),  # Clean explicitly expired OR zombies older than 24h
         ).fetchall()
         return rows
 
@@ -393,13 +404,55 @@ def _get_video_info(path: str) -> dict | None:
         return None
 
 
-def _safe_error_message(err: Exception) -> str:
-    msg = str(err).strip()
-    if not msg:
-        msg = "erreur inconnue"
+def _safe_error_message(e: Exception) -> str:
+    """Extract a safe, truncated error message from an exception."""
+    msg = str(e) if e else "unknown error"
     if len(msg) > 800:
         msg = msg[:800] + "..."
     return msg
+
+
+def _process_video_to_gif(
+    *,
+    input_path: str,
+    output_path: str,
+    params: dict,
+) -> None:
+    # 0.1 = 10x faster (duration * 0.1)
+    speed_val = float(params.get("gif_speed") or 1.0)
+    # In ffmpeg setpts: PTS * (1/speed_factor). If we want 2x speed, we want 0.5 * PTS?
+    # Actually setpts=0.5*PTS means the timestamps are halved -> plays 2x faster.
+    # So if user selects "2x faster", the value coming in should be 0.5
+    
+    fps = str(params.get("gif_fps") or "20")
+    
+    # Resolution
+    target_res = str(params.get("gif_resolution") or "480")
+    # scale=-1:480 or scale=-2:480 (for divisible by 2) is safer
+    # But usually we scale by width or height.
+    # Let's assume the value is height (common: 360p, 480p, 720p)
+    scale = f"scale=-2:{target_res}"
+    if target_res == "-1":
+        scale = "scale=-2:-2"  # original mostly
+
+    # Filter complex
+    # split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse
+    vf = f"setpts={speed_val}*PTS,fps={fps},{scale}:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse"
+    
+    cmd = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", input_path,
+        "-vf", vf,
+        output_path
+    ]
+    
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        if stderr:
+             # Try to capture the last meaningful error line
+            lines = stderr.splitlines()
+            raise RuntimeError(lines[-1] if lines else "ffmpeg gif failed")
+        raise RuntimeError("ffmpeg gif conversion failed")
 
 
 def _validate_action(action: str | None) -> str | None:
@@ -418,7 +471,7 @@ def _process_with_ffmpeg(
     comp_value: str | None,
     params: dict | None = None,
 ) -> None:
-    cmd: list[str] = ["ffmpeg", "-y", "-i", input_path]
+    cmd: list[str] = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", input_path]
     params = params or {}
 
     is_video = ext in VIDEO_EXTENSIONS
@@ -522,18 +575,21 @@ def _process_pdf(
         reader = PdfReader(input_path)
         writer = PdfWriter()
 
-        for page in reader.pages:
-            writer.add_page(page)
-            page.compress_content_streams()
+        try:
+            for page in reader.pages:
+                writer.add_page(page)
+                page.compress_content_streams()
 
-        if (comp_value or "").strip() == "high":
-            writer.add_metadata({})
-        else:
-            if reader.metadata:
-                writer.add_metadata(reader.metadata)
+            if (comp_value or "").strip() == "high":
+                writer.add_metadata({})
+            else:
+                if reader.metadata:
+                    writer.add_metadata(reader.metadata)
 
-        with open(output_path, "wb") as f:
-            writer.write(f)
+            with open(output_path, "wb") as f:
+                writer.write(f)
+        finally:
+            reader.stream.close() if hasattr(reader, 'stream') and reader.stream else None
         return
 
     if action == "convert":
@@ -541,13 +597,16 @@ def _process_pdf(
             raise ValueError("conversion pdf vers ce format non supportee")
 
         reader = PdfReader(input_path)
-        text = ""
-        for page in reader.pages:
-            t = page.extract_text()
-            if t:
-                text += t + "\n"
-        with open(output_path, "w") as f:
-            f.write(text)
+        try:
+            text = ""
+            for page in reader.pages:
+                t = page.extract_text()
+                if t:
+                    text += t + "\n"
+            with open(output_path, "w") as f:
+                f.write(text)
+        finally:
+            reader.stream.close() if hasattr(reader, 'stream') and reader.stream else None
         return
 
     raise ValueError("action non supportee")
@@ -562,37 +621,34 @@ def _process_image(
     comp_mode: str | None,
     comp_value: str | None,
 ) -> None:
-    img = Image.open(input_path)
+    with Image.open(input_path) as img:
+        if action == "compress":
+            q_map = {"low": 85, "medium": 60, "high": 30}
+            val = (comp_value or "medium").strip()
+            quality = q_map.get(val, 60)
 
-    if action == "compress":
-        q_map = {"low": 85, "medium": 60, "high": 30}
-        val = (comp_value or "medium").strip()
-        quality = q_map.get(val, 60)
+            if comp_mode == "percent":
+                try:
+                    p_val = float(comp_value or 0)
+                    quality = max(10, 100 - int(p_val))
+                except ValueError:
+                    pass
 
-        if comp_mode == "percent":
-            try:
-                p_val = float(comp_value or 0)
-                quality = max(10, 100 - int(p_val))
-            except ValueError:
-                pass
-
-        img.save(output_path, quality=quality, optimize=True)
-        return
-
-    if action == "convert":
-        tf = (target_format or "").lower().strip()
-        if tf == "pdf":
-            if img.mode == "RGBA":
-                img = img.convert("RGB")
-            img.save(output_path, "PDF", resolution=100.0)
+            img.save(output_path, quality=quality, optimize=True)
             return
 
-        if tf in {"jpg", "jpeg"} and img.mode == "RGBA":
-            img = img.convert("RGB")
-        img.save(output_path)
-        return
+        if action == "convert":
+            tf = (target_format or "").lower().strip()
+            if tf == "pdf":
+                rgb_img = img.convert("RGB") if img.mode == "RGBA" else img
+                rgb_img.save(output_path, "PDF", resolution=100.0)
+                return
 
-    raise ValueError("action non supportee")
+            save_img = img.convert("RGB") if tf in {"jpg", "jpeg"} and img.mode == "RGBA" else img
+            save_img.save(output_path)
+            return
+
+        raise ValueError("action non supportee")
 
 
 def _media_type_from_filename(name: str) -> str:
@@ -665,7 +721,28 @@ def _run_job(job_id: str) -> None:
 
         output_path = os.path.join(PROCESSED_DIR, output_filename)
 
-        if ext in VIDEO_EXTENSIONS or ext in AUDIO_EXTENSIONS:
+        if ext in VIDEO_EXTENSIONS:
+            # Special case for GIF conversion from video with advanced options
+            if action == "convert" and target_format == "gif":
+                 # Check if we have specialized gif params or just standard
+                 # We'll use the new engine if target is gif
+                 _process_video_to_gif(
+                     input_path=input_path,
+                     output_path=output_path,
+                     params=params
+                 )
+            else:
+                 _process_with_ffmpeg(
+                    input_path=input_path,
+                    output_path=output_path,
+                    ext=ext,
+                    action=action,
+                    comp_mode=comp_mode,
+                    comp_value=comp_value,
+                    params=params,
+                )
+
+        elif ext in AUDIO_EXTENSIONS:
             _process_with_ffmpeg(
                 input_path=input_path,
                 output_path=output_path,
@@ -785,6 +862,14 @@ def create_job():
         params["audio_channels"] = request.form.get("audio_channels")
     if request.form.get("audio_sample_rate"):
         params["audio_sample_rate"] = request.form.get("audio_sample_rate")
+
+    # GIF Params
+    if request.form.get("gif_speed"):
+        params["gif_speed"] = request.form.get("gif_speed")
+    if request.form.get("gif_fps"):
+        params["gif_fps"] = request.form.get("gif_fps")
+    if request.form.get("gif_resolution"):
+        params["gif_resolution"] = request.form.get("gif_resolution")
 
     if _db_count_active_for_session(g.session_id) >= MAX_ENQUEUED_JOBS:
         return jsonify({"error": "trop de jobs en attente"}), 429

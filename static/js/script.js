@@ -6,22 +6,23 @@ document.addEventListener('DOMContentLoaded', () => {
     const clearBtn = document.getElementById('clear-btn');
     const fileCountEl = document.getElementById('file-count');
     const template = document.getElementById('file-item-template');
-    
+
     const tabs = document.querySelectorAll('.tab');
     const convertSettings = document.getElementById('convert-settings');
     const compressSettings = document.getElementById('compress-settings');
     const formatSelect = document.getElementById('global-format-select');
     const compModeRadios = document.querySelectorAll('input[name="comp-mode"]');
-    
+
     const inputCrf = document.getElementById('input-crf');
     const inputSize = document.getElementById('input-size');
     const inputPercent = document.getElementById('input-percent');
     const inputRes = document.getElementById('input-res');
-    
+
     // Advanced Mode Elements
     const advancedToggle = document.getElementById('advanced-toggle');
     const advancedSettings = document.getElementById('advanced-settings');
-    
+    const gifSettings = document.getElementById('gif-settings');
+
     let queue = [];
     let currentAction = 'convert';
     let isProcessing = false;
@@ -69,7 +70,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function updateFormatOptions() {
         const currentVal = formatSelect.value;
         formatSelect.innerHTML = '<option value="">Choisir format...</option>';
-        
+
         let hasImage = false;
         let hasVideo = false;
         let hasAudio = false;
@@ -95,7 +96,7 @@ document.addEventListener('DOMContentLoaded', () => {
             addOptGroup('Video', videoExtensions);
             addOptGroup('Audio', audioExtensions);
         } else if (hasAudio) {
-             addOptGroup('Audio', audioExtensions);
+            addOptGroup('Audio', audioExtensions);
         } else {
             // Fallback for mixed weirdness
             addOptGroup('Images', imageExtensions);
@@ -106,10 +107,28 @@ document.addEventListener('DOMContentLoaded', () => {
         if (currentVal) {
             // Verify if currentVal is still valid
             const exists = Array.from(formatSelect.options).some(o => o.value === currentVal);
-            if(exists) formatSelect.value = currentVal;
+            if (exists) formatSelect.value = currentVal;
+            else formatSelect.value = "";
+        }
+        updateGifSettingsVisibility();
+    }
+
+    function updateGifSettingsVisibility() {
+        const format = formatSelect.value;
+        const hasVideo = queue.some(item => {
+            const name = item.file ? item.file.name : (item.element ? item.element.querySelector('.file-name').textContent : "");
+            return getFileType(name) === 'video';
+        });
+
+        if (currentAction === 'convert' && format === 'gif' && hasVideo) {
+            gifSettings.classList.remove('hidden');
+        } else {
+            gifSettings.classList.add('hidden');
         }
     }
-    
+
+    formatSelect.addEventListener('change', updateGifSettingsVisibility);
+
     // Initialize with all
     updateFormatOptions();
 
@@ -118,8 +137,8 @@ document.addEventListener('DOMContentLoaded', () => {
             tabs.forEach(t => t.classList.remove('active'));
             tab.classList.add('active');
             currentAction = tab.dataset.action;
-            
-            if(currentAction === 'convert') {
+
+            if (currentAction === 'convert') {
                 convertSettings.classList.remove('hidden');
                 compressSettings.classList.add('hidden');
             } else {
@@ -127,6 +146,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 compressSettings.classList.remove('hidden');
             }
             updateUI();
+            updateGifSettingsVisibility();
         });
     });
 
@@ -137,7 +157,7 @@ document.addEventListener('DOMContentLoaded', () => {
             inputPercent.classList.add('hidden');
             inputRes.classList.add('hidden');
 
-            switch(e.target.value) {
+            switch (e.target.value) {
                 case 'crf': inputCrf.classList.remove('hidden'); break;
                 case 'size': inputSize.classList.remove('hidden'); break;
                 case 'percent': inputPercent.classList.remove('hidden'); break;
@@ -151,7 +171,7 @@ document.addEventListener('DOMContentLoaded', () => {
     percentSlider.addEventListener('input', (e) => percentVal.textContent = e.target.value);
 
     advancedToggle.addEventListener('change', (e) => {
-        if(e.target.checked) {
+        if (e.target.checked) {
             advancedSettings.classList.remove('hidden');
         } else {
             advancedSettings.classList.add('hidden');
@@ -173,21 +193,21 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     function addFilesToQueue(files) {
-        if(queue.length === 0) fileListEl.innerHTML = '';
+        if (queue.length === 0) fileListEl.innerHTML = '';
 
         Array.from(files).forEach(file => {
             const id = Math.random().toString(36).substring(7);
-            
+
             const clone = template.content.cloneNode(true);
             const el = clone.querySelector('.file-item');
-            
+
             el.querySelector('.file-name').textContent = file.name;
             el.querySelector('.file-meta').textContent = formatSize(file.size) + ' • En attente';
-            
+
             el.querySelector('.remove-btn').addEventListener('click', () => removeFile(id));
-            
+
             fileListEl.appendChild(el);
-            
+
             queue.push({
                 id: id,
                 file: file,
@@ -225,6 +245,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const hasNewFiles = queue.some(x => x.file && x.status === 'pending');
         const convertOk = currentAction !== 'convert' || !!formatSelect.value;
         startBtn.disabled = !hasNewFiles || isProcessing || !convertOk;
+        updateGifSettingsVisibility();
     }
 
     function formatSize(bytes) {
@@ -240,7 +261,7 @@ document.addEventListener('DOMContentLoaded', () => {
         isProcessing = true;
         startBtn.disabled = true;
         startBtn.textContent = "Traitement en cours...";
-        
+
         processNextInQueue(0).catch(() => {
             isProcessing = false;
             startBtn.textContent = "Lancer le traitement";
@@ -271,16 +292,16 @@ document.addEventListener('DOMContentLoaded', () => {
         const formData = new FormData();
         formData.append('file', item.file);
         formData.append('action', currentAction);
-        
+
         if (currentAction === 'convert') {
             formData.append('format', formatSelect.value);
         } else {
             const mode = document.querySelector('input[name="comp-mode"]:checked').value;
             formData.append('comp_mode', mode);
-            
+
             let val = '';
             if (mode === 'crf') {
-                const map = {1: 'low', 2: 'medium', 3: 'high'};
+                const map = { 1: 'low', 2: 'medium', 3: 'high' };
                 val = map[document.getElementById('crf-slider').value];
             } else if (mode === 'size') {
                 val = document.getElementById('target-size').value;
@@ -300,11 +321,22 @@ document.addEventListener('DOMContentLoaded', () => {
             const aChannels = document.getElementById('adv-audio-channels').value;
             const aRate = document.getElementById('adv-audio-rate').value;
 
-            if(fps) formData.append('fps', fps);
-            if(preset) formData.append('video_preset', preset);
-            if(aBitrate) formData.append('audio_bitrate', aBitrate);
-            if(aChannels) formData.append('audio_channels', aChannels);
-            if(aRate) formData.append('audio_sample_rate', aRate);
+            if (fps) formData.append('fps', fps);
+            if (preset) formData.append('video_preset', preset);
+            if (aBitrate) formData.append('audio_bitrate', aBitrate);
+            if (aChannels) formData.append('audio_channels', aChannels);
+            if (aRate) formData.append('audio_sample_rate', aRate);
+        }
+
+        // Append GIF params if visible/active
+        if (!gifSettings.classList.contains('hidden')) {
+            const gSpeed = document.getElementById('gif-speed').value;
+            const gFps = document.getElementById('gif-fps').value;
+            const gRes = document.getElementById('gif-resolution').value;
+
+            if (gSpeed) formData.append('gif_speed', gSpeed);
+            if (gFps) formData.append('gif_fps', gFps);
+            if (gRes) formData.append('gif_resolution', gRes);
         }
 
         try {
@@ -392,7 +424,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const jobs = (data.jobs || []);
             if (!jobs.length) return;
 
-            if(queue.length === 0) fileListEl.innerHTML = '';
+            if (queue.length === 0) fileListEl.innerHTML = '';
 
             jobs.reverse().forEach(job => {
                 const id = `job_${job.id}`;
@@ -452,5 +484,5 @@ document.addEventListener('DOMContentLoaded', () => {
         return status || 'etat inconnu';
     }
 
-    loadExistingJobs().catch(() => {});
+    loadExistingJobs().catch(() => { });
 });

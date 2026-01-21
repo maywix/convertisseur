@@ -1,0 +1,25 @@
+services:
+  convertisseur:
+    build: .
+    ports:
+      - "5001:5000"
+    volumes:
+      # Persist data across restarts
+      - convertisseur_uploads:/app/uploads
+      - convertisseur_processed:/app/processed
+      - convertisseur_data:/app/data
+    environment:
+      # Time after which completed jobs are deleted (default: 3 hours)
+      - RETENTION_SECONDS=10800
+      # How often to run cleanup (default: 5 minutes)
+      - CLEANUP_INTERVAL_SECONDS=300
+      # Maximum queued jobs per session
+      - MAX_ENQUEUED_JOBS=50
+      # Logging level (DEBUG, INFO, WARNING, ERROR)
+      - LOG_LEVEL=INFO
+    restart: unless-stopped
+
+volumes:
+  convertisseur_uploads:
+  convertisseur_processed:
+  convertisseur_data:
