@@ -3,6 +3,7 @@ import io
 import json
 import logging
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -21,6 +22,7 @@ from flask import Flask, g, jsonify, make_response, render_template, request, se
 from PIL import Image, ImageOps
 from pypdf import PdfReader, PdfWriter
 from werkzeug.utils import secure_filename
+from werkzeug.exceptions import RequestEntityTooLarge
 
 # Register HEIF/HEIC support
 try:
@@ -75,6 +77,20 @@ IMAGE_EXTENSIONS = {
 
 _RESAMPLING = getattr(Image, "Resampling", Image)
 _LANCZOS = getattr(_RESAMPLING, "LANCZOS", getattr(Image, "LANCZOS", Image.BICUBIC))
+
+
+def _sanitize_relative_path(raw: str | None) -> str | None:
+    if not raw:
+        return None
+    path = raw.replace("\\", "/").strip()
+    if not path:
+        return None
+    # Prevent absolute paths and traversal
+    path = path.lstrip("/")
+    normalized = os.path.normpath(path)
+    if normalized.startswith(".."):
+        return None
+    return normalized
 
 
 def _setup_logging() -> None:
@@ -233,11 +249,16 @@ def _db_list_jobs_for_session(session_id: str, limit: int = 100) -> list[dict]:
 
     out: list[dict] = []
     for r in rows:
+        params_json = r["params"] if "params" in r.keys() else None
         out.append(
             {
                 "id": r["id"],
                 "media_type": r["media_type"],
                 "original_filename": r["original_filename"],
+                "action": r["action"],
+                "target_format": r["target_format"],
+                "comp_mode": r["comp_mode"],
+                "comp_value": r["comp_value"],
                 "status": r["status"],
                 "error": r["error"],
                 "created_at": r["created_at"],
@@ -247,6 +268,7 @@ def _db_list_jobs_for_session(session_id: str, limit: int = 100) -> list[dict]:
                 "output_filename": r["output_filename"],
                 "output_path": r["output_path"],
                 "input_path": r["input_path"],
+                "params": params_json,
                 "download_url": f"/download/{r['id']}" if r["status"] == "done" else None,
             }
         )
@@ -489,6 +511,7 @@ def _process_with_ffmpeg(
     action: str,
     comp_mode: str | None,
     comp_value: str | None,
+    target_format: str | None = None,
     params: dict | None = None,
 ) -> None:
     cmd: list[str] = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", input_path]
@@ -505,6 +528,10 @@ def _process_with_ffmpeg(
 
     if params.get("audio_channels"):
         cmd.extend(["-ac", str(params["audio_channels"])])
+
+    # Preserve metadata for non-video
+    if not is_video:
+        cmd.extend(["-map_metadata", "0"])
 
     # Preset logic
     preset = params.get("video_preset", "medium")
@@ -556,8 +583,11 @@ def _process_with_ffmpeg(
 
         else:
             # Audio compression
+            cmd.extend(["-map_metadata", "0"])
             audio_br = params.get("audio_bitrate", "128k")
             cmd.extend(["-b:a", audio_br])
+            if ext == ".mp3":
+                cmd.extend(["-id3v2_version", "3"])
     
     elif action == "convert":
          # Apply params for conversion too if present
@@ -570,8 +600,11 @@ def _process_with_ffmpeg(
                  cmd.extend(["-b:a", params["audio_bitrate"]])
         else:
              # Audio conversion
+             cmd.extend(["-map_metadata", "0"])
              if params.get("audio_bitrate"):
                  cmd.extend(["-b:a", params["audio_bitrate"]])
+             if ext == ".mp3" or (target_format or "").lower().strip() == "mp3":
+                 cmd.extend(["-id3v2_version", "3"])
 
     cmd.append(output_path)
 
@@ -838,6 +871,7 @@ def _run_job(job_id: str) -> None:
     comp_value = job["comp_value"]
     params = json.loads(job["params"] or "{}") if "params" in job.keys() else {}
     media_type = job["media_type"] or "unknown"
+    rel_path = _sanitize_relative_path(params.get("relative_path")) if isinstance(params, dict) else None
 
     started_at = _now_ts()
     _db_update_job(job_id, status="processing", started_at=started_at)
@@ -848,13 +882,18 @@ def _run_job(job_id: str) -> None:
         _, ext = os.path.splitext(job["original_filename"])
         ext = (ext or "").lower()
 
+        base_name = os.path.splitext(os.path.basename(rel_path or job["original_filename"]))[0]
+
         if action == "convert":
             out_ext = f".{(target_format or '').lower().strip()}"
-            output_filename = f"{job_id}{out_ext}"
+            output_filename = f"{base_name}{out_ext}"
+            storage_filename = f"{job_id}{out_ext}"
         else:
-            output_filename = f"{job_id}{ext}"
+            out_ext = ext
+            output_filename = f"{base_name}{ext}"
+            storage_filename = f"{job_id}{ext}"
 
-        output_path = os.path.join(PROCESSED_DIR, output_filename)
+        output_path = os.path.join(PROCESSED_DIR, storage_filename)
 
         if ext in VIDEO_EXTENSIONS:
             # Special case for GIF conversion from video with advanced options
@@ -867,13 +906,14 @@ def _run_job(job_id: str) -> None:
                      params=params
                  )
             else:
-                 _process_with_ffmpeg(
+                      _process_with_ffmpeg(
                     input_path=input_path,
                     output_path=output_path,
                     ext=ext,
                     action=action,
                     comp_mode=comp_mode,
                     comp_value=comp_value,
+                          target_format=target_format,
                     params=params,
                 )
 
@@ -885,6 +925,7 @@ def _run_job(job_id: str) -> None:
                 action=action,
                 comp_mode=comp_mode,
                 comp_value=comp_value,
+                target_format=target_format,
                 params=params,
             )
 
@@ -940,6 +981,11 @@ def _run_job(job_id: str) -> None:
 @app.route("/")
 def index():
     return render_template("index.html")
+
+
+@app.errorhandler(RequestEntityTooLarge)
+def handle_file_too_large(e):
+    return jsonify({"error": "fichier trop volumineux"}), 413
 
 
 @app.route("/health", methods=["GET"])
@@ -1020,41 +1066,77 @@ def create_job():
     if request.form.get("ico_size"):
         params["ico_size"] = request.form.get("ico_size")
 
+    rel_path_raw = request.form.get("relative_path")
+    rel_path = _sanitize_relative_path(rel_path_raw)
+    if rel_path:
+        params["relative_path"] = rel_path
+
     if _db_count_active_for_session(g.session_id) >= MAX_ENQUEUED_JOBS:
         return jsonify({"error": "trop de jobs en attente"}), 429
 
     job_id = _new_id()
     original_filename = secure_filename(file.filename)
+    lower_name = original_filename.lower()
+
+    if original_filename.startswith("._") or lower_name in {".ds_store", "thumbs.db"}:
+        return jsonify({"error": "fichier ignore"}), 400
+
+    is_cover = lower_name in {"cover.jpg", "cover.jpeg", "cover.png"}
     media_type = _media_type_from_filename(original_filename)
     input_filename = f"{job_id}__{original_filename}"
     input_path = os.path.join(UPLOAD_DIR, input_filename)
     file.save(input_path)
 
     created_at = _now_ts()
+    status = 'queued'
+    output_path = None
+    output_filename = None
+
+    if is_cover:
+        params["is_cover"] = True
+        # Bypass processing: copy cover as-is to processed and mark done
+        output_filename = original_filename
+        storage_name = f"{job_id}__{original_filename}"
+        output_path = os.path.join(PROCESSED_DIR, storage_name)
+        shutil.copyfile(input_path, output_path)
+        try:
+            os.remove(input_path)
+        except OSError:
+            pass
+        status = 'done'
+
     with _db_connect() as conn:
-        conn.execute(
-            """
-            INSERT INTO jobs (
-              id, session_id, media_type, original_filename,
-              action, target_format, comp_mode, comp_value,
-              status, error, created_at, input_path, params
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', '', ?, ?, ?)
-            """,
-            (
-                job_id,
-                g.session_id,
-                media_type,
-                original_filename,
-                action,
-                target_format if action == "convert" else None,
-                comp_mode or None,
-                comp_value or None,
-                created_at,
-                input_path,
-                json.dumps(params)
-            ),
-        )
+                conn.execute(
+                        """
+                        INSERT INTO jobs (
+                            id, session_id, media_type, original_filename,
+                            action, target_format, comp_mode, comp_value,
+                            status, error, created_at, input_path, params, output_path, output_filename, done_at, expires_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                                job_id,
+                                g.session_id,
+                                media_type,
+                                original_filename,
+                                action,
+                                target_format if action == "convert" else None,
+                                comp_mode or None,
+                                comp_value or None,
+                                status,
+                                created_at,
+                                None if is_cover else input_path,
+                                json.dumps(params),
+                                output_path,
+                                output_filename,
+                                _now_ts() if is_cover else None,
+                                _now_ts() + RETENTION_SECONDS if is_cover else None,
+                        ),
+                )
+
+    if is_cover:
+        return jsonify({"job_id": job_id, "status": "done"}), 200
 
     ex = _executor_for_media_type(media_type)
     ex.submit(_run_job, job_id)
@@ -1128,8 +1210,26 @@ def download_all():
         for job in done_jobs:
             out_path = job["output_path"]
             filename = job["output_filename"] or os.path.basename(out_path)
-            # Avoid duplicate filenames by prefixing with job ID if needed
-            arcname = f"{job['id'][:8]}_{filename}"
+
+            try:
+                params = json.loads(job.get("params") or "{}")
+            except json.JSONDecodeError:
+                params = {}
+            rel_path = _sanitize_relative_path(params.get("relative_path")) if isinstance(params, dict) else None
+
+            is_cover = isinstance(params, dict) and params.get("is_cover")
+
+            # Build archive name preserving folder structure when provided
+            if rel_path:
+                rel_base, rel_ext = os.path.splitext(rel_path)
+                if job.get("action") == "convert" and job.get("target_format") and not is_cover:
+                    arcname = f"{rel_base}.{job['target_format'].lstrip('.')}"
+                else:
+                    arcname = rel_path
+            else:
+                arcname = filename
+
+            # Fallback to prefixing on duplicates handled by ZipFile implicitly via unique arcname
             zf.write(out_path, arcname)
     
     zip_buffer.seek(0)

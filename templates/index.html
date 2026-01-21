@@ -85,6 +85,26 @@
                             </div>
                         </div>
 
+                        <!-- Audio Settings (shown when audio category selected) -->
+                        <div id="audio-settings" class="settings-group hidden">
+                            <h4>Audio</h4>
+                            <div class="input-row">
+                                <div class="input-group">
+                                    <label>Bitrate</label>
+                                    <select id="convert-audio-bitrate">
+                                        <option value="64k">64 kbps</option>
+                                        <option value="96k">96 kbps</option>
+                                        <option value="128k">128 kbps</option>
+                                        <option value="160k">160 kbps</option>
+                                        <option value="192k" selected>192 kbps</option>
+                                        <option value="256k">256 kbps</option>
+                                        <option value="320k">320 kbps</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <p class="settings-note">S'applique aux formats compatibles (MP3, AAC, etc.).</p>
+                        </div>
+
                         <!-- Image Quality Settings (shown when image category selected) -->
                         <div id="image-quality-settings" class="settings-group hidden">
                             <h4>Qualité Image</h4>
@@ -316,7 +336,7 @@
                     <div class="icon">📁</div>
                     <h3>Glisser-déposer vos fichiers ici</h3>
                     <p>ou cliquez pour parcourir (Illimité)</p>
-                    <input type="file" id="file-input" multiple hidden>
+                    <input type="file" id="file-input" multiple webkitdirectory directory hidden>
                 </div>
 
                 <div class="file-list-header">

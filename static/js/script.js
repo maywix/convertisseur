@@ -40,6 +40,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const advancedSettings = document.getElementById('advanced-settings');
     const gifSettings = document.getElementById('gif-settings');
     const imageQualitySettings = document.getElementById('image-quality-settings');
+    const audioSettings = document.getElementById('audio-settings');
+    const convertAudioBitrate = document.getElementById('convert-audio-bitrate');
 
     let queue = [];
     let currentAction = 'convert';
@@ -140,6 +142,13 @@ document.addEventListener('DOMContentLoaded', () => {
             imageQualitySettings.classList.remove('hidden');
         } else {
             imageQualitySettings.classList.add('hidden');
+        }
+
+        // Audio settings for audio category
+        if (currentAction === 'convert' && selectedCategory === 'audio') {
+            audioSettings?.classList.remove('hidden');
+        } else {
+            audioSettings?.classList.add('hidden');
         }
 
         updateImageConditionalUI();
@@ -259,18 +268,68 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+    async function readEntriesAsync(reader) {
+        return new Promise((resolve, reject) => {
+            reader.readEntries(resolve, reject);
+        });
+    }
+
+    async function traverseEntry(entry, pathPrefix = '') {
+        if (!entry) return [];
+        if (entry.isFile) {
+            return new Promise((resolve, reject) => {
+                entry.file(file => {
+                    resolve([{ file, relativePath: pathPrefix + file.name }]);
+                }, reject);
+            });
+        }
+        if (entry.isDirectory) {
+            const reader = entry.createReader();
+            let files = [];
+            // Read directory entries in batches
+            while (true) {
+                const entries = await readEntriesAsync(reader);
+                if (!entries || entries.length === 0) break;
+                for (const ent of entries) {
+                    const child = await traverseEntry(ent, `${pathPrefix}${entry.name}/`);
+                    files = files.concat(child);
+                }
+            }
+            return files;
+        }
+        return [];
+    }
+
+    async function collectFilesFromDataTransfer(dataTransfer) {
+        const items = dataTransfer?.items;
+        if (items && items.length) {
+            const entries = Array.from(items)
+                .map(i => i.webkitGetAsEntry && i.webkitGetAsEntry())
+                .filter(Boolean);
+            let collected = [];
+            for (const entry of entries) {
+                const part = await traverseEntry(entry, '');
+                collected = collected.concat(part);
+            }
+            if (collected.length) return collected;
+        }
+        // Fallback to plain files list
+        return Array.from(dataTransfer?.files || []).map(f => ({ file: f, relativePath: (f.webkitRelativePath || f.relativePath || '').trim() }));
+    }
+
     // Drag and drop
     dropZone.addEventListener('click', () => fileInput.click());
     dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.style.borderColor = 'var(--accent)'; });
     dropZone.addEventListener('dragleave', () => { dropZone.style.borderColor = 'var(--border)'; });
-    dropZone.addEventListener('drop', (e) => {
+    dropZone.addEventListener('drop', async (e) => {
         e.preventDefault();
         dropZone.style.borderColor = 'var(--border)';
-        if (e.dataTransfer.files.length) addFilesToQueue(e.dataTransfer.files);
+        const files = await collectFilesFromDataTransfer(e.dataTransfer);
+        if (files.length) addFilesToQueue(files);
     });
 
     fileInput.addEventListener('change', (e) => {
-        if (e.target.files.length) addFilesToQueue(e.target.files);
+        if (e.target.files.length) addFilesToQueue(Array.from(e.target.files));
         fileInput.value = '';
     });
 
@@ -279,12 +338,26 @@ document.addEventListener('DOMContentLoaded', () => {
 
         for (const file of Array.from(files)) {
             const id = Math.random().toString(36).substring(7);
+            const fObj = file.file || file; // support {file, relativePath}
+            const relPath = (file.relativePath || fObj.webkitRelativePath || fObj.relativePath || '').trim();
+            const baseName = fObj.name || '';
+            const lowerName = baseName.toLowerCase();
+
+            // Skip macOS resource forks and known album art files
+            if (baseName.startsWith('._') || lowerName === '.ds_store' || lowerName === 'thumbs.db') {
+                console.debug('Skipping hidden/meta file', baseName);
+                continue;
+            }
+            if (['cover.jpg', 'cover.jpeg', 'cover.png'].includes(lowerName)) {
+                console.debug('Skipping cover art file from processing', baseName);
+                continue;
+            }
 
             const clone = template.content.cloneNode(true);
             const el = clone.querySelector('.file-item');
 
-            el.querySelector('.file-name').textContent = file.name;
-            el.querySelector('.file-meta').textContent = formatSize(file.size) + ' • En attente';
+            el.querySelector('.file-name').textContent = relPath || fObj.name;
+            el.querySelector('.file-meta').textContent = formatSize(fObj.size) + ' • En attente';
 
             el.querySelector('.remove-btn').addEventListener('click', () => removeFile(id));
 
@@ -292,12 +365,13 @@ document.addEventListener('DOMContentLoaded', () => {
             const thumbImg = el.querySelector('.thumb-img');
             const thumbPlaceholder = el.querySelector('.thumb-placeholder');
             
-            const fileType = getFileType(file.name);
+            const fileType = getFileType(fObj.name);
+            const effectiveFile = fObj;
             
             if (fileType === 'image') {
                 // For images, generate thumbnail from file
                 try {
-                    const thumbUrl = await generateImageThumbnail(file);
+                    const thumbUrl = await generateImageThumbnail(effectiveFile);
                     thumbImg.src = thumbUrl;
                     thumbImg.style.display = 'block';
                     thumbPlaceholder.style.display = 'none';
@@ -322,7 +396,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
             queue.push({
                 id: id,
-                file: file,
+                file: effectiveFile,
+                relativePath: relPath,
                 status: 'pending',
                 jobId: null,
                 element: el,
@@ -518,6 +593,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const formData = new FormData();
         formData.append('file', item.file);
+        if (item.relativePath) {
+            formData.append('relative_path', item.relativePath);
+        }
         formData.append('action', action);
 
         if (action === 'convert') {
@@ -545,6 +623,12 @@ document.addEventListener('DOMContentLoaded', () => {
                         formData.append('image_quality', qVal);
                     }
                 }
+            }
+
+            // Audio bitrate for audio conversion
+            if (selectedCategory === 'audio' && convertAudioBitrate) {
+                const br = convertAudioBitrate.value;
+                if (br) formData.append('audio_bitrate', br);
             }
 
             // Image resize params (convert mode)
@@ -609,7 +693,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 method: 'POST',
                 body: formData
             });
-            const data = await response.json();
+
+            let data;
+            const ctype = response.headers.get('content-type') || '';
+            if (ctype.includes('application/json')) {
+                data = await response.json();
+            } else {
+                const text = await response.text();
+                throw new Error(text ? text.slice(0, 200) : `HTTP ${response.status}`);
+            }
 
             if (response.ok) {
                 item.jobId = data.job_id;
@@ -618,7 +710,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 metaEl.textContent = "en file d'attente...";
                 // No await pollJob here!
             } else {
-                throw new Error(data.error);
+                throw new Error(data.error || `HTTP ${response.status}`);
             }
         } catch (error) {
             item.status = 'error';
