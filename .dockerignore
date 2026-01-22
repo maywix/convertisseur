@@ -15,5 +15,4 @@ node_modules
 # Frontend dev dependencies (not needed in Docker - old template still works)
 frontend/node_modules
 frontend/.git
-
-# Keep frontend source for future use but not dist (built separately)
+frontend/dist

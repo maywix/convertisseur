@@ -30,6 +30,15 @@ export function Combobox({
   const [open, setOpen] = React.useState(false)
   const selectedLabel = options.find((o) => o.value === value)?.label
 
+  const handleSelect = React.useCallback((selectedLabel: string) => {
+    // cmdk passes the normalized (lowercased) label, so we need to find the option by comparing lowercase
+    const option = options.find((o) => o.label.toLowerCase() === selectedLabel.toLowerCase())
+    if (option) {
+      onChange(option.value)
+    }
+    setOpen(false)
+  }, [options, onChange])
+
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
@@ -59,10 +68,8 @@ export function Combobox({
                 <CommandItem
                   key={option.value}
                   value={option.label}
-                  onSelect={() => {
-                    onChange(option.value)
-                    setOpen(false)
-                  }}
+                  onSelect={handleSelect}
+                  keywords={[option.value]}
                 >
                   <Check
                     className={cn(

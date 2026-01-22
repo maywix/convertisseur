@@ -79,6 +79,7 @@ export function UploadZone({ onFilesAdded }: UploadZoneProps) {
                 ref={inputRef}
                 type="file"
                 multiple
+                accept="video/*,audio/*,image/*,.mp4,.mov,.avi,.mkv,.webm,.wmv,.flv,.m4v,.mpeg,.mpg,.3gp,.ts,.mts,.m2ts,.mp3,.wav,.m4a,.flac,.aac,.ogg,.wma,.aiff,.opus,.png,.jpg,.jpeg,.gif,.tiff,.tif,.bmp,.psd,.heic,.heif,.webp,.ico,.raw,.cr2,.nef,.arw,.dng"
                 onChange={handleInputChange}
                 className="hidden"
             />

@@ -38,11 +38,11 @@ export function useConverter() {
         percentReduction: '50',
         resolution: '720',
         advancedEnabled: false,
-        fps: '',
+        fps: 'original',
         preset: 'medium',
-        audioBitrate: '',
-        audioChannels: '',
-        audioSampleRate: '',
+        audioBitrate: 'original',
+        audioChannels: 'original',
+        audioSampleRate: 'original',
         imageMaxSize: '',
     })
 
@@ -161,11 +161,11 @@ export function useConverter() {
             formData.append('comp_value', compValue)
 
             if (compressSettings.advancedEnabled) {
-                if (compressSettings.fps) formData.append('fps', compressSettings.fps)
+                if (compressSettings.fps && compressSettings.fps !== 'original') formData.append('fps', compressSettings.fps)
                 if (compressSettings.preset) formData.append('video_preset', compressSettings.preset)
-                if (compressSettings.audioBitrate) formData.append('audio_bitrate', compressSettings.audioBitrate)
-                if (compressSettings.audioChannels) formData.append('audio_channels', compressSettings.audioChannels)
-                if (compressSettings.audioSampleRate) formData.append('audio_sample_rate', compressSettings.audioSampleRate)
+                if (compressSettings.audioBitrate && compressSettings.audioBitrate !== 'original') formData.append('audio_bitrate', compressSettings.audioBitrate)
+                if (compressSettings.audioChannels && compressSettings.audioChannels !== 'original') formData.append('audio_channels', compressSettings.audioChannels)
+                if (compressSettings.audioSampleRate && compressSettings.audioSampleRate !== 'original') formData.append('audio_sample_rate', compressSettings.audioSampleRate)
             }
 
             if (compressSettings.imageMaxSize) {

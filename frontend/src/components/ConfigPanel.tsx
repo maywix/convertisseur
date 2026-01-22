@@ -1,7 +1,6 @@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Combobox } from '@/components/ui/combobox'
 import { Switch } from '@/components/ui/switch'
 import { Slider } from '@/components/ui/slider'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
@@ -81,14 +80,22 @@ export function ConfigPanel({
                         <label className="text-sm font-semibold text-muted-foreground block mb-2">
                             2. Format de sortie
                         </label>
-                        <Combobox
-                            options={formats.map((fmt) => ({ label: fmt.toUpperCase(), value: fmt }))}
-                            placeholder={convertSettings.category ? 'Choisir un format...' : "Sélectionnez un type d'abord..."}
-                            emptyMessage="Aucun format"
+                        <Select
                             value={convertSettings.format}
-                            onChange={onFormatChange}
-                            className="w-full"
-                        />
+                            onValueChange={onFormatChange}
+                            disabled={!convertSettings.category}
+                        >
+                            <SelectTrigger className="w-full">
+                                <SelectValue placeholder={convertSettings.category ? 'Choisir un format...' : "Sélectionnez un type d'abord..."} />
+                            </SelectTrigger>
+                            <SelectContent>
+                                {formats.map((fmt) => (
+                                    <SelectItem key={fmt} value={fmt}>
+                                        {fmt.toUpperCase()}
+                                    </SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
                     </div>
 
                     {/* GIF Settings */}
@@ -356,7 +363,7 @@ export function ConfigPanel({
                                     >
                                         <SelectTrigger><SelectValue placeholder="Original" /></SelectTrigger>
                                         <SelectContent>
-                                            <SelectItem value="">Original</SelectItem>
+                                            <SelectItem value="original">Original</SelectItem>
                                             <SelectItem value="24">24</SelectItem>
                                             <SelectItem value="30">30</SelectItem>
                                             <SelectItem value="60">60</SelectItem>
@@ -389,7 +396,7 @@ export function ConfigPanel({
                                     >
                                         <SelectTrigger><SelectValue placeholder="Original" /></SelectTrigger>
                                         <SelectContent>
-                                            <SelectItem value="">Original</SelectItem>
+                                            <SelectItem value="original">Original</SelectItem>
                                             <SelectItem value="64k">64k</SelectItem>
                                             <SelectItem value="128k">128k</SelectItem>
                                             <SelectItem value="192k">192k</SelectItem>
@@ -405,7 +412,7 @@ export function ConfigPanel({
                                     >
                                         <SelectTrigger><SelectValue placeholder="Original" /></SelectTrigger>
                                         <SelectContent>
-                                            <SelectItem value="">Original</SelectItem>
+                                            <SelectItem value="original">Original</SelectItem>
                                             <SelectItem value="1">Mono</SelectItem>
                                             <SelectItem value="2">Stereo</SelectItem>
                                         </SelectContent>

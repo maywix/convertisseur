@@ -71,9 +71,9 @@ export function FileItem({ item, onRemove }: FileItemProps) {
     }[fileType]
 
     return (
-        <div className="flex items-center gap-4 p-3 bg-background rounded-lg border border-border mb-2">
+        <div className="flex items-center gap-4 p-3 bg-background rounded-lg border border-border mb-2 w-full max-w-full overflow-hidden">
             {/* Thumbnail */}
-            <div className="w-14 h-14 min-w-14 rounded-md overflow-hidden bg-muted flex items-center justify-center">
+            <div className="w-14 h-14 min-w-14 flex-shrink-0 rounded-md overflow-hidden bg-muted flex items-center justify-center">
                 {thumbnailUrl ? (
                     <img src={thumbnailUrl} alt="" className="w-full h-full object-cover" />
                 ) : (
@@ -82,7 +82,7 @@ export function FileItem({ item, onRemove }: FileItemProps) {
             </div>
 
             {/* Info */}
-            <div className="flex-1 min-w-0 overflow-hidden">
+            <div className="flex-1 min-w-0 overflow-hidden max-w-[calc(100%-120px)]">
                 <div className="font-medium text-sm truncate pr-6" title={item.relativePath || item.file.name}>
                     {item.relativePath || item.file.name}
                 </div>
