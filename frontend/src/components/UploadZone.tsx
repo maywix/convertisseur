@@ -81,9 +81,6 @@ export function UploadZone({ onFilesAdded }: UploadZoneProps) {
                 multiple
                 onChange={handleInputChange}
                 className="hidden"
-                // @ts-expect-error webkitdirectory is a non-standard attribute
-                webkitdirectory=""
-                directory=""
             />
         </div>
     )
