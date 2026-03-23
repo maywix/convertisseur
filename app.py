@@ -697,15 +697,33 @@ def _process_image(
     
     with Image.open(input_path) as img:
         # Optional resize (applies to both convert & compress)
-        target_max = None
-        if params.get("image_max_size") is not None:
-            try:
-                target_max = int(str(params.get("image_max_size")).strip())
-            except ValueError:
-                target_max = None
+        resize_mode_raw = (str(params.get("image_resize_mode") or "").strip().lower())
+        if not resize_mode_raw and params.get("image_max_size"):
+            resize_mode_raw = "dimension"
 
-        if target_max and target_max > 0:
-            img = _resize_preserve_aspect(img, target_max)
+        if resize_mode_raw == "dimension":
+            target_max = None
+            if params.get("image_max_size") is not None:
+                try:
+                    target_max = int(str(params.get("image_max_size")).strip())
+                except ValueError:
+                    target_max = None
+
+            if target_max and target_max > 0:
+                img = _resize_preserve_aspect(img, target_max)
+        elif resize_mode_raw == "percent":
+            percent_value = None
+            if params.get("image_resize_percent") is not None:
+                try:
+                    percent_value = float(str(params.get("image_resize_percent")).strip())
+                except ValueError:
+                    percent_value = None
+
+            if percent_value and percent_value > 0:
+                scale = max(0.05, min(3.0, percent_value / 100.0))
+                new_width = max(1, int(img.width * scale))
+                new_height = max(1, int(img.height * scale))
+                img = img.resize((new_width, new_height), resample=_LANCZOS)
 
         # Check if image has transparency
         has_alpha = img.mode in ('RGBA', 'LA', 'PA') or (img.mode == 'P' and 'transparency' in img.info)
@@ -1084,6 +1102,10 @@ def create_job():
         params["image_max_size"] = request.form.get("image_max_size")
     if request.form.get("ico_size"):
         params["ico_size"] = request.form.get("ico_size")
+    if request.form.get("image_resize_mode"):
+        params["image_resize_mode"] = request.form.get("image_resize_mode")
+    if request.form.get("image_resize_percent"):
+        params["image_resize_percent"] = request.form.get("image_resize_percent")
 
     rel_path_raw = request.form.get("relative_path")
     rel_path = _sanitize_relative_path(rel_path_raw)

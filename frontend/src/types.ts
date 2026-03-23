@@ -36,6 +36,8 @@ export interface ConvertSettings {
     // Image settings
     imageQuality: string
     imageMaxSize: string
+    imageResizeMode: 'none' | 'dimension' | 'percent'
+    imageResizePercent: string
     icoSize: string
 }
 

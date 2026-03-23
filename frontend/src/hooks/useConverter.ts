@@ -27,6 +27,8 @@ export function useConverter() {
         audioBitrate: '192k',
         imageQuality: '90',
         imageMaxSize: '',
+        imageResizeMode: 'none',
+        imageResizePercent: '75',
         icoSize: '256',
     })
 
@@ -137,8 +139,12 @@ export function useConverter() {
                 } else {
                     formData.append('image_quality', convertSettings.imageQuality)
                 }
-                if (convertSettings.imageMaxSize) {
+                if (convertSettings.imageResizeMode === 'dimension' && convertSettings.imageMaxSize) {
+                    formData.append('image_resize_mode', 'dimension')
                     formData.append('image_max_size', convertSettings.imageMaxSize)
+                } else if (convertSettings.imageResizeMode === 'percent') {
+                    formData.append('image_resize_mode', 'percent')
+                    formData.append('image_resize_percent', convertSettings.imageResizePercent || '75')
                 }
                 if (targetFormat === 'ico' && convertSettings.icoSize) {
                     formData.append('ico_size', convertSettings.icoSize)

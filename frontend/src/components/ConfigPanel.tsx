@@ -205,25 +205,83 @@ export function ConfigPanel({
                             </div>
                             <p className="text-xs text-muted-foreground italic">💡 La transparence est préservée automatiquement (PNG, WebP)</p>
 
-                            <div>
-                                <label className="text-xs text-muted-foreground mb-1 block">Résolution</label>
-                                <Select
-                                    value={convertSettings.imageMaxSize || 'original'}
-                                    onValueChange={(v) => onConvertSettingsChange({ ...convertSettings, imageMaxSize: v === 'original' ? '' : v })}
-                                >
-                                    <SelectTrigger><SelectValue /></SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="original">Originale</SelectItem>
-                                        <SelectItem value="3840">4K (3840 px)</SelectItem>
-                                        <SelectItem value="2560">QHD (2560 px)</SelectItem>
-                                        <SelectItem value="1920">1080p (1920 px)</SelectItem>
-                                        <SelectItem value="1280">1280 px</SelectItem>
-                                        <SelectItem value="1080">1080 px</SelectItem>
-                                        <SelectItem value="720">720 px</SelectItem>
-                                        <SelectItem value="480">480 px</SelectItem>
-                                        <SelectItem value="256">256 px (favicon)</SelectItem>
-                                    </SelectContent>
-                                </Select>
+                            <div className="space-y-4">
+                                <div>
+                                    <label className="text-xs text-muted-foreground mb-1 block">Redimensionnement</label>
+                                    <RadioGroup
+                                        value={convertSettings.imageResizeMode}
+                                        onValueChange={(v) => onConvertSettingsChange({
+                                            ...convertSettings,
+                                            imageResizeMode: v as ConvertSettings['imageResizeMode'],
+                                        })}
+                                        className="space-y-3"
+                                    >
+                                        {([
+                                            { value: 'none', label: 'Aucun redimensionnement', description: 'Reste sur la taille originale' },
+                                            { value: 'dimension', label: 'Limiter la dimension max', description: 'Cap sur la plus grande longueur (px)' },
+                                            { value: 'percent', label: 'Réduction en %', description: `${convertSettings.imageResizePercent}% de l'original` },
+                                        ] as const).map((opt) => (
+                                            <div key={opt.value} className="flex items-start gap-2">
+                                                <RadioGroupItem value={opt.value} id={`resize-${opt.value}`} />
+                                                <div className="text-sm leading-tight">
+                                                    <label htmlFor={`resize-${opt.value}`} className="font-semibold text-sm">
+                                                        {opt.label}
+                                                    </label>
+                                                    <p className="text-xs text-muted-foreground mt-1">
+                                                        {opt.description}
+                                                    </p>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </RadioGroup>
+                                </div>
+
+                                {convertSettings.imageResizeMode === 'dimension' && (
+                                    <div>
+                                        <label className="text-xs text-muted-foreground mb-1 block">Dimension max</label>
+                                        <Select
+                                            value={convertSettings.imageMaxSize || 'original'}
+                                            onValueChange={(v) => onConvertSettingsChange({ ...convertSettings, imageMaxSize: v === 'original' ? '' : v })}
+                                        >
+                                            <SelectTrigger><SelectValue /></SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="original">Originale</SelectItem>
+                                                <SelectItem value="3840">4K (3840 px)</SelectItem>
+                                                <SelectItem value="2560">QHD (2560 px)</SelectItem>
+                                                <SelectItem value="1920">1080p (1920 px)</SelectItem>
+                                                <SelectItem value="1280">1280 px</SelectItem>
+                                                <SelectItem value="1080">1080 px</SelectItem>
+                                                <SelectItem value="720">720 px</SelectItem>
+                                                <SelectItem value="480">480 px</SelectItem>
+                                                <SelectItem value="256">256 px (favicon)</SelectItem>
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                )}
+
+                                {convertSettings.imageResizeMode === 'percent' && (
+                                    <div className="space-y-2">
+                                        <div>
+                                            <span className="text-xs font-semibold text-muted-foreground">
+                                                Taille cible: {convertSettings.imageResizePercent}%
+                                            </span>
+                                        </div>
+                                        <Slider
+                                            value={[Math.max(10, Math.min(200, parseInt(convertSettings.imageResizePercent, 10) || 75))]}
+                                            min={10}
+                                            max={200}
+                                            step={5}
+                                            onValueChange={([value]) => onConvertSettingsChange({
+                                                ...convertSettings,
+                                                imageResizePercent: String(value),
+                                            })}
+                                        />
+                                        <div className="flex justify-between text-xs text-muted-foreground">
+                                            <span>10%</span>
+                                            <span>200%</span>
+                                        </div>
+                                    </div>
+                                )}
                             </div>
 
                             {/* ICO Settings */}
