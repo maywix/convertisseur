@@ -52,16 +52,8 @@ ENV PATH="/opt/venv/bin:$PATH"
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Bun install
-ENV BUN_INSTALL=/root/.bun
-ENV PATH="$BUN_INSTALL/bin:$PATH"
-RUN curl -fsSL https://bun.sh/install | /bin/bash
-
-# Frontend build (React + Vite via Bun)
-COPY frontend/package.json ./frontend/
-COPY frontend/package-lock.json ./frontend/
-COPY frontend ./frontend
-RUN cd frontend && bun install && bun run build
+# Frontend dist already built on host
+COPY frontend/dist ./frontend/dist
 
 # STAGE 2: Runtime
 FROM python:3.12-alpine

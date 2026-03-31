@@ -11,7 +11,13 @@ export interface QueueItem {
   error: string | null;
   action: "convert" | "compress";
   targetFormat: string | null;
+  outputMode: "global" | "custom";
+  customAction: "convert" | "compress" | null;
+  customConvertSettings: ConvertSettings | null;
+  customCompressSettings: CompressSettings | null;
 }
+
+export type OutputMode = "global" | "per-file";
 
 export interface JobResponse {
   id: string;
@@ -20,6 +26,9 @@ export interface JobResponse {
   download_url: string | null;
   output_filename: string | null;
   media_type: string | null;
+  original_filename?: string;
+  action?: "convert" | "compress";
+  target_format?: string | null;
 }
 
 export type MediaCategory = "video" | "audio" | "image" | null;
@@ -39,6 +48,12 @@ export interface ConvertSettings {
   imageResizeMode: "none" | "dimension" | "percent";
   imageResizePercent: string;
   icoSize: string;
+  // Mini video editor
+  videoTrimStart: string;
+  videoTrimEnd: string;
+  overlayText: string;
+  overlayTextX: string;
+  overlayTextY: string;
 }
 
 export interface CompressSettings {
@@ -51,7 +66,18 @@ export interface CompressSettings {
   advancedEnabled: boolean;
   fps: string;
   preset: string;
+  videoCodec: string;
+  videoProfile: string;
+  videoTune: string;
+  qualityMode: "auto" | "crf" | "bitrate";
+  videoCrf: string;
+  videoBitrateK: string;
+  videoPixelFormat: string;
+  twoPass: boolean;
+  faststart: boolean;
+  deinterlace: boolean;
   audioBitrate: string;
+  audioCodec: string;
   audioChannels: string;
   audioSampleRate: string;
   // Image
@@ -60,26 +86,31 @@ export interface CompressSettings {
 
 export const VIDEO_FORMATS = [
   "mp4",
+  "webm",
+  "mkv",
   "mov",
   "avi",
-  "mkv",
-  "webm",
   "wmv",
   "flv",
   "m4v",
   "mpeg",
+  "mpg",
+  "ogv",
   "gif",
   "ts",
 ];
 export const AUDIO_FORMATS = [
   "mp3",
-  "wav",
-  "m4a",
-  "flac",
   "aac",
-  "ogg",
-  "wma",
+  "m4a",
   "opus",
+  "ogg",
+  "flac",
+  "wav",
+  "wma",
+  "ac3",
+  "eac3",
+  "aiff",
 ];
 export const IMAGE_FORMATS = [
   "png",
@@ -87,9 +118,11 @@ export const IMAGE_FORMATS = [
   "jpeg",
   "gif",
   "webp",
+  "avif",
   "bmp",
   "tiff",
   "ico",
+  "pdf",
 ];
 
 export const VIDEO_EXTENSIONS = [
@@ -116,6 +149,11 @@ export const VIDEO_EXTENSIONS = [
   "rm",
   "rmvb",
   "f4v",
+  "mxf",
+  "dv",
+  "tod",
+  "nsv",
+  "amv",
 ];
 
 export const AUDIO_EXTENSIONS = [
@@ -139,6 +177,11 @@ export const AUDIO_EXTENSIONS = [
   "ra",
   "mid",
   "midi",
+  "eac3",
+  "tta",
+  "spx",
+  "wv",
+  "aifc",
 ];
 
 export const IMAGE_EXTENSIONS = [
@@ -171,6 +214,13 @@ export const IMAGE_EXTENSIONS = [
   "qtif",
   "pict",
   "icns",
+  "avif",
+  "jxl",
+  "ppm",
+  "pgm",
+  "pbm",
+  "pnm",
+  "svg",
 ];
 
 export function getFileType(

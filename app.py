@@ -66,13 +66,13 @@ VIDEO_EXTENSIONS = {
 
 AUDIO_EXTENSIONS = {
     ".mp3", ".wav", ".m4a", ".flac", ".aac", ".ogg", ".wma", ".aiff",
-    ".aif", ".opus", ".ac3", ".dts", ".amr", ".ape", ".mka", ".mpa",
+    ".aif", ".opus", ".ac3", ".eac3", ".dts", ".amr", ".ape", ".mka", ".mpa",
     ".au", ".ra", ".mid", ".midi"
 }
 
 IMAGE_EXTENSIONS = {
     ".png", ".jpg", ".jpeg", ".gif", ".tiff", ".tif", ".bmp", ".psd",
-    ".heic", ".heif", ".webp", ".ico", ".jp2", ".j2k", ".jpf", ".jpm",
+    ".heic", ".heif", ".webp", ".avif", ".ico", ".jp2", ".j2k", ".jpf", ".jpm",
     ".raw", ".cr2", ".nef", ".arw", ".dng", ".orf", ".rw2", ".pef",
     ".tga", ".sgi", ".qtif", ".pict", ".icns"
 }
@@ -152,12 +152,14 @@ def _new_id() -> str:
 
 
 def _db_connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn = sqlite3.connect(DB_PATH, timeout=60, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 
 
 def _db_init() -> None:
+    # Small random delay to prevent simultaneous DB init from multiple workers
+    time.sleep(0.1 * (os.getpid() % 5))
     with _db_connect() as conn:
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute(
@@ -516,108 +518,168 @@ def _process_with_ffmpeg(
     target_format: str | None = None,
     params: dict | None = None,
 ) -> None:
-    cmd: list[str] = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", input_path]
     params = params or {}
+    cmd: list[str] = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", input_path]
 
     is_video = ext in VIDEO_EXTENSIONS
-    
-    # Advanced Params Application
+    target_format = (target_format or "").lower().strip()
+
+    # Common A/V options.
     if params.get("fps"):
         cmd.extend(["-r", str(params["fps"])])
-    
     if params.get("audio_sample_rate"):
         cmd.extend(["-ar", str(params["audio_sample_rate"])])
-
     if params.get("audio_channels"):
         cmd.extend(["-ac", str(params["audio_channels"])])
 
-    # Preserve metadata for non-video
     if not is_video:
         cmd.extend(["-map_metadata", "0"])
 
-    # Preset logic
-    preset = params.get("video_preset", "medium")
+    preset = str(params.get("video_preset") or "medium")
+    video_codec = str(params.get("video_codec") or "libx264")
+    video_profile = str(params.get("video_profile") or "auto")
+    video_tune = str(params.get("video_tune") or "none")
+    pixel_format = str(params.get("video_pixel_format") or "auto")
+    quality_mode = str(params.get("video_quality_mode") or "auto")
+    faststart_enabled = str(params.get("faststart") or "").lower() in {"1", "true", "yes", "on"}
+    deinterlace_enabled = str(params.get("deinterlace") or "").lower() in {"1", "true", "yes", "on"}
 
-    if action == "compress":
-        if is_video:
-            cmd.extend(["-vcodec", "libx264", "-preset", preset])
+    if target_format == "webm" and video_codec not in {"libvpx-vp9", "libaom-av1"}:
+        video_codec = "libvpx-vp9"
+    if target_format in {"mp4", "mov", "m4v"} and video_codec in {"libvpx-vp9", "libaom-av1"}:
+        video_codec = "libx264"
+
+    filters: list[str] = []
+
+    trim_start = str(params.get("trim_start") or "").strip()
+    trim_end = str(params.get("trim_end") or "").strip()
+    if trim_start:
+        cmd.extend(["-ss", trim_start])
+    if trim_end:
+        cmd.extend(["-to", trim_end])
+
+    overlay_text = str(params.get("overlay_text") or "").strip()
+    overlay_text_x = str(params.get("overlay_text_x") or "(w-text_w)/2")
+    overlay_text_y = str(params.get("overlay_text_y") or "h-(text_h*2)")
+
+    def _ff_text_escape(s: str) -> str:
+        return (
+            s.replace("\\", "\\\\")
+            .replace(":", "\\:")
+            .replace("'", "\\'")
+            .replace("%", "\\%")
+        )
+
+    if is_video and deinterlace_enabled:
+        filters.append("bwdif")
+
+    if is_video and overlay_text:
+        text = _ff_text_escape(overlay_text)
+        filters.append(
+            f"drawtext=text='{text}':x={overlay_text_x}:y={overlay_text_y}:fontsize=36:fontcolor=white:box=1:boxcolor=black@0.35:boxborderw=8"
+        )
+
+    if action == "compress" and comp_mode == "res" and is_video:
+        target_height = str(comp_value or "720")
+        filters.append(f"scale=-2:{target_height}")
+
+    if filters:
+        cmd.extend(["-vf", ",".join(filters)])
+
+    target_bitrate_k: int | None = None
+    crf_value: str | None = None
+
+    if is_video:
+        cmd.extend(["-c:v", video_codec])
+        if preset:
+            cmd.extend(["-preset", preset])
+        if video_profile and video_profile != "auto":
+            cmd.extend(["-profile:v", video_profile])
+        if video_tune and video_tune != "none" and video_codec in {"libx264", "libx265"}:
+            cmd.extend(["-tune", video_tune])
+        if pixel_format and pixel_format != "auto":
+            cmd.extend(["-pix_fmt", pixel_format])
+
+        if quality_mode == "bitrate":
+            try:
+                target_bitrate_k = max(100, int(float(str(params.get("video_bitrate_k") or 0))))
+            except ValueError:
+                target_bitrate_k = 2500
+        elif quality_mode == "crf":
+            crf_value = str(params.get("video_crf") or "23")
+        elif action == "compress":
             info = _get_video_info(input_path)
-
             if comp_mode == "size" and info and info["duration"] > 0:
                 try:
                     target_size_mb = float(comp_value or 0)
                 except ValueError:
                     target_size_mb = 0
-
                 if target_size_mb > 0:
                     target_bitrate = int((target_size_mb * 8 * 1024 * 1024) / info["duration"])
-                    target_bitrate = max(target_bitrate, 100000)
-                    cmd.extend(["-b:v", str(target_bitrate)])
-                else:
-                    cmd.extend(["-crf", "23"])
-
+                    target_bitrate_k = max(100, int(target_bitrate / 1000))
             elif comp_mode == "percent" and info and info["bitrate"] > 0:
                 try:
                     percent = float(comp_value or 0)
                 except ValueError:
                     percent = 0
-
                 if percent > 0:
                     target_bitrate = int(info["bitrate"] * (1 - percent / 100))
-                    target_bitrate = max(target_bitrate, 100000)
-                    cmd.extend(["-b:v", str(target_bitrate)])
-                else:
-                    cmd.extend(["-crf", "23"])
-
-            elif comp_mode == "res":
-                target_height = str(comp_value or "720")
-                cmd.extend(["-vf", f"scale=-2:{target_height}", "-crf", "23"])
-
+                    target_bitrate_k = max(100, int(target_bitrate / 1000))
             else:
                 crf_map = {"low": "23", "medium": "28", "high": "35"}
                 val = (comp_value or "medium").strip()
-                crf = crf_map.get(val, "23")
-                cmd.extend(["-crf", crf])
-            
-            # Audio bitrate for video compression
-            if params.get("audio_bitrate"):
-                cmd.extend(["-b:a", params["audio_bitrate"]])
+                crf_value = crf_map.get(val, "23")
 
-        else:
-            # Audio compression
-            cmd.extend(["-map_metadata", "0"])
-            audio_br = params.get("audio_bitrate", "128k")
-            cmd.extend(["-b:a", audio_br])
-            if ext == ".mp3":
-                cmd.extend(["-id3v2_version", "3"])
-    
-    elif action == "convert":
-         # Apply params for conversion too if present
-        if is_video:
-             # Basic sensible default for video conversion if not specified, but let ffmpeg decide mostly
-             # If user specified preset, use it
-             if params.get("video_preset"):
-                 cmd.extend(["-preset", preset])
-             if params.get("audio_bitrate"):
-                 cmd.extend(["-b:a", params["audio_bitrate"]])
-        else:
-             # Audio conversion
-             cmd.extend(["-map_metadata", "0"])
-             if params.get("audio_bitrate"):
-                 cmd.extend(["-b:a", params["audio_bitrate"]])
-             if ext == ".mp3" or (target_format or "").lower().strip() == "mp3":
-                 cmd.extend(["-id3v2_version", "3"])
+        if target_bitrate_k is not None:
+            cmd.extend(["-b:v", f"{target_bitrate_k}k"])
+        elif crf_value:
+            cmd.extend(["-crf", crf_value])
 
-    cmd.append(output_path)
+        if faststart_enabled and target_format in {"mp4", "mov", "m4v"}:
+            cmd.extend(["-movflags", "+faststart"])
 
-    logging.info(f"FFmpeg command: {' '.join(cmd)}")
-    
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-    if result.returncode != 0:
-        stderr = (result.stderr or "").strip()
-        if stderr:
-            raise RuntimeError(stderr.splitlines()[-1])
-        raise RuntimeError("ffmpeg a echoue")
+    audio_codec = str(params.get("audio_codec") or "original")
+    if audio_codec == "copy":
+        cmd.extend(["-c:a", "copy"])
+    elif audio_codec != "original":
+        cmd.extend(["-c:a", audio_codec])
+
+    if params.get("audio_bitrate") and audio_codec != "copy":
+        cmd.extend(["-b:a", str(params["audio_bitrate"])])
+
+    if ext == ".mp3" or target_format == "mp3":
+        cmd.extend(["-id3v2_version", "3"])
+
+    two_pass = (
+        is_video
+        and target_bitrate_k is not None
+        and str(params.get("two_pass") or "").lower() in {"1", "true", "yes", "on"}
+    )
+
+    def _run(cmdline: list[str]) -> None:
+        logging.info("FFmpeg command: %s", " ".join(cmdline))
+        result = subprocess.run(cmdline, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            stderr = (result.stderr or "").strip()
+            if stderr:
+                raise RuntimeError(stderr.splitlines()[-1])
+            raise RuntimeError("ffmpeg a echoue")
+
+    if two_pass:
+        passlog = os.path.join(DATA_DIR, f"ffpass_{uuid.uuid4().hex}")
+        try:
+            first = [*cmd, "-pass", "1", "-passlogfile", passlog, "-an", "-f", "null", "/dev/null"]
+            _run(first)
+            second = [*cmd, "-pass", "2", "-passlogfile", passlog, output_path]
+            _run(second)
+        finally:
+            for suffix in ("", ".log", ".log.mbtree"):
+                try:
+                    os.remove(passlog + suffix)
+                except OSError:
+                    pass
+    else:
+        _run([*cmd, output_path])
 
 
 def _process_pdf(
@@ -683,6 +745,129 @@ def _resize_preserve_aspect(img: Image.Image, max_dim: int) -> Image.Image:
     return resized
 
 
+def _encode_image_bytes(
+    *,
+    img: Image.Image,
+    out_ext: str,
+    quality: int,
+    lossless: bool,
+    has_alpha: bool,
+) -> bytes:
+    buffer = io.BytesIO()
+
+    if out_ext in (".jpg", ".jpeg"):
+        save_img = img.convert("RGB") if has_alpha else img
+        save_img.save(buffer, format="JPEG", quality=quality, optimize=True)
+        return buffer.getvalue()
+
+    if out_ext == ".webp":
+        img.save(buffer, format="WEBP", quality=quality, lossless=lossless, method=6)
+        return buffer.getvalue()
+
+    if out_ext == ".png":
+        if has_alpha:
+            save_img = img.convert("RGBA")
+        else:
+            save_img = img.convert("RGB") if img.mode not in ("RGB", "L") else img
+        save_img.save(
+            buffer,
+            format="PNG",
+            optimize=True,
+            compress_level=9,
+        )
+        return buffer.getvalue()
+
+    if out_ext == ".gif":
+        gif_img = img.convert("P", palette=Image.ADAPTIVE, colors=max(16, min(256, quality * 2)))
+        gif_img.save(buffer, format="GIF", optimize=True)
+        return buffer.getvalue()
+
+    # Best effort fallback for other image formats.
+    try:
+        img.save(buffer, quality=quality, optimize=True)
+    except TypeError:
+        img.save(buffer, optimize=True)
+    return buffer.getvalue()
+
+
+def _save_image_with_target_size(
+    *,
+    img: Image.Image,
+    output_path: str,
+    target_size_mb: float,
+    has_alpha: bool,
+) -> bool:
+    if target_size_mb <= 0:
+        return False
+
+    target_bytes = int(target_size_mb * 1024 * 1024)
+    if target_bytes <= 0:
+        return False
+
+    _, out_ext = os.path.splitext(output_path)
+    out_ext = out_ext.lower()
+
+    if out_ext in (".jpg", ".jpeg", ".webp", ".gif"):
+        lo, hi = 10, 95
+        best: bytes | None = None
+
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            encoded = _encode_image_bytes(
+                img=img,
+                out_ext=out_ext,
+                quality=mid,
+                lossless=False,
+                has_alpha=has_alpha,
+            )
+            size = len(encoded)
+
+            if size <= target_bytes:
+                best = encoded
+                lo = mid + 1
+            else:
+                hi = mid - 1
+
+        if best is None:
+            # Nothing reached the target, keep smallest trial at quality 10.
+            best = _encode_image_bytes(
+                img=img,
+                out_ext=out_ext,
+                quality=10,
+                lossless=False,
+                has_alpha=has_alpha,
+            )
+
+        with open(output_path, "wb") as f:
+            f.write(best)
+        return True
+
+    if out_ext == ".png":
+        # PNG has no traditional quality slider; reduce palette progressively.
+        for colors in (256, 128, 64, 32, 16):
+            palette_img = img.convert("RGBA") if has_alpha else img.convert("RGB")
+            quantized = palette_img.quantize(colors=colors, method=Image.FASTOCTREE)
+            if has_alpha and "transparency" in img.info:
+                quantized.info["transparency"] = img.info.get("transparency")
+
+            buffer = io.BytesIO()
+            quantized.save(buffer, format="PNG", optimize=True, compress_level=9)
+            encoded = buffer.getvalue()
+            if len(encoded) <= target_bytes:
+                with open(output_path, "wb") as f:
+                    f.write(encoded)
+                return True
+
+        # Fallback to best effort even if target not reached.
+        buffer = io.BytesIO()
+        img.save(buffer, format="PNG", optimize=True, compress_level=9)
+        with open(output_path, "wb") as f:
+            f.write(buffer.getvalue())
+        return True
+
+    return False
+
+
 def _process_image(
     *,
     input_path: str,
@@ -729,6 +914,21 @@ def _process_image(
         has_alpha = img.mode in ('RGBA', 'LA', 'PA') or (img.mode == 'P' and 'transparency' in img.info)
         
         if action == "compress":
+            if comp_mode == "size":
+                try:
+                    target_size_mb = float(comp_value or 0)
+                except ValueError:
+                    target_size_mb = 0
+
+                if target_size_mb > 0:
+                    if _save_image_with_target_size(
+                        img=img,
+                        output_path=output_path,
+                        target_size_mb=target_size_mb,
+                        has_alpha=has_alpha,
+                    ):
+                        return
+
             # Quality mapping: "lossless", "90", "80", "70", "60", "50"
             quality_val = params.get("image_quality", comp_value or "80")
             
@@ -1042,7 +1242,78 @@ def health():
     )
 
 
-@app.route("/jobs", methods=["GET"])
+def build_ffmpeg_command_pro(input_path, output_path, params):
+    """Build FFmpeg command with Handbrake-level precision."""
+    cmd = ['ffmpeg', '-y', '-i', input_path]
+    
+    # VIDEO CODEC
+    v_codec = params.get('video_codec', 'libx264')
+    cmd.extend(['-c:v', v_codec])
+    
+    # CRF (Constant Rate Factor)
+    crf = params.get('video_crf', '23')
+    if crf and crf != 'original':
+        cmd.extend(['-crf', str(crf)])
+    
+    # PRESET (speed vs compression)
+    preset = params.get('preset', 'medium')
+    if preset and preset != 'original':
+        cmd.extend(['-preset', preset])
+    
+    # PROFILE & LEVEL
+    profile = params.get('video_profile', 'auto')
+    if profile and profile != 'auto':
+        cmd.extend(['-profile:v', profile])
+    
+    # TUNE (content optimization)
+    tune = params.get('video_tune', 'none')
+    if tune and tune != 'none':
+        cmd.extend(['-tune', tune])
+    
+    # PIXEL FORMAT
+    pix_fmt = params.get('video_pixel_format', 'auto')
+    if pix_fmt and pix_fmt != 'auto':
+        cmd.extend(['-pix_fmt', pix_fmt])
+    
+    # FPS
+    fps = params.get('fps', 'original')
+    if fps and fps != 'original':
+        cmd.extend(['-r', fps])
+    
+    # BITRATE or CRF
+    bitrate_k = params.get('video_bitrate_k')
+    if bitrate_k:
+        cmd.extend(['-b:v', f'{bitrate_k}k'])
+    
+    # VIDEO FILTERS
+    filters = []
+    if str(params.get('deinterlace', '0')).lower() in {'1', 'true'}:
+        filters.append('yadif')
+    if filters:
+        cmd.extend(['-vf', ','.join(filters)])
+    
+    # AUDIO CODEC
+    a_codec = params.get('audio_codec', 'copy')
+    cmd.extend(['-c:a', a_codec])
+    
+    # AUDIO PARAMETERS
+    if a_codec not in ('copy', 'original'):
+        if params.get('audio_bitrate'):
+            cmd.extend(['-b:a', params['audio_bitrate']])
+        if params.get('audio_sample_rate'):
+            cmd.extend(['-ar', str(params['audio_sample_rate'])])
+        if params.get('audio_channels'):
+            cmd.extend(['-ac', str(params['audio_channels'])])
+    
+    # FASTSTART (progressive download)
+    cmd.extend(['-movflags', '+faststart'])
+    
+    # OUTPUT
+    cmd.append(output_path)
+    
+    return cmd
+
+
 def list_jobs():
     try:
         limit = int(request.args.get("limit", "100"))
@@ -1050,6 +1321,9 @@ def list_jobs():
         limit = 100
     limit = max(1, min(200, limit))
     return jsonify({"jobs": _db_list_jobs_for_session(g.session_id, limit=limit)})
+
+
+app.add_url_rule("/jobs", view_func=list_jobs, methods=["GET"])
 
 
 @app.route("/jobs", methods=["POST"])
@@ -1082,6 +1356,28 @@ def create_job():
         params["fps"] = request.form.get("fps")
     if request.form.get("video_preset"):
         params["video_preset"] = request.form.get("video_preset")
+    if request.form.get("video_codec"):
+        params["video_codec"] = request.form.get("video_codec")
+    if request.form.get("video_profile"):
+        params["video_profile"] = request.form.get("video_profile")
+    if request.form.get("video_tune"):
+        params["video_tune"] = request.form.get("video_tune")
+    if request.form.get("video_quality_mode"):
+        params["video_quality_mode"] = request.form.get("video_quality_mode")
+    if request.form.get("video_crf"):
+        params["video_crf"] = request.form.get("video_crf")
+    if request.form.get("video_bitrate_k"):
+        params["video_bitrate_k"] = request.form.get("video_bitrate_k")
+    if request.form.get("video_pixel_format"):
+        params["video_pixel_format"] = request.form.get("video_pixel_format")
+    if request.form.get("two_pass"):
+        params["two_pass"] = request.form.get("two_pass")
+    if request.form.get("faststart"):
+        params["faststart"] = request.form.get("faststart")
+    if request.form.get("deinterlace"):
+        params["deinterlace"] = request.form.get("deinterlace")
+    if request.form.get("audio_codec"):
+        params["audio_codec"] = request.form.get("audio_codec")
     if request.form.get("audio_bitrate"):
         params["audio_bitrate"] = request.form.get("audio_bitrate")
     if request.form.get("audio_channels"):
@@ -1106,6 +1402,16 @@ def create_job():
         params["image_resize_mode"] = request.form.get("image_resize_mode")
     if request.form.get("image_resize_percent"):
         params["image_resize_percent"] = request.form.get("image_resize_percent")
+    if request.form.get("trim_start"):
+        params["trim_start"] = request.form.get("trim_start")
+    if request.form.get("trim_end"):
+        params["trim_end"] = request.form.get("trim_end")
+    if request.form.get("overlay_text"):
+        params["overlay_text"] = request.form.get("overlay_text")
+    if request.form.get("overlay_text_x"):
+        params["overlay_text_x"] = request.form.get("overlay_text_x")
+    if request.form.get("overlay_text_y"):
+        params["overlay_text_y"] = request.form.get("overlay_text_y")
 
     rel_path_raw = request.form.get("relative_path")
     rel_path = _sanitize_relative_path(rel_path_raw)

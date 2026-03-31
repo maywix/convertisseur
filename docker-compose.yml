@@ -2,7 +2,7 @@ services:
   convertisseur:
     build: .
     ports:
-      - "5001:5000"
+      - "6060:5000"
     volumes:
       # Persist data across restarts
       - convertisseur_uploads:/app/uploads

@@ -5,10 +5,10 @@
   "type": "module",
   "packageManager": "bun@1.1.33",
   "scripts": {
-    "dev": "bun x vite",
-    "build": "bun x tsc -b && bun x vite build",
-    "lint": "bun x eslint .",
-    "preview": "bun x vite preview"
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "lint": "eslint .",
+    "preview": "vite preview"
   },
   "dependencies": {
     "@radix-ui/react-progress": "^1.1.8",

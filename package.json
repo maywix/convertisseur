@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "dev": "python3 scripts/bun_build.py --watch",
-    "build": "python3 scripts/bun_build.py --minify --sourcemap"
+    "build": "python3 scripts/bun_build.py --minify --sourcemap",
+    "rebuild:all": "bash scripts/rebuild_all.sh"
   }
 }
 
