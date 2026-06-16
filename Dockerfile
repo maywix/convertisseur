@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     curl \
     zlib1g-dev \
+    libssl-dev \
     libjpeg-dev \
     libfreetype6-dev \
     liblcms2-dev \

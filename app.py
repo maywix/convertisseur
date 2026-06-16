@@ -57,6 +57,14 @@ CLEANUP_INTERVAL_SECONDS = int(os.environ.get("CLEANUP_INTERVAL_SECONDS", str(5 
 
 MAX_ENQUEUED_JOBS = int(os.environ.get("MAX_ENQUEUED_JOBS", "50"))
 
+# Wall-clock limits (seconds) for external conversion processes. A process that
+# exceeds its limit is killed and the job fails, so one stuck file can't hang a
+# worker (and, for video where workers=1, the whole queue) forever.
+PROBE_TIMEOUT = int(os.environ.get("PROBE_TIMEOUT", "60"))          # ffprobe metadata
+VIDEO_PROC_TIMEOUT = int(os.environ.get("VIDEO_PROC_TIMEOUT", "1800"))  # ffmpeg video/audio
+IMAGE_PROC_TIMEOUT = int(os.environ.get("IMAGE_PROC_TIMEOUT", "300"))   # dcraw / image tools
+OFFICE_PROC_TIMEOUT = int(os.environ.get("OFFICE_PROC_TIMEOUT", "300")) # libreoffice
+
 app.config["UPLOAD_FOLDER"] = UPLOAD_DIR
 app.config["PROCESSED_FOLDER"] = PROCESSED_DIR
 app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH_BYTES
@@ -380,7 +388,7 @@ def _load_image_for_processing(input_path: str) -> Image.Image:
             try:
                 # dcraw -c outputs PPM to stdout, use -w for camera white balance
                 with open(ppm_path, "wb") as out_f:
-                    proc = subprocess.run(["dcraw", "-c", "-w", input_path], stdout=out_f, stderr=subprocess.PIPE)
+                    proc = subprocess.run(["dcraw", "-c", "-w", input_path], stdout=out_f, stderr=subprocess.PIPE, timeout=IMAGE_PROC_TIMEOUT)
                 if proc.returncode != 0:
                     stderr = (proc.stderr or b"").decode(errors='ignore')
                     raise RuntimeError(f"dcraw a échoué: {stderr.splitlines()[-1] if stderr else 'erreur inconnue'}")
@@ -575,8 +583,11 @@ def _new_id() -> str:
 
 
 def _db_connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH, timeout=5, check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, timeout=30, check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    # Wait (rather than immediately erroring) when another thread holds the
+    # write lock — avoids spurious "database is locked" under worker contention.
+    conn.execute("PRAGMA busy_timeout=30000;")
     return conn
 
 
@@ -771,6 +782,31 @@ def _db_delete_job(job_id: str) -> None:
         conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
 
 
+def _db_reconcile_orphans() -> None:
+    """Fail jobs left mid-flight by a previous process.
+
+    Worker queues live only in memory, so any job still 'queued' or 'processing'
+    after a restart/crash will never run — mark it errored so the UI stops
+    polling it forever instead of leaving zombies.
+    """
+    now_ts = _now_ts()
+    expires_at = now_ts + RETENTION_SECONDS
+    with _db_connect() as conn:
+        cur = conn.execute(
+            """
+            UPDATE jobs
+            SET status = 'error',
+                error = 'interrompu par un redemarrage du serveur',
+                done_at = ?,
+                expires_at = ?
+            WHERE status IN ('queued', 'processing')
+            """,
+            (now_ts, expires_at),
+        )
+        if cur.rowcount:
+            logging.info("reconciled %d orphaned job(s) on startup", cur.rowcount)
+
+
 def _db_collect_expired_jobs(now_ts: int) -> list[sqlite3.Row]:
     with _db_connect() as conn:
         rows = conn.execute(
@@ -863,6 +899,19 @@ def _save_session(response):
     return response
 
 
+def _run_capture(cmd: list[str], *, timeout: int) -> subprocess.CompletedProcess:
+    """Run a command capturing output, turning a timeout into a clean error.
+
+    Without this, subprocess.TimeoutExpired surfaces to the user as the full
+    command line (internal file paths included); raise a path-free message
+    instead, consistent with the rest of the conversion error handling.
+    """
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"conversion interrompue : depassement du delai ({timeout}s)")
+
+
 def _get_video_info(path: str) -> dict | None:
     try:
         cmd = [
@@ -877,7 +926,7 @@ def _get_video_info(path: str) -> dict | None:
             "json",
             path,
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=PROBE_TIMEOUT)
         data = json.loads(result.stdout or "{}")
 
         duration = float((data.get("format") or {}).get("duration", 0) or 0)
@@ -985,7 +1034,7 @@ def _run_ffmpeg_tracked(cmdline: list[str], job_id: str | None, total_us: int) -
 
     if not job_id or total_us <= 0:
         # Fallback: plain subprocess without progress tracking
-        result = subprocess.run(cmdline, capture_output=True, text=True, check=False)
+        result = _run_capture(cmdline, timeout=VIDEO_PROC_TIMEOUT)
         if job_id:
             for line in (result.stderr or "").splitlines():
                 _job_log_append(job_id, line)
@@ -1019,6 +1068,21 @@ def _run_ffmpeg_tracked(cmdline: list[str], job_id: str | None, total_us: int) -
     t = _threading.Thread(target=_drain_stderr, daemon=True)
     t.start()
 
+    # Watchdog: kill ffmpeg if it stalls past the limit so it can't hang the
+    # (single) video worker forever. timed_out is read after the process exits.
+    timed_out = {"hit": False}
+
+    def _kill_on_timeout():
+        timed_out["hit"] = True
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+    watchdog = _threading.Timer(VIDEO_PROC_TIMEOUT, _kill_on_timeout)
+    watchdog.daemon = True
+    watchdog.start()
+
     last_pct = 0
     for line in proc.stdout:
         line = line.strip()
@@ -1033,7 +1097,11 @@ def _run_ffmpeg_tracked(cmdline: list[str], job_id: str | None, total_us: int) -
                 pass
 
     proc.wait()
+    watchdog.cancel()
     t.join(timeout=2)
+
+    if timed_out["hit"]:
+        raise RuntimeError(f"conversion interrompue : depassement du delai ({VIDEO_PROC_TIMEOUT}s)")
 
     if proc.returncode != 0:
         stderr_str = "".join(stderr_lines).strip()
@@ -1379,7 +1447,7 @@ def _process_office(
     _job_log_append(job_id or "", "$ " + " ".join(cmd))
 
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300, check=False)
+        result = _run_capture(cmd, timeout=OFFICE_PROC_TIMEOUT)
     except FileNotFoundError:
         raise RuntimeError("LibreOffice non installé — conversion de documents non disponible")
 
@@ -1468,7 +1536,7 @@ def _process_image_sequence_to_video(
                 vf,
                 output_path,
             ]
-            result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            result = _run_capture(cmd, timeout=VIDEO_PROC_TIMEOUT)
             if result.returncode != 0:
                 stderr = (result.stderr or "").strip()
                 if stderr:
@@ -1505,7 +1573,7 @@ def _process_image_sequence_to_video(
 
         cmd.append(output_path)
 
-        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        result = _run_capture(cmd, timeout=VIDEO_PROC_TIMEOUT)
         if result.returncode != 0:
             stderr = (result.stderr or "").strip()
             if stderr:
@@ -1544,7 +1612,7 @@ def _process_video_to_sequence_zip(
         cmd.extend(["-vf", ",".join(filters)])
         cmd.append(os.path.join(temp_dir, "frame_%06d.png"))
 
-        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        result = _run_capture(cmd, timeout=VIDEO_PROC_TIMEOUT)
         if result.returncode != 0:
             stderr = (result.stderr or "").strip()
             if stderr:
@@ -2840,6 +2908,7 @@ def clear_all_jobs():
 
 
 _db_init()
+_db_reconcile_orphans()
 
 
 if __name__ == "__main__":
