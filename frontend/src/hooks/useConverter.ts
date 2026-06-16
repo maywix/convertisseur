@@ -1,6 +1,7 @@
 import type {
     CompressSettings,
     ConvertSettings,
+    ExportMode,
     JobResponse,
     MediaCategory,
   OutputMode,
@@ -14,59 +15,201 @@ import {
 } from "@/types";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-const MAX_CONCURRENT_UPLOADS = 8;
+const MAX_CONCURRENT_UPLOADS = 1;
 const POLL_INTERVAL_MS = 1500;
+const UPLOAD_RETRY_DELAY_MS = 1500;
+const MAX_UPLOAD_RETRIES = 120;
+const LS_BACKGROUND = "converter_background_enabled";
+const LS_AUTODOWNLOAD = "converter_autodownload_enabled";
+const LS_EXPORT_MODE = "converter_export_mode";
+const LS_DOWNLOADED_BUNDLES = "converter_downloaded_bundle_signatures";
+// Tracks job IDs submitted by this user — used to restore background jobs on reload
+const LS_TRACKED_JOBS = "converter_tracked_job_ids";
 
-type DetectedMediaType = "video" | "audio" | "image";
+type DetectedMediaType = "video" | "audio" | "image" | "document" | "3d";
+type ActionMode = "convert" | "compress" | "convert_compress";
 
 const DEFAULT_CONVERT_FORMAT: Record<DetectedMediaType, string> = {
   video: "mp4",
   audio: "mp3",
   image: "webp",
+  document: "pdf",
+  "3d": "glb",
 };
+
+const DEFAULT_SEQUENCE_FORMAT = "mp4";
 
 const DEFAULT_COMPRESS_TARGET_MB: Record<DetectedMediaType, string> = {
   video: "50",
   audio: "8",
   image: "2",
+  document: "5",
+  "3d": "5",
 };
 
 function generateId(): string {
   return Math.random().toString(36).substring(7);
 }
 
+function lsGetBool(key: string, defaultVal: boolean): boolean {
+  const raw = localStorage.getItem(key);
+  if (raw === null) return defaultVal;
+  return raw === "true";
+}
+
+function lsGetSet(key: string): Set<string> {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return new Set();
+    return new Set(JSON.parse(raw) as string[]);
+  } catch {
+    return new Set();
+  }
+}
+
+function lsSaveSet(key: string, set: Set<string>): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(Array.from(set)));
+  } catch {
+    // localStorage may be full, ignore
+  }
+}
+
+function waitMs(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
 export function useConverter() {
   const [queue, setQueue] = useState<QueueItem[]>([]);
-  const [currentAction, setCurrentAction] = useState<"convert" | "compress">(
+  const [currentAction, setCurrentAction] = useState<ActionMode>(
     "convert",
   );
   const [isProcessing, setIsProcessing] = useState(false);
   const [hasStarted, setHasStarted] = useState(false);
   const [outputMode, setOutputMode] = useState<OutputMode>("global");
-  const [backgroundEnabled, setBackgroundEnabled] = useState(true);
-  const [autoDownloadEnabled, setAutoDownloadEnabled] = useState(true);
+  const [backgroundEnabled, setBackgroundEnabledState] = useState(() =>
+    lsGetBool(LS_BACKGROUND, true)
+  );
+  const [autoDownloadEnabled, setAutoDownloadEnabledState] = useState(() =>
+    lsGetBool(LS_AUTODOWNLOAD, true)
+  );
+  const [exportMode, setExportModeState] = useState<ExportMode>(() => {
+    const raw = localStorage.getItem(LS_EXPORT_MODE);
+    return raw === "files" ? "files" : "zip";
+  });
   const pollingRef = useRef<number | null>(null);
   const uploadingRef = useRef(false);
-  const downloadedJobIdsRef = useRef<Set<string>>(new Set());
+  // Load downloaded bundle signatures from localStorage so we don't re-download on reload
+  const downloadedBundleSignaturesRef = useRef<Set<string>>(
+    lsGetSet(LS_DOWNLOADED_BUNDLES),
+  );
+  // Tracked job IDs: jobs submitted by this user (restored on background reload)
+  const trackedJobIdsRef = useRef<Set<string>>(lsGetSet(LS_TRACKED_JOBS));
+
+  const setBackgroundEnabled = useCallback((val: boolean) => {
+    localStorage.setItem(LS_BACKGROUND, String(val));
+    setBackgroundEnabledState(val);
+  }, []);
+
+  const setAutoDownloadEnabled = useCallback((val: boolean) => {
+    localStorage.setItem(LS_AUTODOWNLOAD, String(val));
+    setAutoDownloadEnabledState(val);
+  }, []);
+
+  const setExportMode = useCallback((val: ExportMode) => {
+    localStorage.setItem(LS_EXPORT_MODE, val);
+    setExportModeState(val);
+  }, []);
+
+  const triggerBrowserDownload = useCallback((href: string, filename?: string) => {
+    const link = document.createElement("a");
+    link.href = href;
+    if (filename) {
+      link.download = filename;
+    }
+    link.style.display = "none";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }, []);
+
+  const exportCompletedFiles = useCallback(() => {
+    const doneItems = queue.filter(
+      (item) => item.status === "done" && !!item.downloadUrl,
+    );
+    if (doneItems.length === 0) return;
+
+    // If there is only one output, always download it directly.
+    if (doneItems.length === 1) {
+      const only = doneItems[0];
+      triggerBrowserDownload(only.downloadUrl as string, only.outputFilename || undefined);
+      return;
+    }
+
+    if (exportMode === "files") {
+      for (const item of doneItems) {
+        triggerBrowserDownload(item.downloadUrl as string, item.outputFilename || undefined);
+      }
+      return;
+    }
+
+    triggerBrowserDownload("/download-all?mode=zip", "converted_files.zip");
+  }, [exportMode, queue, triggerBrowserDownload]);
 
   // Convert settings
   const [convertSettings, setConvertSettings] = useState<ConvertSettings>({
     category: null,
     format: "",
-    gifSpeed: "0.1",
+    gifSpeed: "1.0",
     gifFps: "20",
     gifResolution: "480",
+    gifColors: "128",
+    gifDither: "sierra2_4a",
+    gifLoop: "0",
     audioBitrate: "192k",
+    audioCodec: "auto",
+    audioVolume: "0",
+    audioNormalize: false,
     imageQuality: "90",
     imageMaxSize: "",
     imageResizeMode: "none",
     imageResizePercent: "75",
     icoSize: "256",
+    photoExposure: "0",
+    photoContrast: "0",
+    photoHighlights: "0",
+    photoShadows: "0",
+    photoWhites: "0",
+    photoBlacks: "0",
+    photoTemperature: "0",
+    photoTint: "0",
+    photoSaturation: "0",
+    photoSharpness: "0",
+    videoCodec: "libx264",
+    videoPreset: "medium",
+    videoCrf: "23",
+    videoFps: "original",
+    videoResizeWidth: "",
+    videoResizeHeight: "",
+    videoRotate: "none",
+    videoCropTop: "",
+    videoCropBottom: "",
+    videoCropLeft: "",
+    videoCropRight: "",
+    videoDenoise: "none",
+    videoHDRtoSDR: false,
     videoTrimStart: "",
     videoTrimEnd: "",
     overlayText: "",
     overlayTextX: "(w-text_w)/2",
     overlayTextY: "h-(text_h*2)",
+    sequenceFps: "1",
+    lutFile: null,
+    colorRemoveEnabled: false,
+    colorRemoveColor: "#ffffff",
+    colorRemoveTolerance: "15",
   });
 
   // Compress settings
@@ -94,6 +237,8 @@ export function useConverter() {
     audioChannels: "original",
     audioSampleRate: "original",
     imageMaxSize: "",
+    videoResizeWidth: "",
+    videoResizeHeight: "",
   });
 
   // Computed values
@@ -106,7 +251,7 @@ export function useConverter() {
   const detectedTypesSet = new Set<DetectedMediaType>();
   for (const item of queue) {
     const t = getFileType(item.file?.name || "");
-    if (t === "video" || t === "audio" || t === "image") {
+    if (t === "video" || t === "audio" || t === "image" || t === "document" || t === "3d") {
       detectedTypesSet.add(t);
     }
   }
@@ -126,41 +271,60 @@ export function useConverter() {
     return t === "video" || t === "audio" || t === "image";
   });
 
+  // Document and 3D files can always start — format is auto-derived
+  const hasDocumentOrModelFiles = queue.some((item) => {
+    if (item.status !== "pending") return false;
+    const t = getFileType(item.file?.name || "");
+    return t === "document" || t === "3d";
+  });
+
   const canStart =
-    currentAction === "convert"
+    (currentAction === "convert" || currentAction === "convert_compress")
       ? hasNewFiles &&
-        ((outputMode === "global" &&
-          !!convertSettings.category &&
-          !!convertSettings.format) ||
+        (hasDocumentOrModelFiles ||
+          (outputMode === "global" &&
+            !!convertSettings.category &&
+            !!convertSettings.format) ||
           hasPerFileReadyItem)
       : hasNewFiles;
 
   // Add files to queue
   const addFiles = useCallback(
     async (files: FileList | File[]) => {
-      const newItems: QueueItem[] = [];
-
-      for (const file of Array.from(files)) {
+      const incomingFiles = Array.from(files);
+      const visibleFiles = incomingFiles.filter((file) => {
         const baseName = file.name || "";
         const lowerName = baseName.toLowerCase();
-
-        // Skip hidden/meta files
         if (
           baseName.startsWith("._") ||
           lowerName === ".ds_store" ||
           lowerName === "thumbs.db"
         ) {
-          continue;
+          return false;
         }
         if (["cover.jpg", "cover.jpeg", "cover.png"].includes(lowerName)) {
-          continue;
+          return false;
         }
+        return true;
+      });
 
+      const sequenceMode =
+        (currentAction === "convert" || currentAction === "convert_compress") &&
+        convertSettings.category === "sequence" &&
+        visibleFiles.length > 0 &&
+        visibleFiles.every((file) => getFileType(file.name) === "image");
+
+      const newItems: QueueItem[] = [];
+
+      if (sequenceMode) {
+        const [firstFile, ...restFiles] = visibleFiles;
         newItems.push({
           id: generateId(),
-          file,
+          file: firstFile,
+          extraFiles: restFiles,
+          mediaKind: "sequence",
           relativePath:
-            (file as File & { webkitRelativePath?: string })
+            (firstFile as File & { webkitRelativePath?: string })
               .webkitRelativePath || "",
           status: "pending",
           jobId: null,
@@ -169,12 +333,43 @@ export function useConverter() {
           error: null,
           action: currentAction,
           targetFormat:
-            currentAction === "convert" ? convertSettings.format : null,
+            (currentAction === "convert" || currentAction === "convert_compress") ? convertSettings.format : null,
           outputMode: outputMode === "per-file" ? "custom" : "global",
           customAction: null,
           customConvertSettings: null,
           customCompressSettings: null,
         });
+      } else {
+        for (const file of visibleFiles) {
+          const detectedType = getFileType(file.name);
+
+          newItems.push({
+            id: generateId(),
+            file,
+            mediaKind:
+              detectedType === "video" ? "video"
+              : detectedType === "audio" ? "audio"
+              : detectedType === "image" ? "image"
+              : detectedType === "document" ? "document"
+              : detectedType === "3d" ? "3d"
+              : undefined,
+            relativePath:
+              (file as File & { webkitRelativePath?: string })
+                .webkitRelativePath || "",
+            status: "pending",
+            jobId: null,
+            downloadUrl: null,
+            outputFilename: null,
+            error: null,
+            action: currentAction,
+            targetFormat:
+              (currentAction === "convert" || currentAction === "convert_compress") ? convertSettings.format : null,
+            outputMode: outputMode === "per-file" ? "custom" : "global",
+            customAction: null,
+            customConvertSettings: null,
+            customCompressSettings: null,
+          });
+        }
       }
 
       setQueue((prev) => [...prev, ...newItems]);
@@ -184,7 +379,14 @@ export function useConverter() {
 
   // Remove file from queue
   const removeFile = useCallback((id: string) => {
-    setQueue((prev) => prev.filter((item) => item.id !== id));
+    setQueue((prev) => {
+      const item = prev.find((i) => i.id === id);
+      if (item?.jobId) {
+        trackedJobIdsRef.current.delete(item.jobId);
+        lsSaveSet(LS_TRACKED_JOBS, trackedJobIdsRef.current);
+      }
+      return prev.filter((i) => i.id !== id);
+    });
   }, []);
 
   // Clear all files
@@ -194,6 +396,11 @@ export function useConverter() {
     } catch (e) {
       console.error("Failed to clear server files:", e);
     }
+    // Clear tracked job IDs so background mode doesn't restore these jobs on reload
+    trackedJobIdsRef.current.clear();
+    lsSaveSet(LS_TRACKED_JOBS, trackedJobIdsRef.current);
+    downloadedBundleSignaturesRef.current.clear();
+    lsSaveSet(LS_DOWNLOADED_BUNDLES, downloadedBundleSignaturesRef.current);
     setQueue([]);
   }, []);
 
@@ -212,6 +419,10 @@ export function useConverter() {
         item.outputMode === "custom" && item.customCompressSettings
           ? item.customCompressSettings
           : compressSettings;
+      const isConvertLike =
+        effectiveAction === "convert" || effectiveAction === "convert_compress";
+      const isCompressLike =
+        effectiveAction === "compress" || effectiveAction === "convert_compress";
 
       const formData = new FormData();
       formData.append("file", item.file);
@@ -220,15 +431,75 @@ export function useConverter() {
       }
       formData.append("action", effectiveAction);
 
-      if (effectiveAction === "convert") {
+      // Attach LUT file for video colorimetric conversion
+      if (isConvertLike && effectiveConvertSettings.lutFile) {
+        formData.append("lut_file", effectiveConvertSettings.lutFile);
+      }
+
+      if (isConvertLike) {
         const targetFormat = item.targetFormat || effectiveConvertSettings.format;
         formData.append("format", targetFormat);
+
+        const usesSequenceFrames =
+          effectiveConvertSettings.category === "sequence" ||
+          targetFormat === "zip" ||
+          (item.extraFiles?.length || 0) > 0;
+
+        if (usesSequenceFrames) {
+          formData.append("sequence_fps", effectiveConvertSettings.sequenceFps || "1");
+        }
+
+        if (item.extraFiles && item.extraFiles.length > 0) {
+          for (const extraFile of item.extraFiles) {
+            formData.append("files", extraFile);
+          }
+        }
+
+        // Video encoding settings
+        if (effectiveConvertSettings.category === "video" || effectiveConvertSettings.category === "sequence") {
+          if (effectiveConvertSettings.videoCodec && effectiveConvertSettings.videoCodec !== "auto") {
+            formData.append("video_codec", effectiveConvertSettings.videoCodec);
+          }
+          if (effectiveConvertSettings.videoPreset) {
+            formData.append("video_preset", effectiveConvertSettings.videoPreset);
+          }
+          if (effectiveConvertSettings.videoCrf) {
+            formData.append("video_crf", effectiveConvertSettings.videoCrf);
+          }
+          if (effectiveConvertSettings.videoFps && effectiveConvertSettings.videoFps !== "original") {
+            formData.append("fps", effectiveConvertSettings.videoFps);
+          }
+          // Transforms
+          if (effectiveConvertSettings.videoRotate && effectiveConvertSettings.videoRotate !== "none") {
+            formData.append("rotate", effectiveConvertSettings.videoRotate);
+          }
+          if (effectiveConvertSettings.videoCropTop) formData.append("crop_top", effectiveConvertSettings.videoCropTop);
+          if (effectiveConvertSettings.videoCropBottom) formData.append("crop_bottom", effectiveConvertSettings.videoCropBottom);
+          if (effectiveConvertSettings.videoCropLeft) formData.append("crop_left", effectiveConvertSettings.videoCropLeft);
+          if (effectiveConvertSettings.videoCropRight) formData.append("crop_right", effectiveConvertSettings.videoCropRight);
+          if (effectiveConvertSettings.videoDenoise && effectiveConvertSettings.videoDenoise !== "none") {
+            formData.append("denoise", effectiveConvertSettings.videoDenoise);
+          }
+          if (effectiveConvertSettings.videoHDRtoSDR) {
+            formData.append("hdr_to_sdr", "true");
+          }
+        }
 
         // GIF settings
         if (effectiveConvertSettings.category === "video" && targetFormat === "gif") {
           formData.append("gif_speed", effectiveConvertSettings.gifSpeed);
           formData.append("gif_fps", effectiveConvertSettings.gifFps);
           formData.append("gif_resolution", effectiveConvertSettings.gifResolution);
+          formData.append("gif_colors", effectiveConvertSettings.gifColors);
+          formData.append("gif_dither", effectiveConvertSettings.gifDither);
+          formData.append("gif_loop", effectiveConvertSettings.gifLoop);
+        }
+
+        if (effectiveConvertSettings.videoResizeWidth.trim()) {
+          formData.append("video_resize_width", effectiveConvertSettings.videoResizeWidth.trim());
+        }
+        if (effectiveConvertSettings.videoResizeHeight.trim()) {
+          formData.append("video_resize_height", effectiveConvertSettings.videoResizeHeight.trim());
         }
 
         // Mini video editor settings
@@ -247,8 +518,18 @@ export function useConverter() {
         }
 
         // Audio settings
-        if (effectiveConvertSettings.category === "audio") {
+        if (effectiveConvertSettings.category === "audio" || effectiveConvertSettings.category === "video") {
           formData.append("audio_bitrate", effectiveConvertSettings.audioBitrate);
+          if (effectiveConvertSettings.audioCodec && effectiveConvertSettings.audioCodec !== "auto") {
+            formData.append("audio_codec", effectiveConvertSettings.audioCodec);
+          }
+          const vol = parseFloat(effectiveConvertSettings.audioVolume);
+          if (!isNaN(vol) && vol !== 0) {
+            formData.append("audio_volume", effectiveConvertSettings.audioVolume);
+          }
+          if (effectiveConvertSettings.audioNormalize) {
+            formData.append("audio_normalize", "true");
+          }
         }
 
         // Image settings
@@ -274,8 +555,56 @@ export function useConverter() {
           if (targetFormat === "ico" && effectiveConvertSettings.icoSize) {
             formData.append("ico_size", effectiveConvertSettings.icoSize);
           }
+
+          if (effectiveConvertSettings.photoExposure !== "0") {
+            formData.append("photo_exposure", effectiveConvertSettings.photoExposure);
+          }
+          if (effectiveConvertSettings.photoContrast !== "0") {
+            formData.append("photo_contrast", effectiveConvertSettings.photoContrast);
+          }
+          if (effectiveConvertSettings.photoHighlights !== "0") {
+            formData.append("photo_highlights", effectiveConvertSettings.photoHighlights);
+          }
+          if (effectiveConvertSettings.photoShadows !== "0") {
+            formData.append("photo_shadows", effectiveConvertSettings.photoShadows);
+          }
+          if (effectiveConvertSettings.photoWhites !== "0") {
+            formData.append("photo_whites", effectiveConvertSettings.photoWhites);
+          }
+          if (effectiveConvertSettings.photoBlacks !== "0") {
+            formData.append("photo_blacks", effectiveConvertSettings.photoBlacks);
+          }
+          if (effectiveConvertSettings.photoTemperature !== "0") {
+            formData.append("photo_temperature", effectiveConvertSettings.photoTemperature);
+          }
+          if (effectiveConvertSettings.photoTint !== "0") {
+            formData.append("photo_tint", effectiveConvertSettings.photoTint);
+          }
+          if (effectiveConvertSettings.photoSaturation !== "0") {
+            formData.append("photo_saturation", effectiveConvertSettings.photoSaturation);
+          }
+          if (effectiveConvertSettings.photoSharpness !== "0") {
+            formData.append("photo_sharpness", effectiveConvertSettings.photoSharpness);
+          }
         }
-      } else {
+
+        // Color remover (image or video)
+        if (
+          effectiveConvertSettings.colorRemoveEnabled &&
+          effectiveConvertSettings.colorRemoveColor &&
+          (effectiveConvertSettings.category === "image" ||
+            effectiveConvertSettings.category === "video" ||
+            effectiveConvertSettings.category === "sequence")
+        ) {
+          formData.append("color_remove_color", effectiveConvertSettings.colorRemoveColor);
+          formData.append(
+            "color_remove_tolerance",
+            effectiveConvertSettings.colorRemoveTolerance || "15",
+          );
+        }
+      }
+
+      if (isCompressLike) {
         // Compress mode
         formData.append("comp_mode", effectiveCompressSettings.mode);
 
@@ -358,6 +687,18 @@ export function useConverter() {
         if (effectiveCompressSettings.imageMaxSize) {
           formData.append("image_max_size", effectiveCompressSettings.imageMaxSize);
         }
+        if (effectiveCompressSettings.videoResizeWidth.trim()) {
+          formData.append(
+            "video_resize_width",
+            effectiveCompressSettings.videoResizeWidth.trim(),
+          );
+        }
+        if (effectiveCompressSettings.videoResizeHeight.trim()) {
+          formData.append(
+            "video_resize_height",
+            effectiveCompressSettings.videoResizeHeight.trim(),
+          );
+        }
       }
 
       setQueue((prev) =>
@@ -367,24 +708,43 @@ export function useConverter() {
       );
 
       try {
-        const response = await fetch("/jobs", {
-          method: "POST",
-          body: formData,
-        });
+        for (let attempt = 0; attempt <= MAX_UPLOAD_RETRIES; attempt += 1) {
+          const response = await fetch("/jobs", {
+            method: "POST",
+            body: formData,
+          });
 
-        const data = await response.json();
+          let data: { job_id?: string; error?: string } = {};
+          try {
+            data = await response.json();
+          } catch {
+            data = {};
+          }
 
-        if (response.ok) {
-          setQueue((prev) =>
-            prev.map((i) =>
-              i.id === item.id
-                ? { ...i, status: "queued" as const, jobId: data.job_id }
-                : i,
-            ),
-          );
-        } else {
+          if (response.ok) {
+            // Track this job ID so it can be restored after a page reload
+            trackedJobIdsRef.current.add(data.job_id || "");
+            trackedJobIdsRef.current.delete("");
+            lsSaveSet(LS_TRACKED_JOBS, trackedJobIdsRef.current);
+            setQueue((prev) =>
+              prev.map((i) =>
+                i.id === item.id
+                  ? { ...i, status: "queued" as const, jobId: data.job_id || null }
+                  : i,
+              ),
+            );
+            return;
+          }
+
+          if (response.status === 429 && attempt < MAX_UPLOAD_RETRIES) {
+            await waitMs(UPLOAD_RETRY_DELAY_MS);
+            continue;
+          }
+
           throw new Error(data.error || `HTTP ${response.status}`);
         }
+
+        throw new Error("timeout: impossible de mettre en file")
       } catch (error) {
         setQueue((prev) =>
           prev.map((i) =>
@@ -408,41 +768,45 @@ export function useConverter() {
       const jobsMap = new Map<string, JobResponse>();
       (data.jobs || []).forEach((j: JobResponse) => jobsMap.set(j.id, j));
 
-      setQueue((prev) =>
-        {
-          const existingIds = new Set(prev.map((item) => item.jobId).filter(Boolean));
-          const hydrated = [...prev];
+      setQueue((prev) => {
+        const existingIds = new Set(prev.map((item) => item.jobId).filter(Boolean));
+        const hydrated = [...prev];
 
-          for (const job of jobsMap.values()) {
-            if (!existingIds.has(job.id) && (job.status === "queued" || job.status === "processing" || job.status === "done")) {
-              const filename = job.original_filename || job.output_filename || `job-${job.id}`;
-              hydrated.push({
-                id: generateId(),
-                file: new File([], filename),
-                relativePath: "",
-                status:
-                  job.status === "queued"
-                    ? "queued"
-                    : job.status === "processing"
-                      ? "processing"
-                      : job.status === "done"
-                        ? "done"
-                        : "error",
-                jobId: job.id,
-                downloadUrl: job.download_url,
-                outputFilename: job.output_filename,
-                error: job.error,
-                action: job.action || "convert",
-                targetFormat: job.target_format || null,
-                outputMode: "global",
-                customAction: null,
-                customConvertSettings: null,
-                customCompressSettings: null,
-              });
-            }
+        for (const job of jobsMap.values()) {
+          // Only hydrate jobs that belong to this user's tracked submissions.
+          // This prevents showing old completed jobs from previous sessions while
+          // still restoring jobs that were actively converting during a page reload.
+          if (!existingIds.has(job.id) && trackedJobIdsRef.current.has(job.id)) {
+            const filename = job.original_filename || job.output_filename || `job-${job.id}`;
+            hydrated.push({
+              id: generateId(),
+              file: new File([], filename),
+              relativePath: "",
+              status: job.status as QueueItem["status"],
+              progress: job.status === "done" ? 100 : (job.progress ?? 0),
+              jobId: job.id,
+              downloadUrl: job.download_url,
+              outputFilename: job.output_filename,
+              error: job.error,
+              action: job.action || "convert",
+              targetFormat: job.target_format || null,
+              mediaKind:
+                job.media_type === "image_sequence"
+                  ? "sequence"
+                  : job.media_type === "video" ||
+                      job.media_type === "audio" ||
+                      job.media_type === "image"
+                    ? job.media_type
+                    : undefined,
+              outputMode: "global",
+              customAction: null,
+              customConvertSettings: null,
+              customCompressSettings: null,
+            });
           }
+        }
 
-          return hydrated.map((item) => {
+        const next = hydrated.map((item) => {
           if (
             !item.jobId ||
             (item.status !== "queued" && item.status !== "processing")
@@ -453,14 +817,19 @@ export function useConverter() {
           const job = jobsMap.get(item.jobId);
           if (!job) return item;
 
-          if (job.status === "processing" && item.status !== "processing") {
-            return { ...item, status: "processing" as const };
+          if (job.status === "processing") {
+            return {
+              ...item,
+              status: "processing" as const,
+              progress: job.progress ?? item.progress,
+            };
           }
 
           if (job.status === "done") {
             return {
               ...item,
               status: "done" as const,
+              progress: 100,
               downloadUrl: job.download_url,
               outputFilename: job.output_filename,
             };
@@ -472,8 +841,22 @@ export function useConverter() {
 
           return item;
         });
-        },
-      );
+
+        if (next.length === prev.length) {
+          let hasDiff = false;
+          for (let i = 0; i < next.length; i += 1) {
+            if (next[i] !== prev[i]) {
+              hasDiff = true;
+              break;
+            }
+          }
+          if (!hasDiff) {
+            return prev;
+          }
+        }
+
+        return next;
+      });
     } catch (e) {
       console.error("Polling error", e);
     }
@@ -487,7 +870,6 @@ export function useConverter() {
     setHasStarted(true);
     uploadingRef.current = true;
 
-    // Update pending items with current settings and reuse the same snapshot for uploads
     const updatedQueue = queue.map((item) => {
       if (item.status !== "pending") return item;
 
@@ -497,22 +879,39 @@ export function useConverter() {
           ? DEFAULT_CONVERT_FORMAT[itemType]
           : "";
 
+      const effectiveAction =
+        item.outputMode === "custom" && item.customAction
+          ? item.customAction
+          : currentAction;
+
+      // Auto-detect output format for document and 3D files
+      const autoFormat =
+        itemType === "document" ? "pdf"
+        : itemType === "3d" ? "glb"
+        : fallbackFormat;
+
+      let resolvedFormat: string | null = null;
+      if (effectiveAction === "convert" || effectiveAction === "convert_compress") {
+        if (item.outputMode === "custom") {
+          // Custom mode: respect per-file target format
+          resolvedFormat =
+            item.targetFormat ||
+            item.customConvertSettings?.format ||
+            convertSettings.format ||
+            autoFormat;
+        } else if (itemType === "document" || itemType === "3d") {
+          // Document/3D: always auto-derive format (user doesn't pick a category)
+          resolvedFormat = item.targetFormat || autoFormat;
+        } else {
+          // Global mode: always use current global settings (ignore stale item.targetFormat)
+          resolvedFormat = convertSettings.format || autoFormat;
+        }
+      }
+
       return {
         ...item,
-        action:
-          item.outputMode === "custom" && item.customAction
-            ? item.customAction
-            : currentAction,
-        targetFormat:
-          (item.outputMode === "custom" && item.customAction
-            ? item.customAction
-            : currentAction) === "convert"
-            ? item.targetFormat ||
-              (item.outputMode === "custom" && item.customConvertSettings
-                ? item.customConvertSettings.format
-                : convertSettings.format) ||
-              fallbackFormat
-            : null,
+        action: effectiveAction,
+        targetFormat: resolvedFormat,
       };
     });
     setQueue(updatedQueue);
@@ -522,7 +921,6 @@ export function useConverter() {
       pollingRef.current = window.setInterval(pollJobs, POLL_INTERVAL_MS);
     }
 
-    // Get pending items
     const pendingItems = updatedQueue.filter(
       (item) => item.status === "pending",
     );
@@ -587,8 +985,10 @@ export function useConverter() {
     };
   }, []);
 
+  // Background polling on page load (only if enabled)
   useEffect(() => {
     if (!backgroundEnabled) return;
+    if (trackedJobIdsRef.current.size === 0) return;
     if (!pollingRef.current) {
       pollingRef.current = window.setInterval(pollJobs, POLL_INTERVAL_MS);
     }
@@ -601,9 +1001,11 @@ export function useConverter() {
         ? VIDEO_FORMATS[0]
         : category === "audio"
           ? AUDIO_FORMATS[0]
-          : category === "image"
-            ? IMAGE_FORMATS[0]
-            : "";
+            : category === "image"
+              ? IMAGE_FORMATS[0]
+              : category === "sequence"
+                ? DEFAULT_SEQUENCE_FORMAT
+                : "";
 
     setConvertSettings((prev) => ({
       ...prev,
@@ -640,15 +1042,15 @@ export function useConverter() {
               ...item,
               targetFormat: format,
               outputMode: "custom",
-              customAction: "convert",
+              customAction: currentAction === "convert_compress" ? "convert_compress" : "convert",
             }
           : item,
       ),
     );
-  }, []);
+  }, [currentAction]);
 
   const setItemCustomAction = useCallback(
-    (id: string, action: "convert" | "compress") => {
+    (id: string, action: ActionMode) => {
       setQueue((prev) =>
         prev.map((item) => {
           if (item.id !== id) return item;
@@ -659,7 +1061,7 @@ export function useConverter() {
             customConvertSettings: item.customConvertSettings || { ...convertSettings },
             customCompressSettings: item.customCompressSettings || { ...compressSettings },
             targetFormat:
-              action === "convert"
+              action === "convert" || action === "convert_compress"
                 ? item.targetFormat ||
                   item.customConvertSettings?.format ||
                   convertSettings.format
@@ -704,7 +1106,10 @@ export function useConverter() {
               customAction: null,
               customConvertSettings: null,
               customCompressSettings: null,
-              targetFormat: currentAction === "convert" ? convertSettings.format : null,
+              targetFormat:
+                currentAction === "convert" || currentAction === "convert_compress"
+                  ? convertSettings.format
+                  : null,
             };
           }
           return {
@@ -714,7 +1119,7 @@ export function useConverter() {
             customConvertSettings: { ...convertSettings },
             customCompressSettings: { ...compressSettings },
             targetFormat:
-              currentAction === "convert"
+              currentAction === "convert" || currentAction === "convert_compress"
                 ? item.targetFormat || convertSettings.format
                 : null,
           };
@@ -732,7 +1137,10 @@ export function useConverter() {
         customAction: null,
         customConvertSettings: null,
         customCompressSettings: null,
-        targetFormat: currentAction === "convert" ? convertSettings.format : null,
+        targetFormat:
+          currentAction === "convert" || currentAction === "convert_compress"
+            ? convertSettings.format
+            : null,
       })),
     );
   }, [convertSettings.format, currentAction]);
@@ -754,21 +1162,51 @@ export function useConverter() {
     );
   }, []);
 
+  // Auto-download one ZIP when all items are finished (done or error)
   useEffect(() => {
     if (!autoDownloadEnabled) return;
-    for (const item of queue) {
-      if (item.status !== "done" || !item.downloadUrl || !item.jobId) continue;
-      if (downloadedJobIdsRef.current.has(item.jobId)) continue;
-      downloadedJobIdsRef.current.add(item.jobId);
-      const link = document.createElement("a");
-      link.href = item.downloadUrl;
-      link.download = item.outputFilename || "";
-      link.style.display = "none";
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
+    if (queue.length === 0) return;
+
+    const hasActiveOrPending = queue.some(
+      (item) =>
+        item.status === "pending" ||
+        item.status === "uploading" ||
+        item.status === "queued" ||
+        item.status === "processing",
+    );
+    if (hasActiveOrPending) return;
+
+    const doneItems = queue.filter(
+      (item) => item.status === "done" && !!item.jobId && !!item.downloadUrl,
+    );
+    if (doneItems.length === 0) return;
+
+    const signature = doneItems
+      .map((item) => item.jobId as string)
+      .sort()
+      .join("|");
+    if (!signature) return;
+    if (downloadedBundleSignaturesRef.current.has(signature)) return;
+
+    downloadedBundleSignaturesRef.current.add(signature);
+    lsSaveSet(LS_DOWNLOADED_BUNDLES, downloadedBundleSignaturesRef.current);
+
+    // Auto-export based on selected mode.
+    if (doneItems.length === 1) {
+      const only = doneItems[0];
+      triggerBrowserDownload(only.downloadUrl as string, only.outputFilename || undefined);
+      return;
     }
-  }, [autoDownloadEnabled, queue]);
+
+    if (exportMode === "files") {
+      for (const item of doneItems) {
+        triggerBrowserDownload(item.downloadUrl as string, item.outputFilename || undefined);
+      }
+      return;
+    }
+
+    triggerBrowserDownload("/download-all?mode=zip", "converted_files.zip");
+  }, [autoDownloadEnabled, exportMode, queue, triggerBrowserDownload]);
 
   return {
     // State
@@ -779,6 +1217,7 @@ export function useConverter() {
     isProcessing,
     hasStarted,
     outputMode,
+    exportMode,
     backgroundEnabled,
     autoDownloadEnabled,
     // Computed
@@ -795,6 +1234,7 @@ export function useConverter() {
     startProcessing,
     setCurrentAction,
     setOutputMode,
+    setExportMode,
     setBackgroundEnabled,
     setAutoDownloadEnabled,
     setCategory,
@@ -805,6 +1245,7 @@ export function useConverter() {
     setItemOutputMode,
     applyGlobalFormatToAll,
     requeueItem,
+    exportCompletedFiles,
     setConvertSettings,
     setCompressSettings,
     applySuggestedConvert,

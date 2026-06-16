@@ -15,6 +15,7 @@ data/
 uploads/
 processed/
 server.log
+scripts/*.log
 
 # bun / node tooling
 .bun/

@@ -1,31 +1,34 @@
-# STAGE 1: Build
-FROM python:3.12-alpine AS builder
+# STAGE 1: Build (Debian slim)
+FROM python:3.12-slim AS builder
 
 WORKDIR /build
 
-# System build dependencies
-RUN apk add --no-cache \
-    build-base \
+# System build dependencies (Debian)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ca-certificates \
     bash \
     git \
     nasm \
     yasm \
-    openssl-dev \
-    openssl-libs-static \
-    pkgconf \
+    cmake \
+    pkg-config \
     wget \
     curl \
-    zlib-dev \
-    libjpeg-turbo-dev \
-    freetype-dev \
-    lcms2-dev \
-    openjpeg-dev \
-    tiff-dev \
-    linux-headers \
+    zlib1g-dev \
+    libjpeg-dev \
+    libfreetype6-dev \
+    liblcms2-dev \
+    libopenjp2-7-dev \
+    libtiff5-dev \
     libheif-dev \
-    x264-dev \
-    lame-dev \
-    opus-dev
+    libx264-dev \
+    libmp3lame-dev \
+    libopus-dev \
+    libraw-dev \
+    pkgconf \
+    yasm \
+    nasm && rm -rf /var/lib/apt/lists/*
 
 # Compile FFmpeg with essential codecs (not fully static due to codec library dependencies)
 RUN git clone --depth 1 https://git.ffmpeg.org/ffmpeg.git ffmpeg_src && \
@@ -41,7 +44,7 @@ RUN git clone --depth 1 https://git.ffmpeg.org/ffmpeg.git ffmpeg_src && \
         --disable-debug \
         --disable-doc \
         --disable-ffplay \
-        --extra-cflags="-march=native -O3" && \
+        --extra-cflags="-O3" && \
     make -j$(nproc) && \
     make install
 
@@ -56,21 +59,24 @@ RUN pip install --no-cache-dir --upgrade pip && \
 COPY frontend/dist ./frontend/dist
 
 # STAGE 2: Runtime
-FROM python:3.12-alpine
+FROM python:3.12-slim
 
 WORKDIR /app
 
-# Runtime libraries for FFmpeg codecs and Python libs
-RUN apk add --no-cache \
-    libjpeg-turbo \
-    zlib \
-    freetype \
-    libstdc++ \
-    libgomp \
-    libheif \
-    x264-libs \
-    lame-libs \
-    opus
+# Runtime libraries for FFmpeg codecs and Python libs (minimal)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libjpeg62-turbo \
+    zlib1g \
+    libfreetype6 \
+    libstdc++6 \
+    libgomp1 \
+    libheif1 || true && rm -rf /var/lib/apt/lists/*
+
+# dcraw for RAW -> PPM conversion
+RUN apt-get update && apt-get install -y --no-install-recommends dcraw libraw-tools || true && rm -rf /var/lib/apt/lists/*
+
+# LibreOffice for office document conversion (docx, xlsx, pptx → pdf)
+RUN apt-get update && apt-get install -y --no-install-recommends libreoffice && rm -rf /var/lib/apt/lists/*
 
 # Copy compiled artifacts
 COPY --from=builder /tmp/ffmpeg /usr/local
@@ -90,4 +96,4 @@ COPY . .
 EXPOSE 5000
 
 # Run with Gunicorn
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--threads", "4", "app:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "1", "--threads", "8", "--timeout", "120", "--keep-alive", "5", "app:app"]

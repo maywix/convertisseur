@@ -120,3 +120,137 @@ export function IconHourglass(props: IconProps) {
         </svg>
     )
 }
+
+export function IconChevronDown(props: IconProps) {
+    return (
+        <svg {...svgProps(props)}>
+            <path d="m6 9 6 6 6-6" />
+        </svg>
+    )
+}
+
+export function IconChevronUp(props: IconProps) {
+    return (
+        <svg {...svgProps(props)}>
+            <path d="m18 15-6-6-6 6" />
+        </svg>
+    )
+}
+
+export function IconPlay(props: IconProps) {
+    return (
+        <svg {...svgProps(props)}>
+            <polygon points="6 3 20 12 6 21 6 3" />
+        </svg>
+    )
+}
+
+export function IconSettings(props: IconProps) {
+    return (
+        <svg {...svgProps(props)}>
+            <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+            <circle cx="12" cy="12" r="3" />
+        </svg>
+    )
+}
+
+export function IconSliders(props: IconProps) {
+    return (
+        <svg {...svgProps(props)}>
+            <line x1="4" x2="4" y1="21" y2="14" />
+            <line x1="4" x2="4" y1="6" y2="3" />
+            <line x1="12" x2="12" y1="21" y2="12" />
+            <line x1="12" x2="12" y1="4" y2="3" />
+            <line x1="20" x2="20" y1="21" y2="16" />
+            <line x1="20" x2="20" y1="8" y2="3" />
+            <line x1="2" x2="6" y1="14" y2="14" />
+            <line x1="10" x2="14" y1="12" y2="12" />
+            <line x1="18" x2="22" y1="16" y2="16" />
+        </svg>
+    )
+}
+
+export function IconRotate(props: IconProps) {
+    return (
+        <svg {...svgProps(props)}>
+            <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" />
+            <path d="M21 3v5h-5" />
+        </svg>
+    )
+}
+
+export function IconCrop(props: IconProps) {
+    return (
+        <svg {...svgProps(props)}>
+            <path d="M6 2v14a2 2 0 0 0 2 2h14" />
+            <path d="M18 22V8a2 2 0 0 0-2-2H2" />
+        </svg>
+    )
+}
+
+export function IconVolume(props: IconProps) {
+    return (
+        <svg {...svgProps(props)}>
+            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+            <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+            <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+        </svg>
+    )
+}
+
+export function IconCheck(props: IconProps) {
+    return (
+        <svg {...svgProps(props)}>
+            <path d="M20 6 9 17l-5-5" />
+        </svg>
+    )
+}
+
+export function IconSequence(props: IconProps) {
+    return (
+        <svg {...svgProps(props)}>
+            <rect x="2" y="6" width="6" height="8" rx="1" />
+            <rect x="9" y="6" width="6" height="8" rx="1" />
+            <rect x="16" y="6" width="6" height="8" rx="1" />
+            <path d="M5 14v2" />
+            <path d="M12 14v2" />
+            <path d="M19 14v2" />
+        </svg>
+    )
+}
+
+export function IconRefresh(props: IconProps) {
+    return (
+        <svg {...svgProps(props)}>
+            <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
+            <path d="M21 3v5h-5" />
+            <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
+            <path d="M8 16H3v5" />
+        </svg>
+    )
+}
+
+export function IconTerminal(props: IconProps) {
+    return (
+        <svg {...svgProps(props)}>
+            <polyline points="4 17 10 11 4 5" />
+            <line x1="12" x2="20" y1="19" y2="19" />
+        </svg>
+    )
+}
+
+export function IconWand(props: IconProps) {
+    return (
+        <svg {...svgProps(props)}>
+            <path d="M15 4V2" />
+            <path d="M15 16v-2" />
+            <path d="M8 9h2" />
+            <path d="M20 9h2" />
+            <path d="M17.8 11.8 19 13" />
+            <path d="M15 9h.01" />
+            <path d="M17.8 6.2 19 5" />
+            <path d="m3 21 9-9" />
+            <path d="M12.2 6.2 11 5" />
+        </svg>
+    )
+}
