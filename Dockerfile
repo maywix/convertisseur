@@ -71,7 +71,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libfreetype6 \
     libstdc++6 \
     libgomp1 \
-    libheif1 || true && rm -rf /var/lib/apt/lists/*
+    libheif1 \
+    libmp3lame0 \
+    libopus0 \
+    libx264-164 || true && rm -rf /var/lib/apt/lists/*
 
 # dcraw for RAW -> PPM conversion
 RUN apt-get update && apt-get install -y --no-install-recommends dcraw libraw-tools || true && rm -rf /var/lib/apt/lists/*

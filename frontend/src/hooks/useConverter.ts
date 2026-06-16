@@ -22,6 +22,7 @@ const MAX_UPLOAD_RETRIES = 120;
 const LS_BACKGROUND = "converter_background_enabled";
 const LS_AUTODOWNLOAD = "converter_autodownload_enabled";
 const LS_EXPORT_MODE = "converter_export_mode";
+const LS_UI_MODE = "converter_ui_mode";
 const LS_DOWNLOADED_BUNDLES = "converter_downloaded_bundle_signatures";
 // Tracks job IDs submitted by this user — used to restore background jobs on reload
 const LS_TRACKED_JOBS = "converter_tracked_job_ids";
@@ -32,7 +33,7 @@ type ActionMode = "convert" | "compress" | "convert_compress";
 const DEFAULT_CONVERT_FORMAT: Record<DetectedMediaType, string> = {
   video: "mp4",
   audio: "mp3",
-  image: "webp",
+  image: "jpg",
   document: "pdf",
   "3d": "glb",
 };
@@ -99,6 +100,10 @@ export function useConverter() {
     const raw = localStorage.getItem(LS_EXPORT_MODE);
     return raw === "files" ? "files" : "zip";
   });
+  const [uiMode, setUiModeState] = useState<"simple" | "pro">(() => {
+    const raw = localStorage.getItem(LS_UI_MODE);
+    return raw === "pro" ? "pro" : "simple";
+  });
   const pollingRef = useRef<number | null>(null);
   const uploadingRef = useRef(false);
   // Load downloaded bundle signatures from localStorage so we don't re-download on reload
@@ -121,6 +126,11 @@ export function useConverter() {
   const setExportMode = useCallback((val: ExportMode) => {
     localStorage.setItem(LS_EXPORT_MODE, val);
     setExportModeState(val);
+  }, []);
+
+  const setUiMode = useCallback((val: "simple" | "pro") => {
+    localStorage.setItem(LS_UI_MODE, val);
+    setUiModeState(val);
   }, []);
 
   const triggerBrowserDownload = useCallback((href: string, filename?: string) => {
@@ -308,6 +318,57 @@ export function useConverter() {
         return true;
       });
 
+      // Simple mode: each file goes to its own best default format, no global
+      // category. We reuse the existing per-file ("custom") plumbing so that
+      // uploadItem/startProcessing send the right param block for every file.
+      if (uiMode === "simple") {
+        const simpleItems: QueueItem[] = visibleFiles.map((file) => {
+          const detectedType = getFileType(file.name);
+          const isMedia =
+            detectedType === "video" ||
+            detectedType === "audio" ||
+            detectedType === "image" ||
+            detectedType === "document" ||
+            detectedType === "3d";
+          const fmt =
+            detectedType === "document"
+              ? "pdf"
+              : detectedType === "3d"
+                ? "glb"
+                : detectedType === "video" ||
+                    detectedType === "audio" ||
+                    detectedType === "image"
+                  ? DEFAULT_CONVERT_FORMAT[detectedType]
+                  : "";
+          const category: MediaCategory = isMedia
+            ? (detectedType as MediaCategory)
+            : null;
+          return {
+            id: generateId(),
+            file,
+            mediaKind: isMedia
+              ? (detectedType as QueueItem["mediaKind"])
+              : undefined,
+            relativePath:
+              (file as File & { webkitRelativePath?: string })
+                .webkitRelativePath || "",
+            status: "pending",
+            jobId: null,
+            downloadUrl: null,
+            outputFilename: null,
+            error: null,
+            action: currentAction,
+            targetFormat: fmt || null,
+            outputMode: "custom",
+            customAction: null,
+            customConvertSettings: { ...convertSettings, category, format: fmt },
+            customCompressSettings: null,
+          };
+        });
+        setQueue((prev) => [...prev, ...simpleItems]);
+        return;
+      }
+
       const sequenceMode =
         (currentAction === "convert" || currentAction === "convert_compress") &&
         convertSettings.category === "sequence" &&
@@ -396,7 +457,7 @@ export function useConverter() {
 
       setQueue((prev) => [...prev, ...newItems]);
     },
-    [currentAction, convertSettings.category, convertSettings.format, outputMode],
+    [currentAction, convertSettings, outputMode, uiMode],
   );
 
   // Remove file from queue
@@ -1056,6 +1117,25 @@ export function useConverter() {
     }));
   }, []);
 
+  // Simple-mode per-file format change: update the target format (and the
+  // mirrored customConvertSettings.format) while leaving customAction null so
+  // the global "Réduire le poids" toggle still applies.
+  const setSimpleFormat = useCallback((id: string, format: string) => {
+    setQueue((prev) =>
+      prev.map((item) =>
+        item.id === id
+          ? {
+              ...item,
+              targetFormat: format,
+              customConvertSettings: item.customConvertSettings
+                ? { ...item.customConvertSettings, format }
+                : item.customConvertSettings,
+            }
+          : item,
+      ),
+    );
+  }, []);
+
   const setItemTargetFormat = useCallback((id: string, format: string) => {
     setQueue((prev) =>
       prev.map((item) =>
@@ -1240,6 +1320,7 @@ export function useConverter() {
     hasStarted,
     outputMode,
     exportMode,
+    uiMode,
     backgroundEnabled,
     autoDownloadEnabled,
     // Computed
@@ -1257,10 +1338,12 @@ export function useConverter() {
     setCurrentAction,
     setOutputMode,
     setExportMode,
+    setUiMode,
     setBackgroundEnabled,
     setAutoDownloadEnabled,
     setCategory,
     setFormat,
+    setSimpleFormat,
     setItemTargetFormat,
     setItemCustomAction,
     setItemCustomCompressSettings,

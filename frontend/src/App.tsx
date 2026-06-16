@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { ConfigPanel, VideoColorSampler } from '@/components/ConfigPanel'
 import { FileQueue } from '@/components/FileQueue'
+import { SimpleConverter } from '@/components/SimpleConverter'
 import { TotalProgress } from '@/components/TotalProgress'
 import { IconMoon, IconSun } from '@/components/icons'
 import { useConverter } from '@/hooks/useConverter'
@@ -38,6 +39,7 @@ function App() {
     detectedTypes,
     outputMode,
     exportMode,
+    uiMode,
     backgroundEnabled,
     autoDownloadEnabled,
     addFiles,
@@ -46,11 +48,13 @@ function App() {
     startProcessing,
     setOutputMode,
     setExportMode,
+    setUiMode,
     setBackgroundEnabled,
     setAutoDownloadEnabled,
     setCurrentAction,
     setCategory,
     setFormat,
+    setSimpleFormat,
     setItemTargetFormat,
     setItemCustomAction,
     setItemCustomCompressSettings,
@@ -63,6 +67,30 @@ function App() {
     applySuggestedCompress,
     exportCompletedFiles,
   } = useConverter()
+
+  // Reflect conversion progress in the browser tab title (e.g. "1/3 · 60% — …")
+  useEffect(() => {
+    const base = 'Convertisseur Studio'
+    const anyActive = queue.some(
+      (item) =>
+        item.status === 'uploading' ||
+        item.status === 'queued' ||
+        item.status === 'processing',
+    )
+    if (!anyActive) {
+      document.title = base
+      return
+    }
+    const total = queue.length
+    const overall = Math.round(
+      queue.reduce((sum, item) => {
+        if (item.status === 'done') return sum + 100
+        if (item.status === 'processing') return sum + (item.progress ?? 0)
+        return sum
+      }, 0) / Math.max(1, total),
+    )
+    document.title = `${completedCount}/${total} · ${overall}% — ${base}`
+  }, [queue, completedCount])
 
   const showProgress = hasStarted && totalCount > 0
   const colorPickerVideoFile =
@@ -94,12 +122,22 @@ function App() {
             </div>
           </div>
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            {backgroundEnabled && (
-              <span className="hidden sm:flex items-center gap-1.5 rounded-full border border-border bg-card px-2.5 py-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                Arrière-plan actif
-              </span>
-            )}
+            <div className="inline-flex items-center rounded-lg border border-border bg-card p-0.5 shadow-sm">
+              <button
+                type="button"
+                onClick={() => setUiMode('simple')}
+                className={`inline-flex h-8 items-center rounded-md px-3 text-xs font-semibold transition-colors ${uiMode === 'simple' ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground'}`}
+              >
+                Simple
+              </button>
+              <button
+                type="button"
+                onClick={() => setUiMode('pro')}
+                className={`inline-flex h-8 items-center rounded-md px-3 text-xs font-semibold transition-colors ${uiMode === 'pro' ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground'}`}
+              >
+                Pro
+              </button>
+            </div>
             <button
               type="button"
               onClick={() => setTheme((value) => value === 'dark' ? 'light' : 'dark')}
@@ -113,9 +151,27 @@ function App() {
         </div>
       </header>
 
-      <div className={`max-w-[1500px] mx-auto px-4 lg:px-6 py-5 ${showProgress ? 'pt-16' : ''}`}>
+      {uiMode === 'simple' ? (
+        <div key="simple" className={`animate-in fade-in slide-in-from-bottom-3 duration-300 ease-out fill-mode-both ${showProgress ? 'pt-16' : ''}`}>
+          <SimpleConverter
+            queue={queue}
+            canStart={canStart}
+            isProcessing={isProcessing}
+            currentAction={currentAction}
+            onFilesAdded={addFiles}
+            onRemove={removeFile}
+            onRequeue={requeueItem}
+            onClearAll={clearAll}
+            onStart={startProcessing}
+            onSetFormat={setSimpleFormat}
+            onSetCurrentAction={setCurrentAction}
+            onSetCompressSettings={setCompressSettings}
+          />
+        </div>
+      ) : (
+      <div key="pro" className={`max-w-[1500px] mx-auto px-4 lg:px-6 py-5 ${showProgress ? 'pt-16' : ''}`}>
         <div className="grid lg:grid-cols-[390px_minmax(0,1fr)] gap-5 items-start">
-          <div className="order-2 lg:order-1">
+          <div className="order-2 lg:order-1 animate-in fade-in slide-in-from-left-6 duration-500 ease-out fill-mode-both">
             <ConfigPanel
               currentAction={currentAction}
               onActionChange={setCurrentAction}
@@ -142,7 +198,7 @@ function App() {
             />
           </div>
 
-          <div className="order-1 lg:order-2 lg:sticky lg:top-[76px] lg:max-h-[calc(100vh-6rem)] flex flex-col gap-4">
+          <div className="order-1 lg:order-2 lg:sticky lg:top-[76px] lg:max-h-[calc(100vh-6rem)] flex flex-col gap-4 animate-in fade-in slide-in-from-right-6 duration-500 delay-100 ease-out fill-mode-both">
             {showVideoColorSampler && (
               <VideoColorSampler
                 file={colorPickerVideoFile}
@@ -174,6 +230,14 @@ function App() {
           </div>
         </div>
       </div>
+      )}
+
+      {backgroundEnabled && (
+        <div className="fixed bottom-4 right-4 z-50 flex items-center gap-1.5 rounded-full border border-border bg-card/95 px-3 py-1.5 text-xs text-muted-foreground shadow-lg backdrop-blur">
+          <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+          Arrière-plan actif
+        </div>
+      )}
     </div>
   )
 }
