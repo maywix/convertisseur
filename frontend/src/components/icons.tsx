@@ -101,6 +101,29 @@ export function IconImage(props: IconProps) {
     )
 }
 
+export function IconDocument(props: IconProps) {
+    return (
+        <svg {...svgProps(props)}>
+            <path d="M7 3.5h6.5L18 8v12.5H7z" />
+            <path d="M13.5 3.5V8H18" />
+            <path d="M9.5 12h5" />
+            <path d="M9.5 15h5" />
+            <path d="M9.5 18h3" />
+        </svg>
+    )
+}
+
+export function IconCube(props: IconProps) {
+    return (
+        <svg {...svgProps(props)}>
+            <path d="m12 3 8 4.5v9L12 21l-8-4.5v-9z" />
+            <path d="M12 12 4 7.5" />
+            <path d="m12 12 8-4.5" />
+            <path d="M12 12v9" />
+        </svg>
+    )
+}
+
 export function IconArrowDown(props: IconProps) {
     return (
         <svg {...svgProps(props)}>
@@ -202,6 +225,30 @@ export function IconCheck(props: IconProps) {
     return (
         <svg {...svgProps(props)}>
             <path d="M20 6 9 17l-5-5" />
+        </svg>
+    )
+}
+
+export function IconSun(props: IconProps) {
+    return (
+        <svg {...svgProps(props)}>
+            <circle cx="12" cy="12" r="4" />
+            <path d="M12 2v2" />
+            <path d="M12 20v2" />
+            <path d="m4.93 4.93 1.41 1.41" />
+            <path d="m17.66 17.66 1.41 1.41" />
+            <path d="M2 12h2" />
+            <path d="M20 12h2" />
+            <path d="m6.34 17.66-1.41 1.41" />
+            <path d="m19.07 4.93-1.41 1.41" />
+        </svg>
+    )
+}
+
+export function IconMoon(props: IconProps) {
+    return (
+        <svg {...svgProps(props)}>
+            <path d="M20 15.5A8.5 8.5 0 0 1 8.5 4 7 7 0 1 0 20 15.5Z" />
         </svg>
     )
 }

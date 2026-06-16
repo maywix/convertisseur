@@ -11,19 +11,19 @@ export function TotalProgress({ completed, total, isProcessing }: TotalProgressP
     const isComplete = completed === total && !isProcessing
 
     return (
-        <div className="fixed top-0 left-0 right-0 z-50 backdrop-blur-md bg-background/80 border-b border-border">
-            <div className="max-w-5xl mx-auto px-6 lg:px-10 py-3">
+        <div className="fixed top-0 left-0 right-0 z-50 backdrop-blur-xl bg-background/90 border-b border-border">
+            <div className="max-w-[1500px] mx-auto px-4 lg:px-6 py-3">
                 <div className="flex items-center justify-between mb-2">
-                    <span className="text-sm font-medium">
+                    <span className="text-sm font-semibold">
                         {isComplete ? (
-                            <span className="text-emerald-500">Traitement terminé</span>
+                            <span className="text-emerald-600 dark:text-emerald-400">Traitement terminé</span>
                         ) : isProcessing ? (
                             <span className="text-primary">Traitement en cours...</span>
                         ) : (
                             <span className="text-muted-foreground">En pause</span>
                         )}
                     </span>
-                    <span className="text-sm font-semibold text-primary">
+                    <span className="text-sm font-semibold text-foreground">
                         {completed}/{total} fichiers traités
                     </span>
                 </div>

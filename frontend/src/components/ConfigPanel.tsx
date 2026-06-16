@@ -1,9 +1,9 @@
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 const LS_UI_MODE = "converter_ui_mode";
 import {
     IconAudio, IconChevronDown, IconChevronUp,
-    IconCrop, IconImage, IconPlay, IconRotate,
+    IconCrop, IconCube, IconDocument, IconImage, IconPlay, IconRotate,
     IconSequence, IconSliders, IconVideo, IconVolume, IconWand,
 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
@@ -35,11 +35,11 @@ function Section({
 }) {
     const [open, setOpen] = useState(defaultOpen);
     return (
-        <div className="border border-border rounded-lg overflow-hidden">
+        <div className="overflow-hidden rounded-lg border border-border bg-card">
             <button
                 type="button"
                 onClick={() => setOpen((v) => !v)}
-                className="w-full flex items-center justify-between px-3 py-2.5 bg-muted/30 hover:bg-muted/60 transition-colors text-left"
+                className="w-full flex items-center justify-between px-3 py-2.5 bg-muted/45 hover:bg-muted transition-colors text-left"
             >
                 <span className="flex items-center gap-2 text-sm font-medium">
                     {icon && <span className="text-muted-foreground">{icon}</span>}
@@ -49,7 +49,7 @@ function Section({
                     {open ? <IconChevronUp size={14} /> : <IconChevronDown size={14} />}
                 </span>
             </button>
-            {open && <div className="p-3 space-y-3 border-t border-border">{children}</div>}
+            {open && <div className="p-3 space-y-3 border-t border-border bg-card">{children}</div>}
         </div>
     );
 }
@@ -59,8 +59,8 @@ function Section({
 // ──────────────────────────────────────────────────────────
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
     return (
-        <div className="grid grid-cols-[130px_1fr] items-center gap-2">
-            <span className="text-xs text-muted-foreground">{label}</span>
+        <div className="grid grid-cols-[128px_1fr] items-center gap-2">
+            <span className="text-xs font-medium text-muted-foreground">{label}</span>
             <div>{children}</div>
         </div>
     );
@@ -87,7 +87,7 @@ function SmallInput({
             onChange={(e) => onChange(e.target.value)}
             placeholder={placeholder}
             className={cn(
-                "h-8 w-full px-2 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-1 focus:ring-ring",
+                "h-8 w-full px-2.5 rounded-md border border-input bg-background text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ring/20",
                 className,
             )}
         />
@@ -112,8 +112,9 @@ function RangeRow({
     display?: (value: string) => string;
 }) {
     return (
-        <Row label={label}>
-            <div className="flex items-center gap-2">
+        <div className="grid gap-1.5 sm:grid-cols-[128px_1fr] sm:items-center sm:gap-2">
+            <span className="text-xs font-medium text-muted-foreground">{label}</span>
+            <div className="min-w-0 space-y-1">
                 <input
                     type="range"
                     min={min}
@@ -121,13 +122,312 @@ function RangeRow({
                     step={step}
                     value={value}
                     onChange={(e) => onChange(e.target.value)}
-                    className="flex-1 h-1.5 accent-primary"
+                    className="h-1.5 w-full accent-primary"
                 />
-                <span className="text-xs w-16 text-right font-mono text-muted-foreground">
+                <span className="block text-right font-mono text-[11px] leading-none text-muted-foreground whitespace-normal break-words">
                     {display ? display(value) : value}
                 </span>
             </div>
-        </Row>
+        </div>
+    );
+}
+
+function SlidingSegment<T extends string>({
+    options,
+    value,
+    onChange,
+    className,
+    buttonClassName,
+}: {
+    options: Array<{ value: T; label: React.ReactNode }>;
+    value: T;
+    onChange: (value: T) => void;
+    className?: string;
+    buttonClassName?: string;
+}) {
+    const selectedIndex = Math.max(0, options.findIndex((option) => option.value === value));
+    const gapPx = 4;
+    const paddingPx = 4;
+
+    return (
+        <div
+            className={cn("relative grid gap-1 overflow-hidden rounded-lg bg-muted p-1", className)}
+            style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))` }}
+        >
+            <span
+                aria-hidden="true"
+                className="absolute left-1 top-1 bottom-1 rounded-md border border-border bg-card shadow-sm transition-transform duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none"
+                style={{
+                    width: `calc((100% - ${paddingPx * 2}px - ${(options.length - 1) * gapPx}px) / ${options.length})`,
+                    transform: `translateX(calc(${selectedIndex * 100}% + ${selectedIndex * gapPx}px))`,
+                }}
+            />
+            {options.map((option) => (
+                <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => onChange(option.value)}
+                    className={cn(
+                        "relative z-10 rounded-md text-xs font-semibold text-muted-foreground transition-colors duration-200 hover:text-foreground",
+                        value === option.value && "text-foreground",
+                        buttonClassName,
+                    )}
+                >
+                    {option.label}
+                </button>
+            ))}
+        </div>
+    );
+}
+
+function SimpleCompressionGoal({
+    currentAction,
+    convertSettings,
+    compressSettings,
+    onActionChange,
+    onCategoryChange,
+    onFormatChange,
+    onCompressSettingsChange,
+}: {
+    currentAction: "convert" | "compress" | "convert_compress";
+    convertSettings: ConvertSettings;
+    compressSettings: CompressSettings;
+    onActionChange: (action: "convert" | "compress" | "convert_compress") => void;
+    onCategoryChange: (category: MediaCategory) => void;
+    onFormatChange: (format: string) => void;
+    onCompressSettingsChange: (settings: CompressSettings) => void;
+}) {
+    const setCp = (patch: Partial<CompressSettings>) =>
+        onCompressSettingsChange({ ...compressSettings, ...patch });
+    const simpleMode =
+        compressSettings.mode === "size" || compressSettings.mode === "percent" || compressSettings.mode === "crf"
+            ? compressSettings.mode
+            : "crf";
+    const usesMp4 =
+        currentAction === "convert_compress" &&
+        convertSettings.category === "video" &&
+        convertSettings.format === "mp4";
+
+    const chooseMp4 = () => {
+        onActionChange("convert_compress");
+        onCategoryChange("video");
+        onFormatChange("mp4");
+    };
+
+    return (
+        <div className="space-y-3 rounded-lg border border-border bg-muted/30 p-3">
+            <div className="space-y-2">
+                <div className="flex items-center justify-between gap-3">
+                    <div>
+                        <p className="text-sm font-semibold">Sortie simple</p>
+                        <p className="mt-0.5 text-xs text-muted-foreground">MP4 compatible partout, réglages auto.</p>
+                    </div>
+                    <button
+                        type="button"
+                        onClick={chooseMp4}
+                        className={cn(
+                            "rounded-md border px-3 py-1.5 text-xs font-semibold transition-colors",
+                            usesMp4
+                                ? "border-primary bg-primary text-primary-foreground"
+                                : "border-border bg-card text-foreground hover:border-primary/50",
+                        )}
+                    >
+                        MP4
+                    </button>
+                </div>
+            </div>
+
+            <div className="space-y-2">
+                <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Objectif
+                </label>
+                <SlidingSegment
+                    value={simpleMode}
+                    onChange={(mode) => setCp({ mode })}
+                    buttonClassName="min-h-9 px-2 py-1.5"
+                    options={[
+                        { value: "crf", label: "Auto" },
+                        { value: "percent", label: "Réduire %" },
+                        { value: "size", label: "Taille MB" },
+                    ]}
+                />
+            </div>
+
+            {simpleMode === "crf" && (
+                <div className="rounded-md border border-border bg-card p-3">
+                    <p className="text-sm font-medium">Auto</p>
+                    <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                        Le convertisseur choisit une compression équilibrée sans vous demander de codec, bitrate ou CRF.
+                    </p>
+                </div>
+            )}
+
+            {simpleMode === "percent" && (
+                <div className="rounded-md border border-border bg-card p-3">
+                    <div className="flex items-center justify-between gap-3">
+                        <span className="text-sm font-medium">Réduction souhaitée</span>
+                        <span className="font-mono text-sm font-semibold text-primary">{compressSettings.percentReduction}%</span>
+                    </div>
+                    <input
+                        type="range"
+                        min="10"
+                        max="90"
+                        step="5"
+                        value={compressSettings.percentReduction}
+                        onChange={(e) => setCp({ percentReduction: e.target.value })}
+                        className="mt-3 h-1.5 w-full accent-primary"
+                    />
+                    <div className="mt-3 grid grid-cols-4 gap-1.5">
+                        {["25", "50", "65", "80"].map((value) => (
+                            <button
+                                key={value}
+                                type="button"
+                                onClick={() => setCp({ mode: "percent", percentReduction: value })}
+                                className={cn(
+                                    "rounded-md border px-2 py-1.5 text-xs font-semibold transition-colors",
+                                    compressSettings.percentReduction === value
+                                        ? "border-primary bg-primary/10 text-primary"
+                                        : "border-border text-muted-foreground hover:text-foreground",
+                                )}
+                            >
+                                {value}%
+                            </button>
+                        ))}
+                    </div>
+                </div>
+            )}
+
+            {simpleMode === "size" && (
+                <div className="rounded-md border border-border bg-card p-3">
+                    <label className="text-sm font-medium" htmlFor="simple-target-size">
+                        Taille cible
+                    </label>
+                    <div className="mt-2 flex items-center gap-2">
+                        <input
+                            id="simple-target-size"
+                            type="number"
+                            min="1"
+                            inputMode="numeric"
+                            value={compressSettings.targetSizeMb}
+                            onChange={(e) => setCp({ targetSizeMb: e.target.value })}
+                            placeholder="30"
+                            className="h-9 min-w-0 flex-1 rounded-md border border-input bg-background px-3 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ring/20"
+                        />
+                        <span className="text-sm font-medium text-muted-foreground">MB</span>
+                    </div>
+                    <div className="mt-3 grid grid-cols-4 gap-1.5">
+                        {["20", "30", "50", "100"].map((value) => (
+                            <button
+                                key={value}
+                                type="button"
+                                onClick={() => setCp({ mode: "size", targetSizeMb: value })}
+                                className={cn(
+                                    "rounded-md border px-2 py-1.5 text-xs font-semibold transition-colors",
+                                    compressSettings.targetSizeMb === value
+                                        ? "border-primary bg-primary/10 text-primary"
+                                        : "border-border text-muted-foreground hover:text-foreground",
+                                )}
+                            >
+                                {value} MB
+                            </button>
+                        ))}
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
+export function VideoColorSampler({
+    file,
+    color,
+    onColorPicked,
+    className,
+}: {
+    file: File | null;
+    color: string;
+    onColorPicked: (color: string) => void;
+    className?: string;
+}) {
+    const videoRef = useRef<HTMLVideoElement>(null);
+    const canvasRef = useRef<HTMLCanvasElement>(null);
+    const [sampleStatus, setSampleStatus] = useState<string>("Cliquez dans la vidéo pour choisir une couleur.");
+
+    const objectUrl = useMemo(() => file ? URL.createObjectURL(file) : null, [file]);
+
+    useEffect(() => {
+        return () => {
+            if (objectUrl) URL.revokeObjectURL(objectUrl);
+        };
+    }, [objectUrl]);
+
+    const pickColor = (event: React.MouseEvent<HTMLVideoElement>) => {
+        const video = videoRef.current;
+        const canvas = canvasRef.current;
+        if (!video || !canvas || video.videoWidth === 0 || video.videoHeight === 0) {
+            setSampleStatus("La vidéo n'est pas encore prête.");
+            return;
+        }
+
+        const rect = video.getBoundingClientRect();
+        const scaleX = video.videoWidth / rect.width;
+        const scaleY = video.videoHeight / rect.height;
+        const x = Math.max(0, Math.min(video.videoWidth - 1, Math.floor((event.clientX - rect.left) * scaleX)));
+        const y = Math.max(0, Math.min(video.videoHeight - 1, Math.floor((event.clientY - rect.top) * scaleY)));
+
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const context = canvas.getContext("2d", { willReadFrequently: true });
+        if (!context) return;
+
+        context.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const [red, green, blue] = context.getImageData(x, y, 1, 1).data;
+        const picked = `#${[red, green, blue]
+            .map((channel) => channel.toString(16).padStart(2, "0"))
+            .join("")}`;
+        onColorPicked(picked);
+        setSampleStatus(`Couleur capturée: ${picked.toUpperCase()}`);
+    };
+
+    if (!file || !objectUrl) {
+        return (
+            <div className={cn("rounded-lg border border-dashed border-border bg-muted/30 p-3 text-xs leading-5 text-muted-foreground", className)}>
+                Ajoutez une vidéo dans la file pour choisir la couleur directement sur l'image.
+            </div>
+        );
+    }
+
+    return (
+        <div className={cn("space-y-2 rounded-lg border border-border bg-muted/30 p-3", className)}>
+            <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        Sélection depuis la vidéo
+                    </p>
+                    <p className="mt-0.5 truncate text-xs text-muted-foreground" title={file.name}>
+                        {file.name}
+                    </p>
+                </div>
+                <div className="flex items-center gap-2 rounded-md border border-border bg-card px-2 py-1">
+                    <span
+                        className="h-4 w-4 rounded border border-border"
+                        style={{ backgroundColor: color }}
+                    />
+                    <span className="font-mono text-xs">{color.toUpperCase()}</span>
+                </div>
+            </div>
+            <video
+                ref={videoRef}
+                src={objectUrl}
+                controls
+                playsInline
+                preload="metadata"
+                onClick={pickColor}
+                className="aspect-video w-full cursor-crosshair rounded-md border border-border bg-black object-contain"
+            />
+            <canvas ref={canvasRef} className="hidden" />
+            <p className="text-xs leading-5 text-muted-foreground">{sampleStatus}</p>
+        </div>
     );
 }
 
@@ -164,8 +464,8 @@ const CATEGORY_ICONS: Record<string, React.ReactNode> = {
     audio: <IconAudio size={16} />,
     image: <IconImage size={16} />,
     sequence: <IconSequence size={16} />,
-    document: <span className="text-sm">📄</span>,
-    "3d": <span className="text-sm">🧊</span>,
+    document: <IconDocument size={16} />,
+    "3d": <IconCube size={16} />,
 };
 const CATEGORY_LABELS: Record<string, string> = {
     video: "Vidéo",
@@ -205,7 +505,7 @@ export function ConfigPanel({
         catch { return "simple"; }
     });
     const setUiMode = (m: "simple" | "advanced") => {
-        try { localStorage.setItem(LS_UI_MODE, m); } catch {}
+        try { localStorage.setItem(LS_UI_MODE, m); } catch { void 0 }
         setUiModeState(m);
     };
     const isAdvanced = uiMode === "advanced";
@@ -233,36 +533,30 @@ export function ConfigPanel({
     };
 
     return (
-        <div className="flex flex-col gap-3 bg-card rounded-xl border border-border p-4 lg:sticky lg:top-4 max-h-[calc(100vh-2rem)] overflow-y-auto">
+        <div className="flex flex-col gap-4 rounded-xl border border-border bg-card p-4 shadow-sm lg:sticky lg:top-[76px] max-h-[calc(100vh-6rem)] overflow-y-auto">
 
             {/* Mode toggle */}
-            <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    Convertisseur Studio
-                </span>
-                <div className="flex items-center gap-1 p-0.5 bg-muted/50 rounded-lg">
-                    {(["simple", "advanced"] as const).map((m) => (
-                        <button
-                            key={m}
-                            type="button"
-                            onClick={() => setUiMode(m)}
-                            className={cn(
-                                "px-2.5 py-1 rounded-md text-xs font-medium transition-all",
-                                uiMode === m
-                                    ? "bg-card shadow-sm text-foreground"
-                                    : "text-muted-foreground hover:text-foreground",
-                            )}
-                        >
-                            {m === "simple" ? "Simple" : "Avancé"}
-                        </button>
-                    ))}
+            <div className="flex items-start justify-between gap-3">
+                <div>
+                    <h2 className="text-sm font-semibold tracking-tight">Réglages</h2>
+                    <p className="mt-1 text-xs text-muted-foreground">Simple par défaut, complet si nécessaire.</p>
                 </div>
+                <SlidingSegment
+                    value={uiMode}
+                    onChange={setUiMode}
+                    className="w-[128px]"
+                    buttonClassName="px-2.5 py-1.5 font-medium"
+                    options={[
+                        { value: "simple", label: "Simple" },
+                        { value: "advanced", label: "Avancé" },
+                    ]}
+                />
             </div>
 
             {/* Smart suggestions */}
             {detectedTypes.length > 0 && (
-                <div className="p-3 rounded-lg border border-amber-500/20 bg-amber-500/5 space-y-2">
-                    <p className="text-xs uppercase tracking-wide text-amber-400/80 font-semibold flex items-center gap-1.5">
+                <div className="p-3 rounded-lg border border-primary/20 bg-primary/5 space-y-2">
+                    <p className="text-xs uppercase tracking-wide text-primary font-semibold flex items-center gap-1.5">
                         <IconWand size={12} /> Suggestions rapides
                     </p>
                     {detectedTypes.map((type) => (
@@ -296,34 +590,30 @@ export function ConfigPanel({
             )}
 
             {/* Action tabs */}
-            <div className="grid grid-cols-3 gap-1 p-1 bg-muted/50 rounded-lg">
-                {(["convert", "compress", "convert_compress"] as const).map((action) => (
-                    <button
-                        key={action}
-                        type="button"
-                        onClick={() => onActionChange(action)}
-                        className={cn(
-                            "py-2 rounded-md text-sm font-medium transition-all",
-                            currentAction === action
-                                ? "bg-card shadow-sm text-foreground"
-                                : "text-muted-foreground hover:text-foreground",
-                        )}
-                    >
-                        {action === "convert"
-                            ? "Convertir"
-                            : action === "compress"
-                                ? "Compresser"
-                                : "Convertir + compresser"}
-                    </button>
-                ))}
+            <div className="space-y-2">
+                <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    <span className="flex h-5 w-5 items-center justify-center rounded-full bg-foreground text-[10px] text-background">1</span>
+                    Action
+                </div>
+                <SlidingSegment
+                    value={currentAction}
+                    onChange={onActionChange}
+                    buttonClassName="min-h-10 px-2 py-2"
+                    options={[
+                        { value: "convert", label: "Convertir" },
+                        { value: "compress", label: "Compresser" },
+                        { value: "convert_compress", label: "Convertir + compresser" },
+                    ]}
+                />
             </div>
 
             {/* ─── CONVERT MODE ─── */}
             {(currentAction === "convert" || currentAction === "convert_compress") && (
                 <div className="space-y-3">
                     {/* Category */}
-                    <div>
-                        <label className="text-xs text-muted-foreground uppercase tracking-wide font-semibold block mb-2">
+                    <div className="space-y-2">
+                        <label className="flex items-center gap-2 text-xs text-muted-foreground uppercase tracking-wide font-semibold">
+                            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-muted text-[10px] text-foreground">2</span>
                             Type de média
                         </label>
                         <div className="grid grid-cols-2 gap-1.5">
@@ -333,10 +623,10 @@ export function ConfigPanel({
                                     type="button"
                                     onClick={() => onCategoryChange(cat)}
                                     className={cn(
-                                        "flex items-center gap-2 px-3 py-2 rounded-lg border text-sm transition-all",
+                                        "flex items-center gap-2 px-3 py-2.5 rounded-lg border text-sm transition-all",
                                         cv.category === cat
-                                            ? "border-primary bg-primary/10 text-primary font-medium"
-                                            : "border-border bg-muted/20 text-muted-foreground hover:border-muted-foreground hover:text-foreground",
+                                            ? "border-primary bg-primary/10 text-primary font-semibold shadow-sm"
+                                            : "border-border bg-background text-muted-foreground hover:border-muted-foreground hover:text-foreground",
                                     )}
                                 >
                                     {CATEGORY_ICONS[cat!]}
@@ -347,8 +637,9 @@ export function ConfigPanel({
                     </div>
 
                     {/* Format */}
-                    <div>
-                        <label className="text-xs text-muted-foreground uppercase tracking-wide font-semibold block mb-2">
+                    <div className="space-y-2">
+                        <label className="flex items-center gap-2 text-xs text-muted-foreground uppercase tracking-wide font-semibold">
+                            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-muted text-[10px] text-foreground">3</span>
                             Format de sortie
                         </label>
                         {formats.length > 0 ? (
@@ -359,10 +650,10 @@ export function ConfigPanel({
                                         type="button"
                                         onClick={() => onFormatChange(fmt)}
                                         className={cn(
-                                            "px-2.5 py-1 rounded-md text-xs font-mono font-medium border transition-all",
+                                            "px-2.5 py-1.5 rounded-md text-xs font-mono font-semibold border transition-all",
                                             cv.format === fmt
                                                 ? "border-primary bg-primary text-primary-foreground"
-                                                : "border-border bg-muted/20 text-muted-foreground hover:border-muted-foreground hover:text-foreground",
+                                                : "border-border bg-background text-muted-foreground hover:border-muted-foreground hover:text-foreground",
                                         )}
                                     >
                                         {fmt === "zip" ? "ZIP" : fmt.toUpperCase()}
@@ -755,6 +1046,11 @@ export function ConfigPanel({
                                             />
                                         </div>
                                     </Row>
+                                    {(cv.category === "video" || cv.category === "sequence") && (
+                                        <div className="rounded-lg border border-dashed border-border bg-muted/30 p-3 text-xs leading-5 text-muted-foreground">
+                                            Le lecteur de sélection apparaît dans la colonne de droite.
+                                        </div>
+                                    )}
                                     <Row label="Tolérance">
                                         <div className="flex items-center gap-2">
                                             <input
@@ -851,84 +1147,97 @@ export function ConfigPanel({
             {/* ─── COMPRESS MODE ─── */}
             {(currentAction === "compress" || currentAction === "convert_compress") && (
                 <div className="space-y-3">
-                    <div>
-                        <label className="text-xs text-muted-foreground uppercase tracking-wide font-semibold block mb-2">
-                            Mode de compression
-                        </label>
-                        <div className="grid grid-cols-2 gap-1.5">
-                            {([
-                                { value: "crf", label: "Qualité auto" },
-                                { value: "size", label: "Taille cible" },
-                                { value: "percent", label: "Réduction %" },
-                                { value: "res", label: "Résolution" },
-                            ] as { value: CompressSettings["mode"]; label: string }[]).map(({ value, label }) => (
-                                <button
-                                    key={value}
-                                    type="button"
-                                    onClick={() => setCp({ mode: value })}
-                                    className={cn(
-                                        "px-3 py-2 rounded-lg border text-xs font-medium transition-all",
-                                        cp.mode === value
-                                            ? "border-primary bg-primary/10 text-primary"
-                                            : "border-border bg-muted/20 text-muted-foreground hover:border-muted-foreground hover:text-foreground",
-                                    )}
-                                >
-                                    {label}
-                                </button>
-                            ))}
-                        </div>
-                    </div>
+                    <label className="flex items-center gap-2 text-xs text-muted-foreground uppercase tracking-wide font-semibold">
+                        <span className="flex h-5 w-5 items-center justify-center rounded-full bg-muted text-[10px] text-foreground">
+                            {currentAction === "compress" ? "2" : "4"}
+                        </span>
+                        Objectif de compression
+                    </label>
 
-                    {/* Mode-specific value */}
-                    {cp.mode === "crf" && (
-                        <div>
-                            <label className="text-xs text-muted-foreground block mb-1.5">Niveau de qualité</label>
-                            <div className="grid grid-cols-3 gap-1.5">
-                                {(["low", "medium", "high"] as CompressSettings["crfLevel"][]).map((level) => (
-                                    <button key={level} type="button"
-                                        onClick={() => setCp({ crfLevel: level })}
-                                        className={cn(
-                                            "py-1.5 rounded-md border text-xs font-medium transition-all",
-                                            cp.crfLevel === level
-                                                ? "border-primary bg-primary/10 text-primary"
-                                                : "border-border text-muted-foreground hover:text-foreground",
-                                        )}>
-                                        {level === "low" ? "Basse (↑ qualité)" : level === "medium" ? "Moyenne" : "Haute (↓ qualité)"}
-                                    </button>
-                                ))}
-                            </div>
-                        </div>
-                    )}
-                    {cp.mode === "size" && (
-                        <Row label="Taille cible (MB)">
-                            <SmallInput value={cp.targetSizeMb} onChange={(v) => setCp({ targetSizeMb: v })} placeholder="ex: 50" />
-                        </Row>
-                    )}
-                    {cp.mode === "percent" && (
-                        <Row label="Réduction (%)">
-                            <div className="flex items-center gap-2">
-                                <input type="range" min="10" max="90" step="5"
-                                    value={cp.percentReduction}
-                                    onChange={(e) => setCp({ percentReduction: e.target.value })}
-                                    className="flex-1 h-1.5 accent-primary" />
-                                <span className="text-xs w-8 text-right font-mono">{cp.percentReduction}%</span>
-                            </div>
-                        </Row>
-                    )}
-                    {cp.mode === "res" && (
-                        <Row label="Résolution max">
-                            <Select value={cp.resolution} onValueChange={(v) => setCp({ resolution: v })}>
-                                <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-                                <SelectContent>
-                                    {["360", "480", "720", "1080", "1440", "2160"].map((r) => (
-                                        <SelectItem key={r} value={r}>{r}p</SelectItem>
+                    {!isAdvanced ? (
+                        <SimpleCompressionGoal
+                            currentAction={currentAction}
+                            convertSettings={convertSettings}
+                            compressSettings={compressSettings}
+                            onActionChange={onActionChange}
+                            onCategoryChange={onCategoryChange}
+                            onFormatChange={onFormatChange}
+                            onCompressSettingsChange={onCompressSettingsChange}
+                        />
+                    ) : (
+                        <>
+                            <div className="space-y-2">
+                                <label className="text-xs text-muted-foreground block">Mode de compression</label>
+                                <div className="grid grid-cols-2 gap-1.5">
+                                    {([
+                                        { value: "crf", label: "Auto" },
+                                        { value: "size", label: "Taille cible" },
+                                        { value: "percent", label: "Réduction %" },
+                                        { value: "res", label: "Résolution" },
+                                    ] as { value: CompressSettings["mode"]; label: string }[]).map(({ value, label }) => (
+                                        <button
+                                            key={value}
+                                            type="button"
+                                            onClick={() => setCp({ mode: value })}
+                                            className={cn(
+                                                "px-3 py-2.5 rounded-lg border text-xs font-semibold transition-all",
+                                                cp.mode === value
+                                                    ? "border-primary bg-primary/10 text-primary"
+                                                    : "border-border bg-background text-muted-foreground hover:border-muted-foreground hover:text-foreground",
+                                            )}
+                                        >
+                                            {label}
+                                        </button>
                                     ))}
-                                </SelectContent>
-                            </Select>
-                        </Row>
+                                </div>
+                            </div>
+
+                            {cp.mode === "crf" && (
+                                <div>
+                                    <label className="text-xs text-muted-foreground block mb-1.5">Profil automatique</label>
+                                    <SlidingSegment
+                                        value={cp.crfLevel}
+                                        onChange={(level) => setCp({ crfLevel: level })}
+                                        buttonClassName="py-1.5 px-2"
+                                        options={[
+                                            { value: "low", label: "Qualité max" },
+                                            { value: "medium", label: "Auto" },
+                                            { value: "high", label: "Fichier léger" },
+                                        ]}
+                                    />
+                                </div>
+                            )}
+                            {cp.mode === "size" && (
+                                <Row label="Taille cible (MB)">
+                                    <SmallInput value={cp.targetSizeMb} onChange={(v) => setCp({ targetSizeMb: v })} placeholder="ex: 50" />
+                                </Row>
+                            )}
+                            {cp.mode === "percent" && (
+                                <Row label="Réduction (%)">
+                                    <div className="flex items-center gap-2">
+                                        <input type="range" min="10" max="90" step="5"
+                                            value={cp.percentReduction}
+                                            onChange={(e) => setCp({ percentReduction: e.target.value })}
+                                            className="flex-1 h-1.5 accent-primary" />
+                                        <span className="text-xs w-8 text-right font-mono">{cp.percentReduction}%</span>
+                                    </div>
+                                </Row>
+                            )}
+                            {cp.mode === "res" && (
+                                <Row label="Résolution max">
+                                    <Select value={cp.resolution} onValueChange={(v) => setCp({ resolution: v })}>
+                                        <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                                        <SelectContent>
+                                            {["360", "480", "720", "1080", "1440", "2160"].map((r) => (
+                                                <SelectItem key={r} value={r}>{r}p</SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                </Row>
+                            )}
+                        </>
                     )}
 
-                    {/* Advanced compress */}
                     {isAdvanced && <Section icon={<IconSliders size={14} />} title="Paramètres avancés" defaultOpen={false}>
                         <Row label="Activer avancé">
                             <Switch checked={cp.advancedEnabled} onCheckedChange={(v) => setCp({ advancedEnabled: v })} />
@@ -1109,35 +1418,27 @@ export function ConfigPanel({
             )}
 
             {/* ─── Global options ─── */}
-            <div className="border-t border-border pt-3 space-y-3">
+            <div className="border-t border-border pt-4 space-y-3">
                 {isAdvanced && <div>
                     <label className="text-xs text-muted-foreground uppercase tracking-wide font-semibold block mb-2">
                         Mode de sortie
                     </label>
-                    <div className="grid grid-cols-2 gap-1 p-1 bg-muted/50 rounded-lg">
-                        {([
+                    <SlidingSegment
+                        value={outputMode}
+                        onChange={onOutputModeChange}
+                        buttonClassName="py-1.5 px-2"
+                        options={[
                             { value: "global", label: "Tous pareils" },
                             { value: "per-file", label: "Par fichier" },
-                        ] as { value: OutputMode; label: string }[]).map(({ value, label }) => (
-                            <button key={value} type="button"
-                                onClick={() => onOutputModeChange(value)}
-                                className={cn(
-                                    "py-1.5 rounded-md text-xs font-medium transition-all",
-                                    outputMode === value
-                                        ? "bg-card shadow-sm text-foreground"
-                                        : "text-muted-foreground hover:text-foreground",
-                                )}>
-                                {label}
-                            </button>
-                        ))}
-                    </div>
+                        ]}
+                    />
                 </div>}
 
-                <div className="space-y-2">
+                <div className="space-y-2 rounded-lg border border-border bg-muted/35 p-3">
                     <div className="flex items-center justify-between gap-3">
-                        <span className="text-xs">Export</span>
+                        <span className="text-xs font-medium">Export</span>
                         <Select value={exportMode} onValueChange={(v) => onExportModeChange(v as ExportMode)}>
-                            <SelectTrigger className="h-7 w-[130px] text-xs">
+                            <SelectTrigger className="h-8 w-[132px] bg-card text-xs">
                                 <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
@@ -1147,11 +1448,11 @@ export function ConfigPanel({
                         </Select>
                     </div>
                     <div className="flex items-center justify-between">
-                        <span className="text-xs">Traitement arrière-plan</span>
+                        <span className="text-xs font-medium">Traitement arrière-plan</span>
                         <Switch checked={backgroundEnabled} onCheckedChange={onBackgroundEnabledChange} />
                     </div>
                     <div className="flex items-center justify-between">
-                        <span className="text-xs">Téléchargement auto</span>
+                        <span className="text-xs font-medium">Téléchargement auto</span>
                         <Switch checked={autoDownloadEnabled} onCheckedChange={onAutoDownloadEnabledChange} />
                     </div>
                 </div>
@@ -1161,7 +1462,7 @@ export function ConfigPanel({
             <Button
                 onClick={onStart}
                 disabled={!canStart || isProcessing}
-                className="w-full h-11 text-sm font-semibold gap-2"
+                className="w-full h-11 text-sm font-semibold gap-2 shadow-sm"
             >
                 <IconPlay size={15} />
                 {isProcessing

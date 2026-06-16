@@ -1,9 +1,29 @@
-import { ConfigPanel } from '@/components/ConfigPanel'
+import { useEffect, useState } from 'react'
+import { ConfigPanel, VideoColorSampler } from '@/components/ConfigPanel'
 import { FileQueue } from '@/components/FileQueue'
 import { TotalProgress } from '@/components/TotalProgress'
+import { IconMoon, IconSun } from '@/components/icons'
 import { useConverter } from '@/hooks/useConverter'
+import { getFileType } from '@/types'
+
+const LS_THEME = 'converter_theme'
 
 function App() {
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    try {
+      const stored = localStorage.getItem(LS_THEME)
+      if (stored === 'light' || stored === 'dark') return stored
+      return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+    } catch {
+      return 'light'
+    }
+  })
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', theme === 'dark')
+    try { localStorage.setItem(LS_THEME, theme) } catch { void 0 }
+  }, [theme])
+
   const {
     queue,
     currentAction,
@@ -45,9 +65,17 @@ function App() {
   } = useConverter()
 
   const showProgress = hasStarted && totalCount > 0
+  const colorPickerVideoFile =
+    queue.find((item) => {
+      const kind = item.mediaKind || getFileType(item.file.name)
+      return kind === 'video' && item.file.size > 0
+    })?.file || null
+  const showVideoColorSampler =
+    convertSettings.colorRemoveEnabled &&
+    (convertSettings.category === 'video' || convertSettings.category === 'sequence')
 
   return (
-    <div className="dark min-h-screen bg-[#0b0d12] text-foreground">
+    <div className="min-h-screen bg-background text-foreground">
       {showProgress && (
         <TotalProgress
           completed={completedCount}
@@ -56,31 +84,37 @@ function App() {
         />
       )}
 
-      {/* Header */}
-      <header className="sticky top-0 z-40 border-b border-white/8 bg-[#0b0d12]/95 backdrop-blur">
-        <div className="mx-auto max-w-7xl px-4 py-3 flex items-center justify-between">
+      <header className="sticky top-0 z-40 border-b border-border/80 bg-background/90 backdrop-blur-xl">
+        <div className="mx-auto max-w-[1500px] px-4 lg:px-6 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center text-primary-foreground font-bold text-sm">C</div>
+            <div className="w-9 h-9 rounded-lg bg-foreground flex items-center justify-center text-background font-bold text-sm shadow-sm">C</div>
             <div>
-              <h1 className="text-base font-bold tracking-tight leading-none">Convertisseur Studio</h1>
-              <p className="text-xs text-muted-foreground leading-none mt-0.5">Vidéo · Audio · Image</p>
+              <h1 className="text-[15px] font-semibold tracking-tight leading-none">Convertisseur Studio</h1>
+              <p className="text-xs text-muted-foreground leading-none mt-1">Vidéo · Audio · Image · Document · 3D</p>
             </div>
           </div>
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             {backgroundEnabled && (
-              <span className="flex items-center gap-1">
+              <span className="hidden sm:flex items-center gap-1.5 rounded-full border border-border bg-card px-2.5 py-1">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
                 Arrière-plan actif
               </span>
             )}
+            <button
+              type="button"
+              onClick={() => setTheme((value) => value === 'dark' ? 'light' : 'dark')}
+              className="inline-flex h-9 items-center gap-2 rounded-lg border border-border bg-card px-3 text-xs font-medium text-foreground shadow-sm transition-colors hover:bg-muted"
+              aria-label={theme === 'dark' ? 'Passer au thème clair' : 'Passer au thème sombre'}
+            >
+              {theme === 'dark' ? <IconSun size={15} /> : <IconMoon size={15} />}
+              <span className="hidden sm:inline">{theme === 'dark' ? 'Clair' : 'Sombre'}</span>
+            </button>
           </div>
         </div>
       </header>
 
-      {/* Main Content */}
-      <div className={`max-w-7xl mx-auto px-4 lg:px-6 py-4 ${showProgress ? 'pt-16' : ''}`}>
-        <div className="grid lg:grid-cols-[380px_1fr] gap-4 items-start">
-          {/* Settings panel (left / bottom on mobile) */}
+      <div className={`max-w-[1500px] mx-auto px-4 lg:px-6 py-5 ${showProgress ? 'pt-16' : ''}`}>
+        <div className="grid lg:grid-cols-[390px_minmax(0,1fr)] gap-5 items-start">
           <div className="order-2 lg:order-1">
             <ConfigPanel
               currentAction={currentAction}
@@ -108,8 +142,17 @@ function App() {
             />
           </div>
 
-          {/* File queue (right / top on mobile) */}
-          <div className="order-1 lg:order-2 lg:sticky lg:top-16 lg:max-h-[calc(100vh-5rem)] flex flex-col">
+          <div className="order-1 lg:order-2 lg:sticky lg:top-[76px] lg:max-h-[calc(100vh-6rem)] flex flex-col gap-4">
+            {showVideoColorSampler && (
+              <VideoColorSampler
+                file={colorPickerVideoFile}
+                color={convertSettings.colorRemoveColor}
+                onColorPicked={(pickedColor) =>
+                  setConvertSettings({ ...convertSettings, colorRemoveColor: pickedColor })
+                }
+                className="bg-card p-4 shadow-sm"
+              />
+            )}
             <FileQueue
               queue={queue}
               currentAction={currentAction}

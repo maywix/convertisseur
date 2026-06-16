@@ -313,6 +313,22 @@ export function useConverter() {
         convertSettings.category === "sequence" &&
         visibleFiles.length > 0 &&
         visibleFiles.every((file) => getFileType(file.name) === "image");
+      const detectedVisibleTypes = visibleFiles
+        .map((file) => getFileType(file.name))
+        .filter((type): type is DetectedMediaType => type !== "unknown");
+      const uniqueDetectedTypes = Array.from(new Set(detectedVisibleTypes));
+      const autoDetectedType = uniqueDetectedTypes.length === 1 ? uniqueDetectedTypes[0] : null;
+      const autoCategory: MediaCategory = sequenceMode ? "sequence" : autoDetectedType;
+      const autoFormat =
+        autoCategory === "sequence"
+          ? DEFAULT_SEQUENCE_FORMAT
+          : autoDetectedType
+            ? DEFAULT_CONVERT_FORMAT[autoDetectedType]
+            : convertSettings.format;
+      const targetFormat =
+        currentAction === "convert" || currentAction === "convert_compress"
+          ? autoFormat
+          : null;
 
       const newItems: QueueItem[] = [];
 
@@ -332,8 +348,7 @@ export function useConverter() {
           outputFilename: null,
           error: null,
           action: currentAction,
-          targetFormat:
-            (currentAction === "convert" || currentAction === "convert_compress") ? convertSettings.format : null,
+          targetFormat,
           outputMode: outputMode === "per-file" ? "custom" : "global",
           customAction: null,
           customConvertSettings: null,
@@ -362,8 +377,7 @@ export function useConverter() {
             outputFilename: null,
             error: null,
             action: currentAction,
-            targetFormat:
-              (currentAction === "convert" || currentAction === "convert_compress") ? convertSettings.format : null,
+            targetFormat,
             outputMode: outputMode === "per-file" ? "custom" : "global",
             customAction: null,
             customConvertSettings: null,
@@ -372,9 +386,17 @@ export function useConverter() {
         }
       }
 
+      if (autoCategory && (currentAction === "convert" || currentAction === "convert_compress")) {
+        setConvertSettings((prev) => ({
+          ...prev,
+          category: autoCategory,
+          format: autoFormat,
+        }));
+      }
+
       setQueue((prev) => [...prev, ...newItems]);
     },
-    [currentAction, convertSettings.format, outputMode],
+    [currentAction, convertSettings.category, convertSettings.format, outputMode],
   );
 
   // Remove file from queue

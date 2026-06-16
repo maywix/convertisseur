@@ -1,4 +1,4 @@
-import { memo, useState, useEffect, useRef } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Progress } from '@/components/ui/progress'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
@@ -72,31 +72,29 @@ function FileItemImpl({
     onSetItemCustomCompressSettings,
     onSetItemOutputMode,
 }: FileItemProps) {
-    const [thumbnailUrl, setThumbnailUrl] = useState<string | null>(null)
     const [settingsOpen, setSettingsOpen] = useState(false)
     const [logsOpen, setLogsOpen] = useState(false)
 
     const fileType = item.mediaKind === 'sequence' ? 'sequence' : item.mediaKind || getFileType(item.file.name)
 
-    useEffect(() => {
+    const thumbnailUrl = useMemo(() => {
         if ((fileType !== 'image' && fileType !== 'sequence') || item.file.size <= 0) {
-            setThumbnailUrl(null)
-            return
+            return null
         }
 
         // Avoid expensive client-side canvas work for very large files.
         if (item.file.size > 25 * 1024 * 1024) {
-            setThumbnailUrl(null)
-            return
+            return null
         }
 
-        const objectUrl = URL.createObjectURL(item.file)
-        setThumbnailUrl(objectUrl)
-
-        return () => {
-            URL.revokeObjectURL(objectUrl)
-        }
+        return URL.createObjectURL(item.file)
     }, [item.file, fileType])
+
+    useEffect(() => {
+        return () => {
+            if (thumbnailUrl) URL.revokeObjectURL(thumbnailUrl)
+        }
+    }, [thumbnailUrl])
 
     const availableFormats = formats[fileType]
     const selectedFormat = item.targetFormat || defaultFormat
@@ -117,16 +115,16 @@ function FileItemImpl({
 
     return (
         <div className={cn(
-            "rounded-lg border transition-colors mb-2",
-            isDone ? "border-emerald-500/30 bg-emerald-500/5" :
-            isError ? "border-destructive/30 bg-destructive/5" :
-            isActive ? "border-primary/20 bg-primary/5" :
-            "border-border bg-card/50"
+            "rounded-lg border transition-colors mb-2 bg-card shadow-sm",
+            isDone ? "border-emerald-500/30" :
+            isError ? "border-destructive/30" :
+            isActive ? "border-primary/30" :
+            "border-border"
         )}>
             {/* Main row */}
             <div className="flex items-center gap-3 p-3">
                 {/* Thumbnail / icon */}
-                <div className="w-12 h-12 min-w-12 flex-shrink-0 rounded-md overflow-hidden bg-muted flex items-center justify-center">
+                <div className="w-12 h-12 min-w-12 flex-shrink-0 rounded-md overflow-hidden bg-muted border border-border flex items-center justify-center">
                     {thumbnailUrl ? (
                         <img src={thumbnailUrl} alt="" className="w-full h-full object-cover" />
                     ) : (
@@ -136,8 +134,8 @@ function FileItemImpl({
 
                 {/* Info */}
                 <div className="flex-1 min-w-0">
-                    <div className="font-medium text-sm truncate" title={displayName}>{displayName}</div>
-                    <div className="flex items-center gap-2 mt-0.5">
+                    <div className="font-semibold text-sm truncate" title={displayName}>{displayName}</div>
+                    <div className="flex items-center gap-2 mt-0.5 min-w-0">
                         <span className="text-xs text-muted-foreground">{formatSize(item.file.size)}</span>
                         <span className={cn("text-xs font-medium", STATUS_COLOR[item.status])}>
                             {item.status === 'error' && item.error
@@ -172,10 +170,10 @@ function FileItemImpl({
                             type="button"
                             onClick={() => setLogsOpen((v) => !v)}
                             className={cn(
-                                "h-7 w-7 rounded-md flex items-center justify-center transition-colors",
+                                "h-8 w-8 rounded-md flex items-center justify-center transition-colors",
                                 logsOpen
-                                    ? "text-emerald-400 bg-emerald-500/10"
-                                    : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                                    ? "text-emerald-600 dark:text-emerald-400 bg-emerald-500/10"
+                                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
                             )}
                             title="Voir les logs"
                         >
@@ -186,7 +184,7 @@ function FileItemImpl({
                         <button
                             type="button"
                             onClick={() => setSettingsOpen((v) => !v)}
-                            className="h-7 w-7 rounded-md flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+                            className="h-8 w-8 rounded-md flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
                             title="Paramètres individuels"
                         >
                             {settingsOpen ? <IconChevronUp size={14} /> : <IconChevronDown size={14} />}
@@ -196,7 +194,7 @@ function FileItemImpl({
                         <a
                             href={item.downloadUrl}
                             download={item.outputFilename || undefined}
-                            className="h-7 w-7 rounded-md flex items-center justify-center bg-emerald-500 text-white hover:bg-emerald-600 transition-colors"
+                            className="h-8 w-8 rounded-md flex items-center justify-center bg-emerald-600 text-white hover:bg-emerald-700 transition-colors"
                             title="Télécharger"
                         >
                             <IconDownload size={14} />
@@ -206,7 +204,7 @@ function FileItemImpl({
                         <button
                             type="button"
                             onClick={() => onRequeue(item.id)}
-                            className="h-7 w-7 rounded-md flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+                            className="h-8 w-8 rounded-md flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
                             title="Reconvertir"
                         >
                             <IconRefresh size={14} />
@@ -216,7 +214,7 @@ function FileItemImpl({
                         <button
                             type="button"
                             onClick={() => onRemove(item.id)}
-                            className="h-7 w-7 rounded-md flex items-center justify-center text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+                            className="h-8 w-8 rounded-md flex items-center justify-center text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
                             title="Supprimer"
                         >
                             <IconX size={14} />
@@ -227,7 +225,7 @@ function FileItemImpl({
 
             {/* Per-file settings (expandable, only for pending) */}
             {isPending && settingsOpen && availableFormats.length > 0 && (
-                <div className="border-t border-border px-3 py-2.5 space-y-2 bg-muted/10">
+                <div className="border-t border-border px-3 py-3 space-y-2 bg-muted/30">
                     <div className="flex items-center justify-between">
                         <span className="text-xs text-muted-foreground font-medium">Paramètres individuels</span>
                         <div className="flex items-center gap-1.5">
@@ -290,31 +288,45 @@ function FileItemImpl({
                                         <SelectContent>
                                             <SelectItem value="size">Taille (MB)</SelectItem>
                                             <SelectItem value="percent">Réduction (%)</SelectItem>
-                                            <SelectItem value="crf">Qualité</SelectItem>
+                                            <SelectItem value="crf">Auto</SelectItem>
                                         </SelectContent>
                                     </Select>
-                                    <input
-                                        type="text"
-                                        value={
-                                            (customCompress?.mode || 'size') === 'percent'
-                                                ? customCompress?.percentReduction || '50'
-                                                : (customCompress?.mode || 'size') === 'crf'
-                                                    ? customCompress?.crfLevel || 'medium'
-                                                    : customCompress?.targetSizeMb || '50'
-                                        }
-                                        onChange={(e) => {
-                                            const mode = customCompress?.mode || 'size'
-                                            if (mode === 'percent') {
-                                                onSetItemCustomCompressSettings(item.id, { percentReduction: e.target.value })
-                                            } else if (mode === 'crf') {
-                                                onSetItemCustomCompressSettings(item.id, { crfLevel: e.target.value as CompressSettings['crfLevel'] })
-                                            } else {
-                                                onSetItemCustomCompressSettings(item.id, { targetSizeMb: e.target.value })
+                                    {(customCompress?.mode || 'size') === 'crf' ? (
+                                        <Select
+                                            value={customCompress?.crfLevel || 'medium'}
+                                            onValueChange={(value) =>
+                                                onSetItemCustomCompressSettings(item.id, { crfLevel: value as CompressSettings['crfLevel'] })
                                             }
-                                        }}
-                                        className="h-8 px-2 rounded-md border border-input bg-background text-xs focus:outline-none focus:ring-1 focus:ring-ring"
-                                        placeholder="Valeur"
-                                    />
+                                        >
+                                            <SelectTrigger className="h-8 text-xs">
+                                                <SelectValue />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="low">Qualité max</SelectItem>
+                                                <SelectItem value="medium">Auto</SelectItem>
+                                                <SelectItem value="high">Fichier léger</SelectItem>
+                                            </SelectContent>
+                                        </Select>
+                                    ) : (
+                                        <input
+                                            type="text"
+                                            value={
+                                                (customCompress?.mode || 'size') === 'percent'
+                                                    ? customCompress?.percentReduction || '50'
+                                                    : customCompress?.targetSizeMb || '50'
+                                            }
+                                            onChange={(e) => {
+                                                const mode = customCompress?.mode || 'size'
+                                                if (mode === 'percent') {
+                                                    onSetItemCustomCompressSettings(item.id, { percentReduction: e.target.value })
+                                                } else {
+                                                    onSetItemCustomCompressSettings(item.id, { targetSizeMb: e.target.value })
+                                                }
+                                            }}
+                                            className="h-8 px-2 rounded-md border border-input bg-background text-xs shadow-sm focus:outline-none focus:ring-2 focus:ring-ring/20"
+                                            placeholder="Valeur"
+                                        />
+                                    )}
                                 </div>
                             )}
                         </div>
@@ -358,7 +370,7 @@ function LogPanel({ jobId, isActive }: { jobId: string; isActive: boolean }) {
                 if (!res.ok || cancelled) return
                 const data = await res.json()
                 if (!cancelled) setLines(data.lines ?? [])
-            } catch {}
+            } catch { void 0 }
         }
 
         poll()

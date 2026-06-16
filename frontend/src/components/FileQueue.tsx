@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { UploadZone } from './UploadZone'
@@ -139,16 +139,6 @@ export function FileQueue({
     }, [activeTab, queue, sortMode])
     const visibleItems = useMemo(() => filteredQueue.slice(0, renderLimit), [filteredQueue, renderLimit])
 
-    useEffect(() => {
-        setRenderLimit(200)
-    }, [activeTab])
-
-    useEffect(() => {
-        if (filteredQueue.length < renderLimit) {
-            setRenderLimit(200)
-        }
-    }, [filteredQueue.length, renderLimit])
-
     // Reset tab to 'all' if active tab becomes empty
     const effectiveTab = useMemo(
         () => (tabCounts[activeTab] > 0 || activeTab === 'all' ? activeTab : 'all'),
@@ -156,36 +146,36 @@ export function FileQueue({
     )
 
     return (
-        <div className="bg-card rounded-xl border border-border flex flex-col min-h-[500px] lg:min-h-0 lg:h-full">
+        <div className="bg-card rounded-xl border border-border shadow-sm flex flex-col min-h-[520px] lg:min-h-0 lg:h-full overflow-hidden">
             <UploadZone onFilesAdded={onFilesAdded} compact={queue.length > 0} />
 
             {/* Header */}
-            <div className="px-4 py-3 flex flex-wrap items-center justify-between gap-2 border-b border-border">
-                <div className="flex items-center gap-3">
-                    <h3 className="text-sm font-semibold">
+            <div className="px-4 py-3.5 flex flex-wrap items-center justify-between gap-3 border-b border-border bg-muted/25">
+                <div className="flex flex-wrap items-center gap-3">
+                    <h3 className="text-sm font-semibold tracking-tight">
                         File d'attente
                         <span className="ml-1.5 text-muted-foreground font-normal">({queue.length})</span>
                     </h3>
                     {/* Status summary pills */}
                     {queue.length > 0 && (
-                        <div className="flex items-center gap-1.5">
+                        <div className="flex flex-wrap items-center gap-1.5">
                             {counts.pending > 0 && (
-                                <span className="px-1.5 py-0.5 rounded text-xs bg-muted text-muted-foreground">
+                                <span className="px-2 py-1 rounded-md text-xs bg-card border border-border text-muted-foreground">
                                     {counts.pending} en attente
                                 </span>
                             )}
                             {counts.active > 0 && (
-                                <span className="px-1.5 py-0.5 rounded text-xs bg-primary/10 text-primary">
+                                <span className="px-2 py-1 rounded-md text-xs bg-primary/10 text-primary border border-primary/20">
                                     {counts.active} actif
                                 </span>
                             )}
                             {counts.done > 0 && (
-                                <span className="px-1.5 py-0.5 rounded text-xs bg-emerald-500/10 text-emerald-500">
+                                <span className="px-2 py-1 rounded-md text-xs bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
                                     {counts.done} terminé
                                 </span>
                             )}
                             {counts.error > 0 && (
-                                <span className="px-1.5 py-0.5 rounded text-xs bg-destructive/10 text-destructive">
+                                <span className="px-2 py-1 rounded-md text-xs bg-destructive/10 text-destructive border border-destructive/20">
                                     {counts.error} erreur
                                 </span>
                             )}
@@ -193,10 +183,10 @@ export function FileQueue({
                     )}
                 </div>
 
-                <div className="flex items-center gap-1.5">
+                <div className="flex flex-wrap items-center gap-1.5">
                     {queue.length > 1 && (
                         <Select value={sortMode} onValueChange={(value) => setSortMode(value as SortMode)}>
-                            <SelectTrigger className="h-7 min-w-[180px] text-xs">
+                            <SelectTrigger className="h-8 min-w-[180px] bg-card text-xs">
                                 <SelectValue placeholder="Trier par" />
                             </SelectTrigger>
                             <SelectContent>
@@ -206,7 +196,7 @@ export function FileQueue({
                         </Select>
                     )}
                     {(currentAction === 'convert' || currentAction === 'convert_compress') && outputMode === 'per-file' && (
-                        <Button variant="outline" size="sm" onClick={onApplyGlobalOutput} className="text-xs h-7">
+                        <Button variant="outline" size="sm" onClick={onApplyGlobalOutput} className="text-xs h-8">
                             Format global
                         </Button>
                     )}
@@ -214,7 +204,7 @@ export function FileQueue({
                         variant="ghost" size="sm"
                         onClick={onExportCompleted}
                         disabled={!canExportCompleted}
-                        className={cn("text-xs h-7 gap-1.5", !canExportCompleted && "opacity-40")}
+                        className={cn("text-xs h-8 gap-1.5", !canExportCompleted && "opacity-40")}
                     >
                         <IconDownload size={13} />
                         {exportMode === 'files' ? 'Exporter les fichiers' : 'Exporter en ZIP'}
@@ -222,7 +212,7 @@ export function FileQueue({
                     <Button
                         variant="ghost" size="sm"
                         onClick={onClearAll}
-                        className="text-xs h-7 gap-1.5 text-muted-foreground hover:text-destructive"
+                        className="text-xs h-8 gap-1.5 text-muted-foreground hover:text-destructive"
                     >
                         <IconTrash size={13} />
                         Vider
@@ -232,16 +222,19 @@ export function FileQueue({
 
             {/* Type tabs */}
             {showTabs && (
-                <div className="flex items-center gap-0.5 px-3 pt-2 pb-0 border-b border-border">
+                <div className="flex items-center gap-1 px-3 pt-2 pb-0 border-b border-border bg-muted/15 overflow-x-auto">
                     {visibleTabs.map(tab => (
                         <button
                             key={tab}
                             type="button"
-                            onClick={() => setActiveTab(tab)}
+                            onClick={() => {
+                                setActiveTab(tab)
+                                setRenderLimit(200)
+                            }}
                             className={cn(
-                                "relative px-3 py-1.5 text-xs font-medium rounded-t-md transition-colors",
+                                "relative px-3 py-1.5 text-xs font-semibold rounded-t-md transition-colors whitespace-nowrap",
                                 effectiveTab === tab
-                                    ? "text-foreground bg-muted/60 border-b-2 border-primary -mb-px"
+                                    ? "text-foreground bg-card border-b-2 border-primary -mb-px shadow-sm"
                                     : "text-muted-foreground hover:text-foreground hover:bg-muted/30"
                             )}
                         >
@@ -260,11 +253,12 @@ export function FileQueue({
             )}
 
             {/* File list */}
-            <ScrollArea className="flex-1 p-3">
+            <ScrollArea className="flex-1 p-3 bg-background/35">
                 {queue.length === 0 ? (
                     <div className="flex flex-col items-center justify-center py-16 text-center">
-                        <div className="text-4xl mb-3 opacity-30">📂</div>
-                        <p className="text-sm text-muted-foreground">Aucun fichier — glissez-déposez ou cliquez ci-dessus</p>
+                        <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-xl border border-border bg-card text-2xl text-muted-foreground">+</div>
+                        <p className="text-sm font-medium text-foreground">Aucun fichier dans la file</p>
+                        <p className="mt-1 text-xs text-muted-foreground">Glissez-déposez ou cliquez sur Ajouter des fichiers.</p>
                     </div>
                 ) : filteredQueue.length === 0 ? (
                     <div className="flex flex-col items-center justify-center py-12 text-center">

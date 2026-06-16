@@ -83,7 +83,7 @@ export function UploadZone({ onFilesAdded, compact = false }: UploadZoneProps) {
                 onDrop={handleDrop}
                 className={cn(
                     "mx-3 mt-3 mb-1 rounded-lg border border-dashed transition-all duration-150 flex items-center justify-center py-2.5 px-3",
-                    isDragging ? "border-primary bg-primary/8" : "border-border/50 hover:border-border"
+                    isDragging ? "border-primary bg-primary/10" : "border-border bg-background/70 hover:border-primary/50"
                 )}
             >
                 {isDragging ? (
@@ -91,7 +91,7 @@ export function UploadZone({ onFilesAdded, compact = false }: UploadZoneProps) {
                         Relâchez pour ajouter
                     </span>
                 ) : (
-                    <div className="relative flex w-full max-w-[320px] rounded-lg overflow-visible" ref={dropdownRef}>
+                    <div className="relative flex w-full max-w-[320px] rounded-lg overflow-visible shadow-sm" ref={dropdownRef}>
                         <button
                             type="button"
                             onClick={openFiles}
@@ -111,7 +111,7 @@ export function UploadZone({ onFilesAdded, compact = false }: UploadZoneProps) {
                         </button>
 
                         {dropdownOpen && (
-                            <div className="absolute top-[calc(100%+6px)] left-0 bg-popover border border-border rounded-xl shadow-xl overflow-hidden z-50 min-w-[200px]">
+                            <div className="absolute top-[calc(100%+6px)] left-0 bg-popover border border-border rounded-lg shadow-xl overflow-hidden z-50 min-w-[220px]">
                                 <button
                                     type="button"
                                     onClick={openFiles}
@@ -153,10 +153,10 @@ export function UploadZone({ onFilesAdded, compact = false }: UploadZoneProps) {
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
             className={cn(
-                "m-3 rounded-xl border-2 border-dashed flex flex-col items-center justify-center transition-all duration-200",
+                "m-3 rounded-xl border border-dashed flex flex-col items-center justify-center transition-all duration-200",
                 isDragging
-                    ? "border-primary bg-primary/5 py-10"
-                    : "border-border/50 hover:border-border/80 py-9"
+                    ? "border-primary bg-primary/10 py-10"
+                    : "border-border bg-background/70 hover:border-primary/50 py-10"
             )}
         >
             {isDragging ? (
@@ -167,11 +167,11 @@ export function UploadZone({ onFilesAdded, compact = false }: UploadZoneProps) {
             ) : (
                 <>
                     {/* Split button: main action + dropdown */}
-                    <div className="relative flex rounded-xl overflow-visible" ref={dropdownRef}>
+                    <div className="relative flex rounded-lg overflow-visible shadow-sm" ref={dropdownRef}>
                         <button
                             type="button"
                             onClick={openFiles}
-                            className="flex items-center gap-2.5 pl-5 pr-4 py-3 bg-primary text-primary-foreground font-semibold text-sm rounded-l-xl hover:bg-primary/90 active:scale-[0.98] transition-all"
+                            className="flex items-center gap-2.5 pl-5 pr-4 py-3 bg-primary text-primary-foreground font-semibold text-sm rounded-l-lg hover:bg-primary/90 active:scale-[0.98] transition-all"
                         >
                             <IconFileAdd size={17} />
                             Choisir les fichiers
@@ -180,14 +180,14 @@ export function UploadZone({ onFilesAdded, compact = false }: UploadZoneProps) {
                         <button
                             type="button"
                             onClick={(e) => { e.stopPropagation(); setDropdownOpen(v => !v) }}
-                            className="px-3 bg-primary text-primary-foreground rounded-r-xl hover:bg-primary/90 transition-colors"
+                            className="px-3 bg-primary text-primary-foreground rounded-r-lg hover:bg-primary/90 transition-colors"
                             aria-label="Plus d'options"
                         >
                             <IconChevronDown size={15} />
                         </button>
 
                         {dropdownOpen && (
-                            <div className="absolute top-[calc(100%+6px)] left-0 bg-popover border border-border rounded-xl shadow-xl overflow-hidden z-50 min-w-[200px]">
+                            <div className="absolute top-[calc(100%+6px)] left-0 bg-popover border border-border rounded-lg shadow-xl overflow-hidden z-50 min-w-[220px]">
                                 <button
                                     type="button"
                                     onClick={openFiles}
