@@ -198,7 +198,7 @@ function App() {
             />
           </div>
 
-          <div className="order-1 lg:order-2 lg:sticky lg:top-[76px] lg:max-h-[calc(100vh-6rem)] flex flex-col gap-4 animate-in fade-in slide-in-from-right-6 duration-500 delay-100 ease-out fill-mode-both">
+          <div className="order-1 lg:order-2 lg:sticky lg:top-[76px] lg:h-[calc(100vh-6rem)] flex flex-col gap-4 min-h-0 animate-in fade-in slide-in-from-right-6 duration-500 delay-100 ease-out fill-mode-both">
             {showVideoColorSampler && (
               <VideoColorSampler
                 file={colorPickerVideoFile}

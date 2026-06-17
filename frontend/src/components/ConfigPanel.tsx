@@ -765,6 +765,12 @@ export function ConfigPanel({
                                     onCheckedChange={(v) => setCv({ videoHDRtoSDR: v })}
                                 />
                             </Row>
+                            <Row label="Retirer l'audio">
+                                <Switch
+                                    checked={cv.videoRemoveAudio}
+                                    onCheckedChange={(v) => setCv({ videoRemoveAudio: v })}
+                                />
+                            </Row>
                         </Section>
                     )}
 

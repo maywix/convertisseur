@@ -1320,13 +1320,17 @@ def _process_with_ffmpeg(
         if faststart_enabled and target_format in {"mp4", "mov", "m4v"}:
             cmd.extend(["-movflags", "+faststart"])
 
+    remove_audio = str(params.get("remove_audio") or "").lower() in {"1", "true", "yes", "on"}
+
     audio_codec = str(params.get("audio_codec") or "original")
-    if audio_codec == "copy":
+    if is_video and remove_audio:
+        cmd.extend(["-an"])
+    elif audio_codec == "copy":
         cmd.extend(["-c:a", "copy"])
     elif audio_codec not in {"original", "auto", ""}:
         cmd.extend(["-c:a", audio_codec])
 
-    if params.get("audio_bitrate") and audio_codec not in {"copy", "original"}:
+    if not (is_video and remove_audio) and params.get("audio_bitrate") and audio_codec not in {"copy", "original"}:
         cmd.extend(["-b:a", str(params["audio_bitrate"])])
 
     # Audio filters: volume adjustment and normalization
@@ -1341,7 +1345,7 @@ def _process_with_ffmpeg(
             pass
     if str(params.get("audio_normalize") or "").lower() in {"1", "true", "yes", "on"}:
         audio_filters.append("loudnorm")
-    if audio_filters and audio_codec != "copy":
+    if audio_filters and audio_codec != "copy" and not (is_video and remove_audio):
         cmd.extend(["-af", ",".join(audio_filters)])
 
     if ext == ".mp3" or target_format == "mp3":
@@ -1646,6 +1650,26 @@ def _resize_preserve_aspect(img: Image.Image, max_dim: int) -> Image.Image:
     return resized
 
 
+def _encode_static_gif_bytes(*, img: Image.Image, quality: int) -> bytes:
+    """Encode a single still image as a one-frame GIF.
+
+    This keeps image->GIF conversions on the Pillow path and avoids the
+    ffmpeg video pipeline entirely for Discord-friendly sticker-like outputs.
+    """
+    buffer = io.BytesIO()
+    source = ImageOps.exif_transpose(img).convert("RGBA")
+    color_count = max(16, min(256, quality * 2))
+    gif_img = source.convert("P", palette=Image.ADAPTIVE, colors=color_count)
+    gif_img.save(
+        buffer,
+        format="GIF",
+        optimize=True,
+        save_all=False,
+        loop=0,
+    )
+    return buffer.getvalue()
+
+
 def _encode_image_bytes(
     *,
     img: Image.Image,
@@ -1679,8 +1703,7 @@ def _encode_image_bytes(
         return buffer.getvalue()
 
     if out_ext == ".gif":
-        gif_img = img.convert("P", palette=Image.ADAPTIVE, colors=max(16, min(256, quality * 2)))
-        gif_img.save(buffer, format="GIF", optimize=True)
+        buffer.write(_encode_static_gif_bytes(img=img, quality=quality))
         return buffer.getvalue()
 
     # Best effort fallback for other image formats.
@@ -2053,8 +2076,8 @@ def _process_image(
                 save_img.save(output_path, quality=quality, optimize=True)
             elif out_ext in ('.gif',):
                 # GIF static frame compression path (animated GIFs are handled above).
-                gif_img = img.convert("P", palette=Image.ADAPTIVE, colors=max(16, min(256, quality * 2)))
-                gif_img.save(output_path, optimize=True)
+                with open(output_path, "wb") as f:
+                    f.write(_encode_static_gif_bytes(img=img, quality=quality))
             else:
                 # Default: try with quality if supported
                 try:
@@ -2102,10 +2125,8 @@ def _process_image(
                 img.save(output_path, quality=95, lossless=False)
             elif tf in {"gif"}:
                 # GIF - convert to palette mode
-                if img.mode == 'RGBA':
-                    # Convert RGBA to P mode with transparency
-                    img = img.convert('P', palette=Image.ADAPTIVE, colors=255)
-                img.save(output_path, optimize=True)
+                with open(output_path, "wb") as f:
+                    f.write(_encode_static_gif_bytes(img=img, quality=95))
             else:
                 img.save(output_path)
             return
@@ -2455,18 +2476,21 @@ def build_ffmpeg_command_pro(input_path, output_path, params):
     if filters:
         cmd.extend(['-vf', ','.join(filters)])
     
-    # AUDIO CODEC
-    a_codec = params.get('audio_codec', 'copy')
-    cmd.extend(['-c:a', a_codec])
-    
-    # AUDIO PARAMETERS
-    if a_codec not in ('copy', 'original'):
-        if params.get('audio_bitrate'):
-            cmd.extend(['-b:a', params['audio_bitrate']])
-        if params.get('audio_sample_rate'):
-            cmd.extend(['-ar', str(params['audio_sample_rate'])])
-        if params.get('audio_channels'):
-            cmd.extend(['-ac', str(params['audio_channels'])])
+    # AUDIO CODEC (or strip audio entirely)
+    if str(params.get('remove_audio', '0')).lower() in {'1', 'true', 'yes', 'on'}:
+        cmd.append('-an')
+    else:
+        a_codec = params.get('audio_codec', 'copy')
+        cmd.extend(['-c:a', a_codec])
+
+        # AUDIO PARAMETERS
+        if a_codec not in ('copy', 'original'):
+            if params.get('audio_bitrate'):
+                cmd.extend(['-b:a', params['audio_bitrate']])
+            if params.get('audio_sample_rate'):
+                cmd.extend(['-ar', str(params['audio_sample_rate'])])
+            if params.get('audio_channels'):
+                cmd.extend(['-ac', str(params['audio_channels'])])
     
     # FASTSTART (progressive download)
     cmd.extend(['-movflags', '+faststart'])
@@ -2635,6 +2659,8 @@ def create_job():
         params["denoise"] = request.form.get("denoise")
     if request.form.get("hdr_to_sdr"):
         params["hdr_to_sdr"] = request.form.get("hdr_to_sdr")
+    if request.form.get("remove_audio"):
+        params["remove_audio"] = request.form.get("remove_audio")
     if request.form.get("audio_volume"):
         params["audio_volume"] = request.form.get("audio_volume")
     if request.form.get("audio_normalize"):

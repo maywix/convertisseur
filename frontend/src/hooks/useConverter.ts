@@ -210,6 +210,7 @@ export function useConverter() {
     videoCropRight: "",
     videoDenoise: "none",
     videoHDRtoSDR: false,
+    videoRemoveAudio: false,
     videoTrimStart: "",
     videoTrimEnd: "",
     overlayText: "",
@@ -565,6 +566,9 @@ export function useConverter() {
           }
           if (effectiveConvertSettings.videoHDRtoSDR) {
             formData.append("hdr_to_sdr", "true");
+          }
+          if (effectiveConvertSettings.videoRemoveAudio) {
+            formData.append("remove_audio", "true");
           }
         }
 

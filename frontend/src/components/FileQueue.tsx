@@ -1,6 +1,5 @@
 import { useMemo, useState } from 'react'
 import { Button } from '@/components/ui/button'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import { UploadZone } from './UploadZone'
 import { FileItem } from './FileItem'
 import type { OutputMode, QueueItem } from '@/types'
@@ -146,7 +145,7 @@ export function FileQueue({
     )
 
     return (
-        <div className="bg-card rounded-xl border border-border shadow-sm flex flex-col min-h-[520px] lg:min-h-0 lg:h-full overflow-hidden">
+        <div className="bg-card rounded-xl border border-border shadow-sm flex flex-col min-h-[520px] lg:min-h-0 lg:flex-1 overflow-hidden">
             <UploadZone onFilesAdded={onFilesAdded} compact={queue.length > 0} />
 
             {/* Header */}
@@ -253,7 +252,7 @@ export function FileQueue({
             )}
 
             {/* File list */}
-            <ScrollArea className="flex-1 p-3 bg-background/35">
+            <div className="flex-1 min-h-0 overflow-y-auto p-3 bg-background/35 overscroll-contain">
                 {queue.length === 0 ? (
                     <div className="flex flex-col items-center justify-center py-16 text-center">
                         <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-xl border border-border bg-card text-2xl text-muted-foreground">+</div>
@@ -293,7 +292,7 @@ export function FileQueue({
                         </Button>
                     </div>
                 )}
-            </ScrollArea>
+            </div>
         </div>
     )
 }

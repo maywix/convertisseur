@@ -85,6 +85,7 @@ export interface ConvertSettings {
   videoCropRight: string;
   videoDenoise: "none" | "light" | "medium" | "strong";
   videoHDRtoSDR: boolean;
+  videoRemoveAudio: boolean;
   // Mini video editor
   videoTrimStart: string;
   videoTrimEnd: string;
