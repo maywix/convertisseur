@@ -9,6 +9,9 @@ import { useConverter } from '@/hooks/useConverter'
 import { getFileType } from '@/types'
 
 const LS_THEME = 'converter_theme'
+const LS_PROC_MODE = 'converter_processing_mode'
+
+export type ProcessingMode = 'frontend' | 'backend'
 
 function App() {
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
@@ -20,6 +23,20 @@ function App() {
       return 'light'
     }
   })
+
+  const [processingMode, setProcessingModeState] = useState<ProcessingMode>(() => {
+    try {
+      const stored = localStorage.getItem(LS_PROC_MODE)
+      return stored === 'backend' ? 'backend' : 'frontend'
+    } catch {
+      return 'frontend'
+    }
+  })
+
+  const setProcessingMode = (m: ProcessingMode) => {
+    try { localStorage.setItem(LS_PROC_MODE, m) } catch { void 0 }
+    setProcessingModeState(m)
+  }
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark')
@@ -123,6 +140,32 @@ function App() {
             </div>
           </div>
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            {/* Processing mode toggle: where the conversion runs */}
+            <div
+              className="hidden md:inline-flex items-center gap-2 rounded-lg border border-border bg-card px-2 py-1 shadow-sm"
+              title={processingMode === 'frontend'
+                ? "Conversion en local dans le navigateur (rapide, privé, images uniquement pour l'instant)"
+                : "Conversion sur le serveur (toutes les options dispo, vidéo incluse)"}
+            >
+              <span className={`text-[10px] font-semibold uppercase ${processingMode === 'frontend' ? 'text-primary' : 'text-muted-foreground'}`}>
+                Front
+              </span>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={processingMode === 'backend'}
+                onClick={() => setProcessingMode(processingMode === 'frontend' ? 'backend' : 'frontend')}
+                className="relative inline-flex h-5 w-9 items-center rounded-full bg-muted transition-colors"
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-background shadow transition-transform ${processingMode === 'backend' ? 'translate-x-4' : 'translate-x-0.5'}`}
+                />
+              </button>
+              <span className={`text-[10px] font-semibold uppercase ${processingMode === 'backend' ? 'text-primary' : 'text-muted-foreground'}`}>
+                Back
+              </span>
+            </div>
+
             <div className="inline-flex items-center rounded-lg border border-border bg-card p-0.5 shadow-sm">
               <button
                 type="button"
@@ -133,17 +176,17 @@ function App() {
               </button>
               <button
                 type="button"
-                onClick={() => setUiMode('color-lab')}
-                className={`inline-flex h-8 items-center rounded-md px-3 text-xs font-semibold transition-colors ${uiMode === 'color-lab' ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground'}`}
-              >
-                Color Lab
-              </button>
-              <button
-                type="button"
                 onClick={() => setUiMode('pro')}
                 className={`inline-flex h-8 items-center rounded-md px-3 text-xs font-semibold transition-colors ${uiMode === 'pro' ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground'}`}
               >
                 Pro
+              </button>
+              <button
+                type="button"
+                onClick={() => setUiMode('color-lab')}
+                className={`inline-flex h-8 items-center rounded-md px-3 text-xs font-semibold transition-colors ${uiMode === 'color-lab' ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground'}`}
+              >
+                Color Lab
               </button>
             </div>
             <button
@@ -161,7 +204,7 @@ function App() {
 
       {uiMode === 'color-lab' ? (
         <div key="color-lab" className={`animate-in fade-in duration-300 ease-out fill-mode-both ${showProgress ? 'pt-16' : ''}`}>
-          <ColorLab />
+          <ColorLab processingMode={processingMode} />
         </div>
       ) : uiMode === 'simple' ? (
         <div key="simple" className={`animate-in fade-in slide-in-from-bottom-3 duration-300 ease-out fill-mode-both ${showProgress ? 'pt-16' : ''}`}>

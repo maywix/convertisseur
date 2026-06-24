@@ -165,7 +165,16 @@ function FileItemImpl({
 
                 {/* Actions */}
                 <div className="flex items-center gap-1 shrink-0">
-                    {item.jobId && !isPending && (
+                    {/* "Local" badge for client-side processed items */}
+                    {item.jobId?.startsWith("local-") && (
+                        <span
+                            title="Traité en local dans le navigateur, sans upload"
+                            className="inline-flex h-6 items-center gap-1 rounded-md bg-emerald-500/15 px-1.5 text-[10px] font-bold tracking-wide text-emerald-600 dark:text-emerald-400"
+                        >
+                            LOCAL
+                        </span>
+                    )}
+                    {item.jobId && !isPending && !item.jobId.startsWith("local-") && (
                         <button
                             type="button"
                             onClick={() => setLogsOpen((v) => !v)}

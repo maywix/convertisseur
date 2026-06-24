@@ -515,6 +515,128 @@ export function useConverter() {
       const isCompressLike =
         effectiveAction === "compress" || effectiveAction === "convert_compress";
 
+      // ─── Client-side image conversion shortcut ───
+      // When the user picked "Frontend" mode and we're doing an image
+      // conversion (no LUT, supported target format), process entirely in the
+      // browser via Canvas and skip the upload to the server.
+      try {
+        const procMode = localStorage.getItem("converter_processing_mode") || "frontend";
+        const detectedType = getFileType(item.file?.name || "");
+        const targetFormat = (item.targetFormat || effectiveConvertSettings.format || "").toLowerCase();
+        const clientSupportedOut = ["png", "jpg", "jpeg", "webp", "avif", "bmp", "ico", "tiff", "tif", "gif", "pdf"].includes(targetFormat);
+        const isImage = detectedType === "image";
+        // LUT is supported client-side too now — passed straight to the processor.
+        const canDoClientSide =
+          procMode === "frontend" &&
+          isImage &&
+          clientSupportedOut &&
+          (isConvertLike || isCompressLike);
+
+        // Verbose log so the user can verify in DevTools console what happens.
+        // eslint-disable-next-line no-console
+        console.info("[convert]", {
+          name: item.file?.name,
+          procMode,
+          detectedType,
+          targetFormat,
+          clientSupportedOut,
+          hasLut: !!effectiveConvertSettings.lutFile,
+          isConvertLike,
+          isCompressLike,
+          path: canDoClientSide ? "→ LOCAL (browser)" : "→ SERVER",
+        });
+
+        if (canDoClientSide) {
+          const { processImageClientSide } = await import("@/lib/clientProcessor");
+          const cg = {
+            exposure: parseFloat(effectiveConvertSettings.photoExposure || "0") || 0,
+            contrast: parseFloat(effectiveConvertSettings.photoContrast || "0") || 0,
+            highlights: parseFloat(effectiveConvertSettings.photoHighlights || "0") || 0,
+            shadows: parseFloat(effectiveConvertSettings.photoShadows || "0") || 0,
+            whites: parseFloat(effectiveConvertSettings.photoWhites || "0") || 0,
+            blacks: parseFloat(effectiveConvertSettings.photoBlacks || "0") || 0,
+            saturation: parseFloat(effectiveConvertSettings.photoSaturation || "0") || 0,
+            temperature: parseFloat(effectiveConvertSettings.photoTemperature || "0") || 0,
+            tint: parseFloat(effectiveConvertSettings.photoTint || "0") || 0,
+            sharpness: parseFloat(effectiveConvertSettings.photoSharpness || "0") || 0,
+            vignette: 0, grain: 0, chromatic: 0, glow: 0,
+            removeEnabled: !!effectiveConvertSettings.colorRemoveEnabled,
+            removeColor: effectiveConvertSettings.colorRemoveColor || "#ffffff",
+            removeTolerance: parseFloat(effectiveConvertSettings.colorRemoveTolerance || "15") || 15,
+          };
+          setQueue((prev) =>
+            prev.map((it) => it.id === item.id ? { ...it, status: "processing", progress: 10 } : it),
+          );
+          const { blob, filename } = await processImageClientSide(
+            item.file, cg, targetFormat, undefined, effectiveConvertSettings.lutFile || null,
+          );
+          const url = URL.createObjectURL(blob);
+          setQueue((prev) =>
+            prev.map((it) =>
+              it.id === item.id
+                ? { ...it, status: "done", downloadUrl: url, outputFilename: filename, jobId: `local-${item.id}`, error: null, progress: 100 }
+                : it,
+            ),
+          );
+          return;
+        }
+
+        // ── Client-side VIDEO conversion via ffmpeg.wasm ──
+        const isVideo = detectedType === "video";
+        const { isClientSupportedVideoFormat } = await import("@/lib/clientVideoProcessor");
+        const videoSupportedOut = isClientSupportedVideoFormat(targetFormat);
+        const canDoClientVideo =
+          procMode === "frontend" &&
+          isVideo &&
+          videoSupportedOut &&
+          isConvertLike;
+
+        console.info("[convert.video]", {
+          name: item.file?.name, isVideo, targetFormat, videoSupportedOut, canDoClientVideo,
+        });
+
+        if (canDoClientVideo) {
+          const { processVideoClientSide } = await import("@/lib/clientVideoProcessor");
+          const vg = {
+            exposure: parseFloat(effectiveConvertSettings.photoExposure || "0") || 0,
+            contrast: parseFloat(effectiveConvertSettings.photoContrast || "0") || 0,
+            highlights: parseFloat(effectiveConvertSettings.photoHighlights || "0") || 0,
+            shadows: parseFloat(effectiveConvertSettings.photoShadows || "0") || 0,
+            whites: parseFloat(effectiveConvertSettings.photoWhites || "0") || 0,
+            blacks: parseFloat(effectiveConvertSettings.photoBlacks || "0") || 0,
+            saturation: parseFloat(effectiveConvertSettings.photoSaturation || "0") || 0,
+            temperature: parseFloat(effectiveConvertSettings.photoTemperature || "0") || 0,
+            tint: parseFloat(effectiveConvertSettings.photoTint || "0") || 0,
+            hue: 0, sharpness: 0,
+            vignette: 0, grain: 0, chromatic: 0, glow: 0,
+          };
+          setQueue((prev) =>
+            prev.map((it) => it.id === item.id ? { ...it, status: "processing", progress: 5 } : it),
+          );
+          const { blob, filename } = await processVideoClientSide(
+            item.file, targetFormat, vg,
+            (_msg, ratio) => {
+              if (typeof ratio === "number") {
+                setQueue((prev) =>
+                  prev.map((it) => it.id === item.id ? { ...it, progress: Math.round(ratio * 100) } : it),
+                );
+              }
+            },
+          );
+          const url = URL.createObjectURL(blob);
+          setQueue((prev) =>
+            prev.map((it) =>
+              it.id === item.id
+                ? { ...it, status: "done", downloadUrl: url, outputFilename: filename, jobId: `local-${item.id}`, error: null, progress: 100 }
+                : it,
+            ),
+          );
+          return;
+        }
+      } catch (e) {
+        console.warn("[client-side] fallback to backend:", e);
+      }
+
       const formData = new FormData();
       formData.append("file", item.file);
       if (item.relativePath) {

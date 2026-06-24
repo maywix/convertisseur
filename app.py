@@ -896,6 +896,12 @@ def _save_session(response):
             secure=request.is_secure,
         )
     response.headers["X-Content-Type-Options"] = "nosniff"
+    # Cross-origin isolation headers — required for SharedArrayBuffer / ffmpeg.wasm
+    # to work in the browser. "credentialless" is more permissive than
+    # "require-corp" and lets us fetch ffmpeg-core.wasm from unpkg without CORP.
+    response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+    response.headers["Cross-Origin-Embedder-Policy"] = "credentialless"
+    response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
     return response
 
 
@@ -1296,6 +1302,69 @@ def _process_with_ffmpeg(
             # unsharp: luma_msize_x, luma_msize_y, luma_amount (positive=sharper, negative=blur)
             amount = v_sharpness / 100.0 * 2.0  # ±2.0 max
             filters.append(f"unsharp=5:5:{amount:.2f}:5:5:0.0")
+
+        # DaVinci-style Lift / Gamma / Gain via FFmpeg colorbalance.
+        # Each tint comes as a hex colour; we convert it to RGB deltas from neutral grey.
+        def _hex_to_balance(hex_str: str) -> tuple[float, float, float]:
+            try:
+                clean = hex_str.lstrip("#").strip()
+                if len(clean) != 6:
+                    return (0.0, 0.0, 0.0)
+                r = int(clean[0:2], 16)
+                g = int(clean[2:4], 16)
+                b = int(clean[4:6], 16)
+                # Treat 128 as neutral. Strength controlled by tint distance from grey.
+                return ((r - 128) / 127.0, (g - 128) / 127.0, (b - 128) / 127.0)
+            except (ValueError, IndexError):
+                return (0.0, 0.0, 0.0)
+
+        lift_hex = str(params.get("video_lift_color") or "").strip()
+        gamma_hex = str(params.get("video_gamma_color") or "").strip()
+        gain_hex = str(params.get("video_gain_color") or "").strip()
+        lift_amp = max(0.0, min(2.0, _f("video_lift_amount", 1.0)))
+        gamma_amp = max(0.0, min(2.0, _f("video_gamma_amount", 1.0)))
+        gain_amp = max(0.0, min(2.0, _f("video_gain_amount", 1.0)))
+
+        cb_parts: list[str] = []
+        if lift_hex:
+            rs, gs, bs = _hex_to_balance(lift_hex)
+            if rs or gs or bs:
+                cb_parts.append(f"rs={rs * lift_amp:.3f}:gs={gs * lift_amp:.3f}:bs={bs * lift_amp:.3f}")
+        if gamma_hex:
+            rm, gm, bm = _hex_to_balance(gamma_hex)
+            if rm or gm or bm:
+                cb_parts.append(f"rm={rm * gamma_amp:.3f}:gm={gm * gamma_amp:.3f}:bm={bm * gamma_amp:.3f}")
+        if gain_hex:
+            rh, gh, bh = _hex_to_balance(gain_hex)
+            if rh or gh or bh:
+                cb_parts.append(f"rh={rh * gain_amp:.3f}:gh={gh * gain_amp:.3f}:bh={bh * gain_amp:.3f}")
+        if cb_parts:
+            filters.append(f"colorbalance={':'.join(cb_parts)}")
+
+        # Vignette (darken edges).
+        v_vignette = max(0.0, min(100.0, _f("video_vignette")))
+        if v_vignette > 0:
+            angle = (v_vignette / 100.0) * (3.14159265 / 4.0)  # 0..PI/4
+            filters.append(f"vignette=angle={angle:.3f}:mode=forward")
+
+        # Film grain.
+        v_grain = max(0.0, min(100.0, _f("video_grain")))
+        if v_grain > 0:
+            strength = int(v_grain * 0.6)  # 0..60
+            filters.append(f"noise=alls={strength}:allf=t+u")
+
+        # Chromatic aberration.
+        v_chromatic = max(0.0, min(20.0, _f("video_chromatic")))
+        if v_chromatic > 0:
+            shift = int(round(v_chromatic))
+            filters.append(f"rgbashift=rh={shift}:rv=0:bh=-{shift}:bv=0")
+
+        # Glow / bloom: approximated as a subtle highlight bloom via gblur+eq
+        # (true glow needs filter_complex with split/blend — added later).
+        v_glow = max(0.0, min(100.0, _f("video_glow")))
+        if v_glow > 0:
+            sigma = 1 + (v_glow / 100.0) * 4.0  # subtle 1..5
+            filters.append(f"gblur=sigma={sigma:.2f}:steps=1")
 
     # Color remover: make a chosen color transparent (chroma key)
     colorkey_hex = str(params.get("color_remove_color") or "").strip()
@@ -2738,6 +2807,9 @@ def create_job():
         "video_temperature", "video_tint", "video_hue",
         "video_highlights", "video_shadows", "video_whites", "video_blacks",
         "video_sharpness", "image_upscale",
+        "video_lift_color", "video_gamma_color", "video_gain_color",
+        "video_lift_amount", "video_gamma_amount", "video_gain_amount",
+        "video_vignette", "video_grain", "video_chromatic", "video_glow",
     ):
         if request.form.get(k):
             params[k] = request.form.get(k)

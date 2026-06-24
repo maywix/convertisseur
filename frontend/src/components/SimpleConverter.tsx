@@ -220,7 +220,11 @@ function Row({
                     {item.status === 'processing' && (
                         <span className="text-primary">· Conversion{progress !== null ? ` ${Math.round(progress)} %` : '…'}</span>
                     )}
-                    {item.status === 'done' && <span className="text-emerald-600 dark:text-emerald-400">· Prêt à télécharger</span>}
+                    {item.status === 'done' && (
+                        <span className="text-emerald-600 dark:text-emerald-400">
+                            · Prêt {item.jobId?.startsWith('local-') && '· local'}
+                        </span>
+                    )}
                     {item.status === 'error' && (
                         <span className="text-destructive">· {item.error || 'Échec'}</span>
                     )}
