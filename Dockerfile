@@ -32,7 +32,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     nasm && rm -rf /var/lib/apt/lists/*
 
 # Compile FFmpeg with essential codecs (not fully static due to codec library dependencies)
-RUN git clone --depth 1 https://git.ffmpeg.org/ffmpeg.git ffmpeg_src && \
+# Use the GitHub mirror — git.ffmpeg.org is regularly unreachable (502 errors).
+RUN ( git clone --depth 1 https://github.com/FFmpeg/FFmpeg.git ffmpeg_src \
+   || git clone --depth 1 https://git.ffmpeg.org/ffmpeg.git ffmpeg_src ) && \
     cd ffmpeg_src && \
     ./configure \
         --prefix=/tmp/ffmpeg \
@@ -76,8 +78,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libopus0 \
     libx264-164 || true && rm -rf /var/lib/apt/lists/*
 
-# dcraw for RAW -> PPM conversion
-RUN apt-get update && apt-get install -y --no-install-recommends dcraw libraw-tools || true && rm -rf /var/lib/apt/lists/*
+# dcraw for RAW -> PPM conversion (libraw-tools removed on Trixie; dcraw is enough)
+RUN apt-get update && apt-get install -y --no-install-recommends dcraw || true && rm -rf /var/lib/apt/lists/*
 
 # LibreOffice for office document conversion (docx, xlsx, pptx → pdf)
 RUN apt-get update && apt-get install -y --no-install-recommends libreoffice && rm -rf /var/lib/apt/lists/*

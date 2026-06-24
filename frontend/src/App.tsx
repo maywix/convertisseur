@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { ColorLab } from '@/components/ColorLab'
 import { ConfigPanel, VideoColorSampler } from '@/components/ConfigPanel'
 import { FileQueue } from '@/components/FileQueue'
 import { SimpleConverter } from '@/components/SimpleConverter'
@@ -132,6 +133,13 @@ function App() {
               </button>
               <button
                 type="button"
+                onClick={() => setUiMode('color-lab')}
+                className={`inline-flex h-8 items-center rounded-md px-3 text-xs font-semibold transition-colors ${uiMode === 'color-lab' ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground'}`}
+              >
+                Color Lab
+              </button>
+              <button
+                type="button"
                 onClick={() => setUiMode('pro')}
                 className={`inline-flex h-8 items-center rounded-md px-3 text-xs font-semibold transition-colors ${uiMode === 'pro' ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground'}`}
               >
@@ -151,7 +159,11 @@ function App() {
         </div>
       </header>
 
-      {uiMode === 'simple' ? (
+      {uiMode === 'color-lab' ? (
+        <div key="color-lab" className={`animate-in fade-in duration-300 ease-out fill-mode-both ${showProgress ? 'pt-16' : ''}`}>
+          <ColorLab />
+        </div>
+      ) : uiMode === 'simple' ? (
         <div key="simple" className={`animate-in fade-in slide-in-from-bottom-3 duration-300 ease-out fill-mode-both ${showProgress ? 'pt-16' : ''}`}>
           <SimpleConverter
             queue={queue}
@@ -166,11 +178,12 @@ function App() {
             onSetFormat={setSimpleFormat}
             onSetCurrentAction={setCurrentAction}
             onSetCompressSettings={setCompressSettings}
+            onExportCompleted={exportCompletedFiles}
           />
         </div>
       ) : (
-      <div key="pro" className={`max-w-[1500px] mx-auto px-4 lg:px-6 py-5 ${showProgress ? 'pt-16' : ''}`}>
-        <div className="grid lg:grid-cols-[390px_minmax(0,1fr)] gap-5 items-start">
+      <div key="pro" className={`max-w-[1600px] mx-auto px-4 lg:px-8 py-6 ${showProgress ? 'pt-16' : ''}`}>
+        <div className="grid lg:grid-cols-[440px_minmax(0,1fr)] gap-8 items-start">
           <div className="order-2 lg:order-1 animate-in fade-in slide-in-from-left-6 duration-500 ease-out fill-mode-both">
             <ConfigPanel
               currentAction={currentAction}

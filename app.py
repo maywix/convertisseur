@@ -1238,6 +1238,65 @@ def _process_with_ffmpeg(
             lut_escaped = lut_path.replace("\\", "/").replace(":", "\\:")
             filters.append(f"lut3d='{lut_escaped}'")
 
+    # Video color grading: exposure / contrast / saturation / temperature / hue
+    if is_video:
+        def _f(name: str, default: float = 0.0) -> float:
+            try:
+                return float(str(params.get(name) or default))
+            except ValueError:
+                return default
+
+        v_exposure = max(-2.0, min(2.0, _f("video_exposure")))      # -2..2 EV
+        v_contrast = max(-100.0, min(100.0, _f("video_contrast")))  # -100..100 %
+        v_saturation = max(-100.0, min(100.0, _f("video_saturation")))
+        v_temperature = max(-100.0, min(100.0, _f("video_temperature")))
+        v_tint = max(-100.0, min(100.0, _f("video_tint")))
+        v_hue = max(-180.0, min(180.0, _f("video_hue")))            # degrees
+        v_highlights = max(-100.0, min(100.0, _f("video_highlights")))
+        v_shadows = max(-100.0, min(100.0, _f("video_shadows")))
+        v_whites = max(-100.0, min(100.0, _f("video_whites")))
+        v_blacks = max(-100.0, min(100.0, _f("video_blacks")))
+        v_sharpness = max(-100.0, min(100.0, _f("video_sharpness")))
+
+        if v_exposure or v_contrast or v_saturation:
+            # eq: brightness (-1..1), contrast (0..2, 1=neutral), saturation (0..3, 1=neutral)
+            eq_brightness = v_exposure * 0.25       # ±0.5 max for ±2 EV
+            eq_contrast = 1.0 + (v_contrast / 100.0)
+            eq_saturation = 1.0 + (v_saturation / 100.0)
+            filters.append(
+                f"eq=brightness={eq_brightness:.3f}:contrast={eq_contrast:.3f}:saturation={eq_saturation:.3f}"
+            )
+
+        # Tone curve via FFmpeg 'curves' filter (5 anchor points).
+        if v_highlights or v_shadows or v_whites or v_blacks:
+            def _shift(base: float, delta_pct: float, max_shift: float = 0.18) -> float:
+                return max(0.0, min(1.0, base + (delta_pct / 100.0) * max_shift))
+            p_black = _shift(0.00, v_blacks)
+            p_shadow = _shift(0.25, v_shadows)
+            p_mid = 0.50
+            p_high = _shift(0.75, v_highlights)
+            p_white = _shift(1.00, v_whites)
+            filters.append(
+                f"curves=all='0/{p_black:.3f} 0.25/{p_shadow:.3f} 0.5/{p_mid:.3f} 0.75/{p_high:.3f} 1/{p_white:.3f}'"
+            )
+
+        if v_temperature:
+            # colortemperature: 1000..40000 K, neutral 6500
+            kelvin = max(1500, min(15000, int(6500 + v_temperature * 35)))
+            filters.append(f"colortemperature=temperature={kelvin}")
+
+        if v_tint:
+            # Approx tint via a tiny hue shift toward green/magenta.
+            filters.append(f"hue=h={v_tint * 0.45:.1f}")
+
+        if v_hue:
+            filters.append(f"hue=h={v_hue:.1f}")
+
+        if v_sharpness:
+            # unsharp: luma_msize_x, luma_msize_y, luma_amount (positive=sharper, negative=blur)
+            amount = v_sharpness / 100.0 * 2.0  # ±2.0 max
+            filters.append(f"unsharp=5:5:{amount:.2f}:5:5:0.0")
+
     # Color remover: make a chosen color transparent (chroma key)
     colorkey_hex = str(params.get("color_remove_color") or "").strip()
     if is_video and colorkey_hex:
@@ -1977,6 +2036,19 @@ def _process_image(
 
         img = _apply_photo_adjustments(img, params)
 
+        # Image upscaler (LANCZOS): 2x / 3x / 4x
+        upscale_raw = str(params.get("image_upscale") or "").strip()
+        if upscale_raw and upscale_raw not in {"1", "1x", ""}:
+            try:
+                scale = float(upscale_raw.rstrip("xX"))
+            except ValueError:
+                scale = 1.0
+            scale = max(1.0, min(4.0, scale))
+            if scale > 1.0:
+                new_w = max(1, int(img.width * scale))
+                new_h = max(1, int(img.height * scale))
+                img = img.resize((new_w, new_h), resample=_LANCZOS)
+
         # Optional resize (applies to both convert & compress)
         resize_mode_raw = (str(params.get("image_resize_mode") or "").strip().lower())
         if not resize_mode_raw and params.get("image_max_size"):
@@ -2661,6 +2733,14 @@ def create_job():
         params["hdr_to_sdr"] = request.form.get("hdr_to_sdr")
     if request.form.get("remove_audio"):
         params["remove_audio"] = request.form.get("remove_audio")
+    for k in (
+        "video_exposure", "video_contrast", "video_saturation",
+        "video_temperature", "video_tint", "video_hue",
+        "video_highlights", "video_shadows", "video_whites", "video_blacks",
+        "video_sharpness", "image_upscale",
+    ):
+        if request.form.get(k):
+            params[k] = request.form.get(k)
     if request.form.get("audio_volume"):
         params["audio_volume"] = request.form.get("audio_volume")
     if request.form.get("audio_normalize"):

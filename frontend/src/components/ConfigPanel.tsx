@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-const LS_UI_MODE = "converter_ui_mode";
 import {
     IconAudio, IconChevronDown, IconChevronUp,
     IconCrop, IconCube, IconDocument, IconImage, IconPlay, IconRotate,
@@ -500,15 +499,8 @@ export function ConfigPanel({
     isProcessing,
     onStart,
 }: ConfigPanelProps) {
-    const [uiMode, setUiModeState] = useState<"simple" | "advanced">(() => {
-        try { return (localStorage.getItem(LS_UI_MODE) as "simple" | "advanced") || "simple"; }
-        catch { return "simple"; }
-    });
-    const setUiMode = (m: "simple" | "advanced") => {
-        try { localStorage.setItem(LS_UI_MODE, m); } catch { void 0 }
-        setUiModeState(m);
-    };
-    const isAdvanced = uiMode === "advanced";
+    // In Pro mode, all advanced options are always available — no inner toggle.
+    const isAdvanced = true;
 
     const cv = convertSettings;
     const setCv = (patch: Partial<ConvertSettings>) =>
@@ -532,25 +524,50 @@ export function ConfigPanel({
         return `${sign}${numeric}${suffix}`;
     };
 
-    return (
-        <div className="flex flex-col gap-4 rounded-xl border border-border bg-card p-4 shadow-sm lg:sticky lg:top-[76px] max-h-[calc(100vh-6rem)] overflow-y-auto">
+    // ──────────────────────────────────────────────────────────
+    // Tabbed options (step 4) — replaces a stack of accordions.
+    // ──────────────────────────────────────────────────────────
+    type TabKey = "encode" | "transform" | "edit" | "audio" | "effects" | "compress";
+    const isCompressLike = currentAction === "compress" || currentAction === "convert_compress";
+    const isConvertLike = currentAction === "convert" || currentAction === "convert_compress";
 
-            {/* Mode toggle */}
-            <div className="flex items-start justify-between gap-3">
-                <div>
-                    <h2 className="text-sm font-semibold tracking-tight">Réglages</h2>
-                    <p className="mt-1 text-xs text-muted-foreground">Simple par défaut, complet si nécessaire.</p>
-                </div>
-                <SlidingSegment
-                    value={uiMode}
-                    onChange={setUiMode}
-                    className="w-[128px]"
-                    buttonClassName="px-2.5 py-1.5 font-medium"
-                    options={[
-                        { value: "simple", label: "Simple" },
-                        { value: "advanced", label: "Avancé" },
-                    ]}
-                />
+    const availableTabs: TabKey[] = useMemo(() => {
+        const tabs: TabKey[] = [];
+        if (isConvertLike && cv.category) {
+            if (cv.category === "video" || cv.category === "sequence") {
+                tabs.push("encode", "transform", "effects", "audio");
+            } else if (cv.category === "image") {
+                tabs.push("encode", "edit", "effects");
+            } else if (cv.category === "audio") {
+                tabs.push("encode");
+            }
+        }
+        if (isCompressLike) tabs.push("compress");
+        return tabs;
+    }, [cv.category, isConvertLike, isCompressLike]);
+
+    const [activeTab, setActiveTab] = useState<TabKey>("encode");
+    useEffect(() => {
+        if (availableTabs.length === 0) return;
+        if (!availableTabs.includes(activeTab)) setActiveTab(availableTabs[0]);
+    }, [availableTabs, activeTab]);
+
+    const TAB_META: Record<TabKey, { label: string; icon: React.ReactNode }> = {
+        encode:    { label: "Encoder",     icon: <IconSliders size={13} /> },
+        transform: { label: "Transformer", icon: <IconRotate size={13} /> },
+        edit:      { label: "Édition",     icon: <IconImage size={13} /> },
+        audio:     { label: "Audio",       icon: <IconVolume size={13} /> },
+        effects:   { label: "Effets",      icon: <IconWand size={13} /> },
+        compress:  { label: "Compresser",  icon: <IconCrop size={13} /> },
+    };
+
+    return (
+        <div className="flex flex-col gap-6 rounded-2xl border border-border bg-card p-6 shadow-sm lg:sticky lg:top-[76px] max-h-[calc(100vh-6rem)] overflow-y-auto">
+
+            {/* Header */}
+            <div>
+                <h2 className="text-base font-semibold tracking-tight">Réglages</h2>
+                <p className="mt-1 text-xs text-muted-foreground">Choisissez l'action, le type de média et le format. Les options avancées s'adaptent à votre choix.</p>
             </div>
 
             {/* Smart suggestions */}
@@ -592,7 +609,7 @@ export function ConfigPanel({
             {/* Action tabs */}
             <div className="space-y-2">
                 <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    <span className="flex h-5 w-5 items-center justify-center rounded-full bg-foreground text-[10px] text-background">1</span>
+                    <span className="flex h-6 w-6 items-center justify-center rounded-full bg-foreground text-[11px] font-semibold text-background">1</span>
                     Action
                 </div>
                 <SlidingSegment
@@ -609,24 +626,24 @@ export function ConfigPanel({
 
             {/* ─── CONVERT MODE ─── */}
             {(currentAction === "convert" || currentAction === "convert_compress") && (
-                <div className="space-y-3">
+                <div className="space-y-5">
                     {/* Category */}
-                    <div className="space-y-2">
+                    <div className="space-y-3">
                         <label className="flex items-center gap-2 text-xs text-muted-foreground uppercase tracking-wide font-semibold">
-                            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-muted text-[10px] text-foreground">2</span>
+                            <span className="flex h-6 w-6 items-center justify-center rounded-full bg-muted text-[11px] font-semibold text-foreground">2</span>
                             Type de média
                         </label>
-                        <div className="grid grid-cols-2 gap-1.5">
+                        <div className="grid grid-cols-2 gap-2">
                             {(["video", "audio", "image", "sequence", "document", "3d"] as MediaCategory[]).map((cat) => (
                                 <button
                                     key={cat}
                                     type="button"
                                     onClick={() => onCategoryChange(cat)}
                                     className={cn(
-                                        "flex items-center gap-2 px-3 py-2.5 rounded-lg border text-sm transition-all",
+                                        "flex items-center gap-2.5 px-3 py-3 rounded-xl border text-sm transition-all",
                                         cv.category === cat
                                             ? "border-primary bg-primary/10 text-primary font-semibold shadow-sm"
-                                            : "border-border bg-background text-muted-foreground hover:border-muted-foreground hover:text-foreground",
+                                            : "border-border bg-background text-muted-foreground hover:border-muted-foreground hover:text-foreground hover:bg-muted/30",
                                     )}
                                 >
                                     {CATEGORY_ICONS[cat!]}
@@ -637,23 +654,23 @@ export function ConfigPanel({
                     </div>
 
                     {/* Format */}
-                    <div className="space-y-2">
+                    <div className="space-y-3">
                         <label className="flex items-center gap-2 text-xs text-muted-foreground uppercase tracking-wide font-semibold">
-                            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-muted text-[10px] text-foreground">3</span>
+                            <span className="flex h-6 w-6 items-center justify-center rounded-full bg-muted text-[11px] font-semibold text-foreground">3</span>
                             Format de sortie
                         </label>
                         {formats.length > 0 ? (
-                            <div className="flex flex-wrap gap-1.5">
+                            <div className="flex flex-wrap gap-2">
                                 {formats.map((fmt) => (
                                     <button
                                         key={fmt}
                                         type="button"
                                         onClick={() => onFormatChange(fmt)}
                                         className={cn(
-                                            "px-2.5 py-1.5 rounded-md text-xs font-mono font-semibold border transition-all",
+                                            "px-3 py-2 rounded-lg text-xs font-mono font-semibold border transition-all min-w-[52px]",
                                             cv.format === fmt
-                                                ? "border-primary bg-primary text-primary-foreground"
-                                                : "border-border bg-background text-muted-foreground hover:border-muted-foreground hover:text-foreground",
+                                                ? "border-primary bg-primary text-primary-foreground shadow-sm"
+                                                : "border-border bg-background text-muted-foreground hover:border-muted-foreground hover:text-foreground hover:bg-muted/30",
                                         )}
                                     >
                                         {fmt === "zip" ? "ZIP" : fmt.toUpperCase()}
@@ -661,7 +678,7 @@ export function ConfigPanel({
                                 ))}
                             </div>
                         ) : (
-                            <p className="text-xs text-muted-foreground italic">Sélectionnez un type d'abord</p>
+                            <p className="text-xs text-muted-foreground italic px-1">Sélectionnez un type d'abord</p>
                         )}
                         {cv.category === "video" && cv.format === "zip" && (
                             <p className="text-xs text-muted-foreground mt-1.5 italic">
@@ -680,354 +697,509 @@ export function ConfigPanel({
                         )}
                     </div>
 
-                    {/* ─── Video & Encoding ─── */}
-                    {isAdvanced && isVideoOrSeq && (
-                        <Section icon={<IconVideo size={14} />} title="Encodage vidéo" defaultOpen={false}>
-                            <Row label="Codec">
-                                <Select value={cv.videoCodec} onValueChange={(v) => setCv({ videoCodec: v })}>
-                                    <SelectTrigger className="h-8 text-xs">
-                                        <SelectValue />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="libx264">H.264 (libx264)</SelectItem>
-                                        <SelectItem value="libx265">H.265 / HEVC (libx265)</SelectItem>
-                                        <SelectItem value="libvpx-vp9">VP9 (WebM)</SelectItem>
-                                        <SelectItem value="libaom-av1">AV1 (libaom)</SelectItem>
-                                        <SelectItem value="mpeg4">MPEG-4</SelectItem>
-                                        <SelectItem value="copy">Copier (sans réencodage)</SelectItem>
-                                    </SelectContent>
-                                </Select>
-                            </Row>
-                            <Row label="Preset vitesse">
-                                <Select value={cv.videoPreset} onValueChange={(v) => setCv({ videoPreset: v })}>
-                                    <SelectTrigger className="h-8 text-xs">
-                                        <SelectValue />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="ultrafast">Ultrafast (qualité ↓)</SelectItem>
-                                        <SelectItem value="superfast">Superfast</SelectItem>
-                                        <SelectItem value="veryfast">Très rapide</SelectItem>
-                                        <SelectItem value="faster">Rapide</SelectItem>
-                                        <SelectItem value="fast">Fast</SelectItem>
-                                        <SelectItem value="medium">Medium (défaut)</SelectItem>
-                                        <SelectItem value="slow">Slow (qualité ↑)</SelectItem>
-                                        <SelectItem value="slower">Slower</SelectItem>
-                                        <SelectItem value="veryslow">Veryslow</SelectItem>
-                                    </SelectContent>
-                                </Select>
-                            </Row>
-                            <Row label="Qualité (CRF)">
-                                <div className="flex items-center gap-2">
-                                    <input
-                                        type="range" min="0" max="51" step="1"
-                                        value={cv.videoCrf}
-                                        onChange={(e) => setCv({ videoCrf: e.target.value })}
-                                        className="flex-1 h-1.5 accent-primary"
-                                    />
-                                    <span className="text-xs w-6 text-center font-mono">{cv.videoCrf}</span>
-                                </div>
-                                <p className="text-xs text-muted-foreground mt-0.5">0 = meilleure qualité · 51 = pire</p>
-                            </Row>
-                            <Row label="FPS sortie">
-                                <Select value={cv.videoFps} onValueChange={(v) => setCv({ videoFps: v })}>
-                                    <SelectTrigger className="h-8 text-xs">
-                                        <SelectValue />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="original">Original</SelectItem>
-                                        <SelectItem value="60">60 fps</SelectItem>
-                                        <SelectItem value="30">30 fps</SelectItem>
-                                        <SelectItem value="25">25 fps</SelectItem>
-                                        <SelectItem value="24">24 fps</SelectItem>
-                                        <SelectItem value="15">15 fps</SelectItem>
-                                        <SelectItem value="10">10 fps</SelectItem>
-                                    </SelectContent>
-                                </Select>
-                            </Row>
-                            <Row label="Résolution">
-                                <div className="flex items-center gap-1.5">
-                                    <SmallInput
-                                        value={cv.videoResizeWidth}
-                                        onChange={(v) => setCv({ videoResizeWidth: v })}
-                                        placeholder="Largeur"
-                                    />
-                                    <span className="text-xs text-muted-foreground">×</span>
-                                    <SmallInput
-                                        value={cv.videoResizeHeight}
-                                        onChange={(v) => setCv({ videoResizeHeight: v })}
-                                        placeholder="Hauteur"
-                                    />
-                                </div>
-                            </Row>
-                            <Row label="HDR → SDR">
-                                <Switch
-                                    checked={cv.videoHDRtoSDR}
-                                    onCheckedChange={(v) => setCv({ videoHDRtoSDR: v })}
-                                />
-                            </Row>
-                            <Row label="Retirer l'audio">
-                                <Switch
-                                    checked={cv.videoRemoveAudio}
-                                    onCheckedChange={(v) => setCv({ videoRemoveAudio: v })}
-                                />
-                            </Row>
-                        </Section>
-                    )}
-
-                    {/* ─── Transforms ─── */}
-                    {isAdvanced && isVideoOrSeq && (
-                        <Section icon={<IconRotate size={14} />} title="Transformation" defaultOpen={false}>
-                            <Row label="Rotation">
-                                <Select value={cv.videoRotate} onValueChange={(v) => setCv({ videoRotate: v as ConvertSettings["videoRotate"] })}>
-                                    <SelectTrigger className="h-8 text-xs">
-                                        <SelectValue />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="none">Aucune</SelectItem>
-                                        <SelectItem value="90">90° horaire</SelectItem>
-                                        <SelectItem value="180">180°</SelectItem>
-                                        <SelectItem value="270">90° anti-horaire</SelectItem>
-                                        <SelectItem value="hflip">Miroir horizontal</SelectItem>
-                                        <SelectItem value="vflip">Miroir vertical</SelectItem>
-                                    </SelectContent>
-                                </Select>
-                            </Row>
-                            <Row label="Débruitage">
-                                <Select value={cv.videoDenoise} onValueChange={(v) => setCv({ videoDenoise: v as ConvertSettings["videoDenoise"] })}>
-                                    <SelectTrigger className="h-8 text-xs">
-                                        <SelectValue />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="none">Aucun</SelectItem>
-                                        <SelectItem value="light">Léger</SelectItem>
-                                        <SelectItem value="medium">Moyen</SelectItem>
-                                        <SelectItem value="strong">Fort</SelectItem>
-                                    </SelectContent>
-                                </Select>
-                            </Row>
-                            <div>
-                                <p className="text-xs text-muted-foreground mb-1.5 flex items-center gap-1">
-                                    <IconCrop size={11} /> Rogner (pixels à supprimer)
-                                </p>
-                                <div className="grid grid-cols-2 gap-1.5">
-                                    <SmallInput value={cv.videoCropTop} onChange={(v) => setCv({ videoCropTop: v })} placeholder="Haut" />
-                                    <SmallInput value={cv.videoCropBottom} onChange={(v) => setCv({ videoCropBottom: v })} placeholder="Bas" />
-                                    <SmallInput value={cv.videoCropLeft} onChange={(v) => setCv({ videoCropLeft: v })} placeholder="Gauche" />
-                                    <SmallInput value={cv.videoCropRight} onChange={(v) => setCv({ videoCropRight: v })} placeholder="Droite" />
-                                </div>
-                            </div>
-                        </Section>
-                    )}
-
-                    {/* ─── Video Editor ─── */}
-                    {isAdvanced && cv.category === "video" && (
-                        <Section icon={<IconSliders size={14} />} title="Éditeur vidéo" defaultOpen={false}>
-                            <Row label="Trim début">
-                                <SmallInput
-                                    value={cv.videoTrimStart}
-                                    onChange={(v) => setCv({ videoTrimStart: v })}
-                                    placeholder="ex: 00:00:05"
-                                />
-                            </Row>
-                            <Row label="Trim fin">
-                                <SmallInput
-                                    value={cv.videoTrimEnd}
-                                    onChange={(v) => setCv({ videoTrimEnd: v })}
-                                    placeholder="ex: 00:01:30"
-                                />
-                            </Row>
-                            <Row label="Texte incrusté">
-                                <SmallInput
-                                    value={cv.overlayText}
-                                    onChange={(v) => setCv({ overlayText: v })}
-                                    placeholder="Texte à afficher…"
-                                />
-                            </Row>
-                            {cv.overlayText && (
-                                <>
-                                    <Row label="Position X">
-                                        <SmallInput value={cv.overlayTextX} onChange={(v) => setCv({ overlayTextX: v })} />
-                                    </Row>
-                                    <Row label="Position Y">
-                                        <SmallInput value={cv.overlayTextY} onChange={(v) => setCv({ overlayTextY: v })} />
-                                    </Row>
-                                </>
-                            )}
-                            <div>
-                                <p className="text-xs text-muted-foreground mb-1.5">
-                                    LUT colorimétrique (.cube)
-                                </p>
-                                {cv.lutFile ? (
-                                    <div className="flex items-center gap-2">
-                                        <span className="text-xs text-emerald-400 truncate flex-1">{cv.lutFile.name}</span>
+                    {/* ─── Advanced tabbed options ─── */}
+                    {isAdvanced && availableTabs.filter(t => t !== "compress").length > 0 && (
+                        <div className="space-y-3">
+                            <label className="flex items-center gap-2 text-xs text-muted-foreground uppercase tracking-wide font-semibold">
+                                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-muted text-[11px] font-semibold text-foreground">4</span>
+                                Options avancées
+                            </label>
+                            <div className="rounded-2xl border border-border bg-card/60 overflow-hidden">
+                                <div className="flex items-center gap-1 px-2 pt-2 overflow-x-auto bg-muted/30 border-b border-border">
+                                    {availableTabs.filter(t => t !== "compress").map(tab => (
                                         <button
+                                            key={tab}
                                             type="button"
-                                            onClick={() => setCv({ lutFile: null })}
-                                            className="text-xs text-muted-foreground hover:text-destructive px-1.5 py-0.5 rounded border border-border"
+                                            onClick={() => setActiveTab(tab)}
+                                            className={cn(
+                                                "inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium rounded-t-lg whitespace-nowrap transition-all",
+                                                activeTab === tab
+                                                    ? "bg-card text-foreground shadow-sm border-x border-t border-border -mb-px"
+                                                    : "text-muted-foreground hover:text-foreground hover:bg-muted/40"
+                                            )}
                                         >
-                                            ✕
+                                            {TAB_META[tab].icon}
+                                            {TAB_META[tab].label}
                                         </button>
-                                    </div>
-                                ) : (
-                                    <label className="flex items-center gap-2 h-8 px-3 rounded-md border border-dashed border-border bg-muted/20 hover:border-primary/50 cursor-pointer transition-colors">
-                                        <span className="text-xs text-muted-foreground">Choisir un fichier .cube…</span>
-                                        <input
-                                            type="file"
-                                            accept=".cube"
-                                            className="hidden"
-                                            onChange={(e) => {
-                                                const f = e.target.files?.[0] || null;
-                                                setCv({ lutFile: f });
-                                                e.target.value = "";
-                                            }}
-                                        />
-                                    </label>
-                                )}
-                            </div>
-                        </Section>
-                    )}
-
-                    {/* ─── GIF settings ─── */}
-                    {isAdvanced && cv.category === "video" && cv.format === "gif" && (
-                        <Section title="Paramètres GIF" defaultOpen={true}>
-                            <Row label="Vitesse">
-                                <Select value={cv.gifSpeed} onValueChange={(v) => setCv({ gifSpeed: v })}>
-                                    <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="1.0">Normal (1×)</SelectItem>
-                                        <SelectItem value="0.5">2× plus rapide</SelectItem>
-                                        <SelectItem value="0.25">4× plus rapide</SelectItem>
-                                        <SelectItem value="0.1">10× plus rapide</SelectItem>
-                                        <SelectItem value="2.0">2× plus lent</SelectItem>
-                                    </SelectContent>
-                                </Select>
-                            </Row>
-                            <Row label="FPS">
-                                <Select value={cv.gifFps} onValueChange={(v) => setCv({ gifFps: v })}>
-                                    <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-                                    <SelectContent>
-                                        {["5", "10", "15", "20", "24", "30"].map((f) => (
-                                            <SelectItem key={f} value={f}>{f} fps</SelectItem>
-                                        ))}
-                                    </SelectContent>
-                                </Select>
-                            </Row>
-                            <Row label="Résolution (px)">
-                                <Select value={cv.gifResolution} onValueChange={(v) => setCv({ gifResolution: v })}>
-                                    <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="-1">Original</SelectItem>
-                                        {["240", "360", "480", "720", "1080"].map((r) => (
-                                            <SelectItem key={r} value={r}>{r}p</SelectItem>
-                                        ))}
-                                    </SelectContent>
-                                </Select>
-                            </Row>
-                            <Row label="Couleurs">
-                                <Select value={cv.gifColors} onValueChange={(v) => setCv({ gifColors: v })}>
-                                    <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-                                    <SelectContent>
-                                        {["256", "192", "128", "96", "64", "32", "16"].map((c) => (
-                                            <SelectItem key={c} value={c}>{c} couleurs</SelectItem>
-                                        ))}
-                                    </SelectContent>
-                                </Select>
-                            </Row>
-                            <Row label="Dithering">
-                                <Select value={cv.gifDither} onValueChange={(v) => setCv({ gifDither: v })}>
-                                    <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="sierra2_4a">Sierra2_4a (recommandé)</SelectItem>
-                                        <SelectItem value="floyd_steinberg">Floyd-Steinberg</SelectItem>
-                                        <SelectItem value="bayer">Bayer</SelectItem>
-                                        <SelectItem value="none">Aucun</SelectItem>
-                                    </SelectContent>
-                                </Select>
-                            </Row>
-                            <Row label="Boucle">
-                                <Select value={cv.gifLoop} onValueChange={(v) => setCv({ gifLoop: v })}>
-                                    <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="0">Infini</SelectItem>
-                                        <SelectItem value="1">1 fois</SelectItem>
-                                        <SelectItem value="2">2 fois</SelectItem>
-                                        <SelectItem value="3">3 fois</SelectItem>
-                                        <SelectItem value="5">5 fois</SelectItem>
-                                        <SelectItem value="10">10 fois</SelectItem>
-                                    </SelectContent>
-                                </Select>
-                            </Row>
-                        </Section>
-                    )}
-
-                    {/* ─── Sequence FPS ─── */}
-                    {isAdvanced && cv.category === "sequence" && (
-                        <Section title="Paramètres séquence" defaultOpen={true}>
-                            <Row label="FPS de sortie">
-                                <Select value={cv.sequenceFps} onValueChange={(v) => setCv({ sequenceFps: v })}>
-                                    <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-                                    <SelectContent>
-                                        {["1", "2", "5", "10", "15", "24", "25", "30", "60"].map((f) => (
-                                            <SelectItem key={f} value={f}>{f} fps</SelectItem>
-                                        ))}
-                                    </SelectContent>
-                                </Select>
-                            </Row>
-                        </Section>
-                    )}
-
-                    {/* ─── Audio settings ─── */}
-                    {isAdvanced && (cv.category === "audio" || cv.category === "video") && (
-                        <Section icon={<IconVolume size={14} />} title="Paramètres audio" defaultOpen={false}>
-                            <Row label="Codec">
-                                <Select value={cv.audioCodec} onValueChange={(v) => setCv({ audioCodec: v })}>
-                                    <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="auto">Auto (selon format)</SelectItem>
-                                        <SelectItem value="aac">AAC</SelectItem>
-                                        <SelectItem value="libmp3lame">MP3</SelectItem>
-                                        <SelectItem value="libopus">Opus</SelectItem>
-                                        <SelectItem value="libvorbis">Vorbis</SelectItem>
-                                        <SelectItem value="flac">FLAC (lossless)</SelectItem>
-                                        <SelectItem value="pcm_s16le">WAV PCM 16-bit</SelectItem>
-                                        <SelectItem value="copy">Copier (sans réencodage)</SelectItem>
-                                    </SelectContent>
-                                </Select>
-                            </Row>
-                            <Row label="Bitrate">
-                                <Select value={cv.audioBitrate} onValueChange={(v) => setCv({ audioBitrate: v })}>
-                                    <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-                                    <SelectContent>
-                                        {["64k", "96k", "128k", "160k", "192k", "256k", "320k"].map((b) => (
-                                            <SelectItem key={b} value={b}>{b}</SelectItem>
-                                        ))}
-                                    </SelectContent>
-                                </Select>
-                            </Row>
-                            <Row label="Volume (dB)">
-                                <div className="flex items-center gap-2">
-                                    <input
-                                        type="range" min="-20" max="20" step="0.5"
-                                        value={cv.audioVolume}
-                                        onChange={(e) => setCv({ audioVolume: e.target.value })}
-                                        className="flex-1 h-1.5 accent-primary"
-                                    />
-                                    <span className="text-xs w-10 text-right font-mono">
-                                        {parseFloat(cv.audioVolume) >= 0 ? "+" : ""}{cv.audioVolume} dB
-                                    </span>
+                                    ))}
                                 </div>
-                            </Row>
-                            <Row label="Normaliser">
-                                <Switch
-                                    checked={cv.audioNormalize}
-                                    onCheckedChange={(v) => setCv({ audioNormalize: v })}
-                                />
-                            </Row>
-                        </Section>
+                                <div key={activeTab} className="p-5 space-y-4 animate-in fade-in duration-200">
+
+                                    {/* ───── ENCODE tab ───── */}
+                                    {activeTab === "encode" && isVideoOrSeq && (
+                                        <>
+                                            <Row label="Codec">
+                                                <Select value={cv.videoCodec} onValueChange={(v) => setCv({ videoCodec: v })}>
+                                                    <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                                                    <SelectContent>
+                                                        <SelectItem value="libx264">H.264 (libx264)</SelectItem>
+                                                        <SelectItem value="libx265">H.265 / HEVC</SelectItem>
+                                                        <SelectItem value="libvpx-vp9">VP9 (WebM)</SelectItem>
+                                                        <SelectItem value="libaom-av1">AV1</SelectItem>
+                                                        <SelectItem value="mpeg4">MPEG-4</SelectItem>
+                                                        <SelectItem value="copy">Copier (sans réencodage)</SelectItem>
+                                                    </SelectContent>
+                                                </Select>
+                                            </Row>
+                                            <Row label="Preset vitesse">
+                                                <Select value={cv.videoPreset} onValueChange={(v) => setCv({ videoPreset: v })}>
+                                                    <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                                                    <SelectContent>
+                                                        <SelectItem value="ultrafast">Ultrafast (qualité ↓)</SelectItem>
+                                                        <SelectItem value="superfast">Superfast</SelectItem>
+                                                        <SelectItem value="veryfast">Très rapide</SelectItem>
+                                                        <SelectItem value="faster">Rapide</SelectItem>
+                                                        <SelectItem value="fast">Fast</SelectItem>
+                                                        <SelectItem value="medium">Medium (défaut)</SelectItem>
+                                                        <SelectItem value="slow">Slow (qualité ↑)</SelectItem>
+                                                        <SelectItem value="slower">Slower</SelectItem>
+                                                        <SelectItem value="veryslow">Veryslow</SelectItem>
+                                                    </SelectContent>
+                                                </Select>
+                                            </Row>
+                                            <Row label="Qualité (CRF)">
+                                                <div className="flex items-center gap-2">
+                                                    <input type="range" min="0" max="51" step="1" value={cv.videoCrf}
+                                                        onChange={(e) => setCv({ videoCrf: e.target.value })}
+                                                        className="flex-1 h-1.5 accent-primary" />
+                                                    <span className="text-xs w-6 text-center font-mono">{cv.videoCrf}</span>
+                                                </div>
+                                                <p className="text-xs text-muted-foreground mt-0.5">0 = meilleure qualité · 51 = pire</p>
+                                            </Row>
+                                            <Row label="FPS sortie">
+                                                <Select value={cv.videoFps} onValueChange={(v) => setCv({ videoFps: v })}>
+                                                    <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                                                    <SelectContent>
+                                                        <SelectItem value="original">Original</SelectItem>
+                                                        {["60", "30", "25", "24", "15", "10"].map((f) => (
+                                                            <SelectItem key={f} value={f}>{f} fps</SelectItem>
+                                                        ))}
+                                                    </SelectContent>
+                                                </Select>
+                                            </Row>
+                                            <Row label="Résolution">
+                                                <div className="flex items-center gap-1.5">
+                                                    <SmallInput value={cv.videoResizeWidth} onChange={(v) => setCv({ videoResizeWidth: v })} placeholder="Largeur" />
+                                                    <span className="text-xs text-muted-foreground">×</span>
+                                                    <SmallInput value={cv.videoResizeHeight} onChange={(v) => setCv({ videoResizeHeight: v })} placeholder="Hauteur" />
+                                                </div>
+                                            </Row>
+                                            {cv.category === "sequence" && (
+                                                <Row label="FPS de la séquence">
+                                                    <Select value={cv.sequenceFps} onValueChange={(v) => setCv({ sequenceFps: v })}>
+                                                        <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                                                        <SelectContent>
+                                                            {["1", "2", "5", "10", "15", "24", "25", "30", "60"].map((f) => (
+                                                                <SelectItem key={f} value={f}>{f} fps</SelectItem>
+                                                            ))}
+                                                        </SelectContent>
+                                                    </Select>
+                                                </Row>
+                                            )}
+                                            <Row label="HDR → SDR">
+                                                <Switch checked={cv.videoHDRtoSDR} onCheckedChange={(v) => setCv({ videoHDRtoSDR: v })} />
+                                            </Row>
+                                            <Row label="Retirer l'audio">
+                                                <Switch checked={cv.videoRemoveAudio} onCheckedChange={(v) => setCv({ videoRemoveAudio: v })} />
+                                            </Row>
+                                        </>
+                                    )}
+
+                                    {activeTab === "encode" && cv.category === "audio" && (
+                                        <>
+                                            <Row label="Codec">
+                                                <Select value={cv.audioCodec} onValueChange={(v) => setCv({ audioCodec: v })}>
+                                                    <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                                                    <SelectContent>
+                                                        <SelectItem value="auto">Auto (selon format)</SelectItem>
+                                                        <SelectItem value="aac">AAC</SelectItem>
+                                                        <SelectItem value="libmp3lame">MP3</SelectItem>
+                                                        <SelectItem value="libopus">Opus</SelectItem>
+                                                        <SelectItem value="libvorbis">Vorbis</SelectItem>
+                                                        <SelectItem value="flac">FLAC (lossless)</SelectItem>
+                                                        <SelectItem value="pcm_s16le">WAV PCM 16-bit</SelectItem>
+                                                        <SelectItem value="copy">Copier (sans réencodage)</SelectItem>
+                                                    </SelectContent>
+                                                </Select>
+                                            </Row>
+                                            <Row label="Bitrate">
+                                                <Select value={cv.audioBitrate} onValueChange={(v) => setCv({ audioBitrate: v })}>
+                                                    <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                                                    <SelectContent>
+                                                        {["64k", "96k", "128k", "160k", "192k", "256k", "320k"].map((b) => (
+                                                            <SelectItem key={b} value={b}>{b}</SelectItem>
+                                                        ))}
+                                                    </SelectContent>
+                                                </Select>
+                                            </Row>
+                                            <Row label="Volume (dB)">
+                                                <div className="flex items-center gap-2">
+                                                    <input type="range" min="-20" max="20" step="0.5" value={cv.audioVolume}
+                                                        onChange={(e) => setCv({ audioVolume: e.target.value })}
+                                                        className="flex-1 h-1.5 accent-primary" />
+                                                    <span className="text-xs w-10 text-right font-mono">
+                                                        {parseFloat(cv.audioVolume) >= 0 ? "+" : ""}{cv.audioVolume} dB
+                                                    </span>
+                                                </div>
+                                            </Row>
+                                            <Row label="Normaliser">
+                                                <Switch checked={cv.audioNormalize} onCheckedChange={(v) => setCv({ audioNormalize: v })} />
+                                            </Row>
+                                        </>
+                                    )}
+
+                                    {activeTab === "encode" && cv.category === "image" && (
+                                        <>
+                                            <Row label="Qualité">
+                                                <div className="flex items-center gap-2">
+                                                    <input type="range" min="1" max="100" step="1"
+                                                        value={cv.imageQuality === "lossless" ? "100" : cv.imageQuality}
+                                                        onChange={(e) => setCv({ imageQuality: e.target.value })}
+                                                        className="flex-1 h-1.5 accent-primary" />
+                                                    <span className="text-xs w-6 text-center font-mono">{cv.imageQuality}</span>
+                                                </div>
+                                            </Row>
+                                            <Row label="Redimensionner">
+                                                <Select value={cv.imageResizeMode} onValueChange={(v) => setCv({ imageResizeMode: v as ConvertSettings["imageResizeMode"] })}>
+                                                    <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                                                    <SelectContent>
+                                                        <SelectItem value="none">Aucun</SelectItem>
+                                                        <SelectItem value="dimension">Dimension max (px)</SelectItem>
+                                                        <SelectItem value="percent">Pourcentage (%)</SelectItem>
+                                                    </SelectContent>
+                                                </Select>
+                                            </Row>
+                                            {cv.imageResizeMode === "dimension" && (
+                                                <Row label="Taille max (px)">
+                                                    <SmallInput value={cv.imageMaxSize} onChange={(v) => setCv({ imageMaxSize: v })} placeholder="ex: 1920" />
+                                                </Row>
+                                            )}
+                                            {cv.imageResizeMode === "percent" && (
+                                                <Row label="Réduction (%)">
+                                                    <SmallInput value={cv.imageResizePercent} onChange={(v) => setCv({ imageResizePercent: v })} placeholder="75" />
+                                                </Row>
+                                            )}
+                                            {cv.format === "ico" && (
+                                                <Row label="Taille ICO">
+                                                    <Select value={cv.icoSize} onValueChange={(v) => setCv({ icoSize: v })}>
+                                                        <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                                                        <SelectContent>
+                                                            {["16", "32", "48", "64", "128", "256"].map((s) => (
+                                                                <SelectItem key={s} value={s}>{s}×{s}px</SelectItem>
+                                                            ))}
+                                                        </SelectContent>
+                                                    </Select>
+                                                </Row>
+                                            )}
+                                            <div className="pt-2 border-t border-border">
+                                                <Row label="Upscaler">
+                                                    <Select value={cv.imageUpscale} onValueChange={(v) => setCv({ imageUpscale: v })}>
+                                                        <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                                                        <SelectContent>
+                                                            <SelectItem value="1">Aucun (taille originale)</SelectItem>
+                                                            <SelectItem value="2">×2 (Lanczos)</SelectItem>
+                                                            <SelectItem value="3">×3 (Lanczos)</SelectItem>
+                                                            <SelectItem value="4">×4 (Lanczos)</SelectItem>
+                                                        </SelectContent>
+                                                    </Select>
+                                                </Row>
+                                                <p className="text-[11px] text-muted-foreground italic mt-1">
+                                                    Agrandit l'image avec interpolation Lanczos. Pour de l'IA upscaling (ESRGAN), il faudrait un modèle externe.
+                                                </p>
+                                            </div>
+                                        </>
+                                    )}
+
+                                    {/* ───── TRANSFORM tab (video / sequence) ───── */}
+                                    {activeTab === "transform" && isVideoOrSeq && (
+                                        <>
+                                            <Row label="Rotation">
+                                                <Select value={cv.videoRotate} onValueChange={(v) => setCv({ videoRotate: v as ConvertSettings["videoRotate"] })}>
+                                                    <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                                                    <SelectContent>
+                                                        <SelectItem value="none">Aucune</SelectItem>
+                                                        <SelectItem value="90">90° horaire</SelectItem>
+                                                        <SelectItem value="180">180°</SelectItem>
+                                                        <SelectItem value="270">90° anti-horaire</SelectItem>
+                                                        <SelectItem value="hflip">Miroir horizontal</SelectItem>
+                                                        <SelectItem value="vflip">Miroir vertical</SelectItem>
+                                                    </SelectContent>
+                                                </Select>
+                                            </Row>
+                                            <Row label="Débruitage">
+                                                <Select value={cv.videoDenoise} onValueChange={(v) => setCv({ videoDenoise: v as ConvertSettings["videoDenoise"] })}>
+                                                    <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                                                    <SelectContent>
+                                                        <SelectItem value="none">Aucun</SelectItem>
+                                                        <SelectItem value="light">Léger</SelectItem>
+                                                        <SelectItem value="medium">Moyen</SelectItem>
+                                                        <SelectItem value="strong">Fort</SelectItem>
+                                                    </SelectContent>
+                                                </Select>
+                                            </Row>
+                                            <div>
+                                                <p className="text-xs text-muted-foreground mb-1.5 flex items-center gap-1">
+                                                    <IconCrop size={11} /> Rogner (px à supprimer)
+                                                </p>
+                                                <div className="grid grid-cols-2 gap-1.5">
+                                                    <SmallInput value={cv.videoCropTop} onChange={(v) => setCv({ videoCropTop: v })} placeholder="Haut" />
+                                                    <SmallInput value={cv.videoCropBottom} onChange={(v) => setCv({ videoCropBottom: v })} placeholder="Bas" />
+                                                    <SmallInput value={cv.videoCropLeft} onChange={(v) => setCv({ videoCropLeft: v })} placeholder="Gauche" />
+                                                    <SmallInput value={cv.videoCropRight} onChange={(v) => setCv({ videoCropRight: v })} placeholder="Droite" />
+                                                </div>
+                                            </div>
+                                            {cv.category === "video" && cv.format === "gif" && (
+                                                <div className="space-y-3 rounded-md border border-border bg-muted/30 p-2.5">
+                                                    <p className="text-xs font-semibold text-foreground">Paramètres GIF</p>
+                                                    <Row label="Vitesse">
+                                                        <Select value={cv.gifSpeed} onValueChange={(v) => setCv({ gifSpeed: v })}>
+                                                            <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                                                            <SelectContent>
+                                                                <SelectItem value="1.0">Normal (1×)</SelectItem>
+                                                                <SelectItem value="0.5">2× plus rapide</SelectItem>
+                                                                <SelectItem value="0.25">4× plus rapide</SelectItem>
+                                                                <SelectItem value="0.1">10× plus rapide</SelectItem>
+                                                                <SelectItem value="2.0">2× plus lent</SelectItem>
+                                                            </SelectContent>
+                                                        </Select>
+                                                    </Row>
+                                                    <Row label="FPS GIF">
+                                                        <Select value={cv.gifFps} onValueChange={(v) => setCv({ gifFps: v })}>
+                                                            <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                                                            <SelectContent>
+                                                                {["5", "10", "15", "20", "24", "30"].map((f) => (
+                                                                    <SelectItem key={f} value={f}>{f} fps</SelectItem>
+                                                                ))}
+                                                            </SelectContent>
+                                                        </Select>
+                                                    </Row>
+                                                    <Row label="Couleurs">
+                                                        <Select value={cv.gifColors} onValueChange={(v) => setCv({ gifColors: v })}>
+                                                            <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                                                            <SelectContent>
+                                                                {["256", "192", "128", "96", "64", "32", "16"].map((c) => (
+                                                                    <SelectItem key={c} value={c}>{c} couleurs</SelectItem>
+                                                                ))}
+                                                            </SelectContent>
+                                                        </Select>
+                                                    </Row>
+                                                    <Row label="Dithering">
+                                                        <Select value={cv.gifDither} onValueChange={(v) => setCv({ gifDither: v })}>
+                                                            <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                                                            <SelectContent>
+                                                                <SelectItem value="sierra2_4a">Sierra2_4a (recommandé)</SelectItem>
+                                                                <SelectItem value="floyd_steinberg">Floyd-Steinberg</SelectItem>
+                                                                <SelectItem value="bayer">Bayer</SelectItem>
+                                                                <SelectItem value="none">Aucun</SelectItem>
+                                                            </SelectContent>
+                                                        </Select>
+                                                    </Row>
+                                                    <Row label="Boucle">
+                                                        <Select value={cv.gifLoop} onValueChange={(v) => setCv({ gifLoop: v })}>
+                                                            <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                                                            <SelectContent>
+                                                                <SelectItem value="0">Infini</SelectItem>
+                                                                <SelectItem value="1">1 fois</SelectItem>
+                                                                <SelectItem value="2">2 fois</SelectItem>
+                                                                <SelectItem value="3">3 fois</SelectItem>
+                                                                <SelectItem value="5">5 fois</SelectItem>
+                                                                <SelectItem value="10">10 fois</SelectItem>
+                                                            </SelectContent>
+                                                        </Select>
+                                                    </Row>
+                                                </div>
+                                            )}
+                                        </>
+                                    )}
+
+                                    {/* ───── EDIT tab (image — photo edits) ───── */}
+                                    {activeTab === "edit" && cv.category === "image" && (
+                                        <div className="space-y-3">
+                                            <RangeRow label="Exposition" value={cv.photoExposure} min={-3} max={3} step={0.1} onChange={(v) => setCv({ photoExposure: v })} display={(v) => `${Number(v).toFixed(1)} EV`} />
+                                            <RangeRow label="Contraste" value={cv.photoContrast} min={-100} max={100} step={1} onChange={(v) => setCv({ photoContrast: v })} display={displaySigned("%")} />
+                                            <RangeRow label="Hautes lumières" value={cv.photoHighlights} min={-100} max={100} step={1} onChange={(v) => setCv({ photoHighlights: v })} display={displaySigned("%")} />
+                                            <RangeRow label="Ombres" value={cv.photoShadows} min={-100} max={100} step={1} onChange={(v) => setCv({ photoShadows: v })} display={displaySigned("%")} />
+                                            <RangeRow label="Blancs" value={cv.photoWhites} min={-100} max={100} step={1} onChange={(v) => setCv({ photoWhites: v })} display={displaySigned("%")} />
+                                            <RangeRow label="Noirs" value={cv.photoBlacks} min={-100} max={100} step={1} onChange={(v) => setCv({ photoBlacks: v })} display={displaySigned("%")} />
+                                            <RangeRow label="Température" value={cv.photoTemperature} min={-100} max={100} step={1} onChange={(v) => setCv({ photoTemperature: v })} display={displaySigned("%")} />
+                                            <RangeRow label="Teinte" value={cv.photoTint} min={-100} max={100} step={1} onChange={(v) => setCv({ photoTint: v })} display={displaySigned("%")} />
+                                            <RangeRow label="Saturation" value={cv.photoSaturation} min={-100} max={100} step={1} onChange={(v) => setCv({ photoSaturation: v })} display={displaySigned("%")} />
+                                            <RangeRow label="Netteté" value={cv.photoSharpness} min={-100} max={100} step={1} onChange={(v) => setCv({ photoSharpness: v })} display={displaySigned("%")} />
+                                        </div>
+                                    )}
+
+                                    {/* ───── AUDIO tab (video) ───── */}
+                                    {activeTab === "audio" && isVideoOrSeq && (
+                                        <>
+                                            <Row label="Codec">
+                                                <Select value={cv.audioCodec} onValueChange={(v) => setCv({ audioCodec: v })}>
+                                                    <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                                                    <SelectContent>
+                                                        <SelectItem value="auto">Auto (selon format)</SelectItem>
+                                                        <SelectItem value="aac">AAC</SelectItem>
+                                                        <SelectItem value="libmp3lame">MP3</SelectItem>
+                                                        <SelectItem value="libopus">Opus</SelectItem>
+                                                        <SelectItem value="libvorbis">Vorbis</SelectItem>
+                                                        <SelectItem value="copy">Copier (sans réencodage)</SelectItem>
+                                                    </SelectContent>
+                                                </Select>
+                                            </Row>
+                                            <Row label="Bitrate">
+                                                <Select value={cv.audioBitrate} onValueChange={(v) => setCv({ audioBitrate: v })}>
+                                                    <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                                                    <SelectContent>
+                                                        {["64k", "96k", "128k", "160k", "192k", "256k", "320k"].map((b) => (
+                                                            <SelectItem key={b} value={b}>{b}</SelectItem>
+                                                        ))}
+                                                    </SelectContent>
+                                                </Select>
+                                            </Row>
+                                            <Row label="Volume (dB)">
+                                                <div className="flex items-center gap-2">
+                                                    <input type="range" min="-20" max="20" step="0.5" value={cv.audioVolume}
+                                                        onChange={(e) => setCv({ audioVolume: e.target.value })}
+                                                        className="flex-1 h-1.5 accent-primary" />
+                                                    <span className="text-xs w-10 text-right font-mono">
+                                                        {parseFloat(cv.audioVolume) >= 0 ? "+" : ""}{cv.audioVolume} dB
+                                                    </span>
+                                                </div>
+                                            </Row>
+                                            <Row label="Normaliser">
+                                                <Switch checked={cv.audioNormalize} onCheckedChange={(v) => setCv({ audioNormalize: v })} />
+                                            </Row>
+                                        </>
+                                    )}
+
+                                    {/* ───── EFFECTS tab (video, image, sequence) ───── */}
+                                    {activeTab === "effects" && (
+                                        <div className="space-y-3">
+                                            {/* Video color grading */}
+                                            {isVideoOrSeq && (
+                                                <div className="rounded-md border border-border bg-muted/30 p-2.5 space-y-2.5">
+                                                    <div className="flex items-center justify-between">
+                                                        <span className="text-xs font-semibold flex items-center gap-1.5">
+                                                            <IconWand size={12} /> Étalonnage couleur (créer un look)
+                                                        </span>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setCv({
+                                                                videoExposure: "0", videoContrast: "0",
+                                                                videoSaturation: "0", videoTemperature: "0", videoHue: "0",
+                                                            })}
+                                                            className="text-[10px] text-muted-foreground hover:text-destructive"
+                                                        >
+                                                            Reset
+                                                        </button>
+                                                    </div>
+                                                    <RangeRow label="Exposition" value={cv.videoExposure} min={-2} max={2} step={0.1} onChange={(v) => setCv({ videoExposure: v })} display={(v) => `${Number(v).toFixed(1)} EV`} />
+                                                    <RangeRow label="Contraste" value={cv.videoContrast} min={-100} max={100} step={1} onChange={(v) => setCv({ videoContrast: v })} display={displaySigned("%")} />
+                                                    <RangeRow label="Saturation" value={cv.videoSaturation} min={-100} max={100} step={1} onChange={(v) => setCv({ videoSaturation: v })} display={displaySigned("%")} />
+                                                    <RangeRow label="Température" value={cv.videoTemperature} min={-100} max={100} step={1} onChange={(v) => setCv({ videoTemperature: v })} display={(v) => `${displaySigned("")(v)} (froid↔chaud)`} />
+                                                    <RangeRow label="Teinte (°)" value={cv.videoHue} min={-180} max={180} step={1} onChange={(v) => setCv({ videoHue: v })} display={(v) => `${displaySigned("°")(v)}`} />
+                                                    <p className="text-[11px] text-muted-foreground italic">Les réglages sont appliqués par FFmpeg (eq + colortemperature + hue).</p>
+                                                </div>
+                                            )}
+
+                                            {/* Color remover */}
+                                            <div className="rounded-md border border-border bg-muted/30 p-2.5 space-y-2">
+                                                <div className="flex items-center justify-between">
+                                                    <span className="text-xs font-semibold flex items-center gap-1.5">
+                                                        <IconWand size={12} /> Retirer une couleur
+                                                    </span>
+                                                    <Switch
+                                                        checked={cv.colorRemoveEnabled}
+                                                        onCheckedChange={(v) => setCv({ colorRemoveEnabled: v })}
+                                                    />
+                                                </div>
+                                                {cv.colorRemoveEnabled && (
+                                                    <>
+                                                        <div className="flex items-center gap-2">
+                                                            <input type="color" value={cv.colorRemoveColor}
+                                                                onChange={(e) => setCv({ colorRemoveColor: e.target.value })}
+                                                                className="h-8 w-10 rounded border border-input bg-background cursor-pointer" />
+                                                            <SmallInput
+                                                                value={cv.colorRemoveColor}
+                                                                onChange={(v) => setCv({ colorRemoveColor: v })}
+                                                                placeholder="#ffffff"
+                                                            />
+                                                        </div>
+                                                        <div className="flex items-center gap-2">
+                                                            <span className="text-xs text-muted-foreground w-20">Tolérance</span>
+                                                            <input type="range" min="0" max="100" step="1"
+                                                                value={cv.colorRemoveTolerance}
+                                                                onChange={(e) => setCv({ colorRemoveTolerance: e.target.value })}
+                                                                className="flex-1 h-1.5 accent-primary" />
+                                                            <span className="text-xs w-8 text-right font-mono">{cv.colorRemoveTolerance}%</span>
+                                                        </div>
+                                                        <p className="text-[11px] text-muted-foreground italic">
+                                                            {cv.category === "image"
+                                                                ? "Sortie PNG/WebP pour préserver la transparence."
+                                                                : "Sortie WebM/MOV pour préserver la transparence."}
+                                                        </p>
+                                                    </>
+                                                )}
+                                            </div>
+
+                                            {/* Video-only: trim + overlay + LUT */}
+                                            {cv.category === "video" && (
+                                                <>
+                                                    <div className="rounded-md border border-border bg-muted/30 p-2.5 space-y-2">
+                                                        <p className="text-xs font-semibold">Trim</p>
+                                                        <Row label="Début">
+                                                            <SmallInput value={cv.videoTrimStart} onChange={(v) => setCv({ videoTrimStart: v })} placeholder="00:00:05" />
+                                                        </Row>
+                                                        <Row label="Fin">
+                                                            <SmallInput value={cv.videoTrimEnd} onChange={(v) => setCv({ videoTrimEnd: v })} placeholder="00:01:30" />
+                                                        </Row>
+                                                    </div>
+                                                    <div className="rounded-md border border-border bg-muted/30 p-2.5 space-y-2">
+                                                        <p className="text-xs font-semibold">Texte incrusté</p>
+                                                        <SmallInput value={cv.overlayText} onChange={(v) => setCv({ overlayText: v })} placeholder="Texte à afficher…" />
+                                                        {cv.overlayText && (
+                                                            <div className="grid grid-cols-2 gap-1.5">
+                                                                <SmallInput value={cv.overlayTextX} onChange={(v) => setCv({ overlayTextX: v })} placeholder="X" />
+                                                                <SmallInput value={cv.overlayTextY} onChange={(v) => setCv({ overlayTextY: v })} placeholder="Y" />
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                    <div className="rounded-md border border-border bg-muted/30 p-2.5 space-y-2">
+                                                        <p className="text-xs font-semibold">LUT colorimétrique (.cube)</p>
+                                                        {cv.lutFile ? (
+                                                            <div className="flex items-center gap-2">
+                                                                <span className="text-xs text-emerald-400 truncate flex-1">{cv.lutFile.name}</span>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => setCv({ lutFile: null })}
+                                                                    className="text-xs text-muted-foreground hover:text-destructive px-1.5 py-0.5 rounded border border-border"
+                                                                >
+                                                                    ✕
+                                                                </button>
+                                                            </div>
+                                                        ) : (
+                                                            <label className="flex items-center gap-2 h-8 px-3 rounded-md border border-dashed border-border bg-muted/20 hover:border-primary/50 cursor-pointer transition-colors">
+                                                                <span className="text-xs text-muted-foreground">Choisir un fichier .cube…</span>
+                                                                <input type="file" accept=".cube" className="hidden"
+                                                                    onChange={(e) => {
+                                                                        const f = e.target.files?.[0] || null;
+                                                                        setCv({ lutFile: f });
+                                                                        e.target.value = "";
+                                                                    }}
+                                                                />
+                                                            </label>
+                                                        )}
+                                                    </div>
+                                                </>
+                                            )}
+                                        </div>
+                                    )}
+
+                                </div>
+                            </div>
+                        </div>
                     )}
 
-                    {/* ─── Color remover (chroma key) ─── */}
-                    {(cv.category === "image" || cv.category === "video" || cv.category === "sequence") && (
+                    {/* Color remover quick-toggle for non-advanced mode */}
+                    {!isAdvanced && (cv.category === "image" || cv.category === "video" || cv.category === "sequence") && (
                         <Section icon={<IconWand size={14} />} title="Retirer une couleur" defaultOpen={false}>
                             <Row label="Activer">
                                 <Switch
@@ -1039,111 +1211,24 @@ export function ConfigPanel({
                                 <>
                                     <Row label="Couleur">
                                         <div className="flex items-center gap-2">
-                                            <input
-                                                type="color"
-                                                value={cv.colorRemoveColor}
+                                            <input type="color" value={cv.colorRemoveColor}
                                                 onChange={(e) => setCv({ colorRemoveColor: e.target.value })}
-                                                className="h-8 w-10 rounded border border-input bg-background cursor-pointer"
-                                            />
-                                            <SmallInput
-                                                value={cv.colorRemoveColor}
+                                                className="h-8 w-10 rounded border border-input bg-background cursor-pointer" />
+                                            <SmallInput value={cv.colorRemoveColor}
                                                 onChange={(v) => setCv({ colorRemoveColor: v })}
-                                                placeholder="#ffffff"
-                                            />
+                                                placeholder="#ffffff" />
                                         </div>
                                     </Row>
-                                    {(cv.category === "video" || cv.category === "sequence") && (
-                                        <div className="rounded-lg border border-dashed border-border bg-muted/30 p-3 text-xs leading-5 text-muted-foreground">
-                                            Le lecteur de sélection apparaît dans la colonne de droite.
-                                        </div>
-                                    )}
                                     <Row label="Tolérance">
                                         <div className="flex items-center gap-2">
-                                            <input
-                                                type="range" min="0" max="100" step="1"
+                                            <input type="range" min="0" max="100" step="1"
                                                 value={cv.colorRemoveTolerance}
                                                 onChange={(e) => setCv({ colorRemoveTolerance: e.target.value })}
-                                                className="flex-1 h-1.5 accent-primary"
-                                            />
+                                                className="flex-1 h-1.5 accent-primary" />
                                             <span className="text-xs w-8 text-right font-mono">{cv.colorRemoveTolerance}%</span>
                                         </div>
                                     </Row>
-                                    <p className="text-xs text-muted-foreground italic">
-                                        {cv.category === "image"
-                                            ? "Utilisez PNG ou WebP en sortie pour préserver la transparence."
-                                            : "Utilisez WebM ou MOV en sortie pour préserver la transparence."}
-                                    </p>
                                 </>
-                            )}
-                        </Section>
-                    )}
-
-                    {/* ─── Image settings ─── */}
-                    {isAdvanced && cv.category === "image" && (
-                        <Section icon={<IconImage size={14} />} title="Paramètres image" defaultOpen={true}>
-                            <div className="rounded-lg border border-border bg-background/60 p-3 space-y-3">
-                                <div className="flex items-center justify-between">
-                                    <div>
-                                        <p className="text-sm font-medium">Édition photo</p>
-                                        <p className="text-xs text-muted-foreground">Réglages de base type Lightroom</p>
-                                    </div>
-                                </div>
-                                <div className="space-y-3">
-                                    <RangeRow label="Exposition" value={cv.photoExposure} min={-3} max={3} step={0.1} onChange={(v) => setCv({ photoExposure: v })} display={(v) => `${Number(v).toFixed(1)} EV`} />
-                                    <RangeRow label="Contraste" value={cv.photoContrast} min={-100} max={100} step={1} onChange={(v) => setCv({ photoContrast: v })} display={displaySigned("% ")} />
-                                    <RangeRow label="Hautes lumières" value={cv.photoHighlights} min={-100} max={100} step={1} onChange={(v) => setCv({ photoHighlights: v })} display={displaySigned("% ")} />
-                                    <RangeRow label="Ombres" value={cv.photoShadows} min={-100} max={100} step={1} onChange={(v) => setCv({ photoShadows: v })} display={displaySigned("% ")} />
-                                    <RangeRow label="Blancs" value={cv.photoWhites} min={-100} max={100} step={1} onChange={(v) => setCv({ photoWhites: v })} display={displaySigned("% ")} />
-                                    <RangeRow label="Noirs" value={cv.photoBlacks} min={-100} max={100} step={1} onChange={(v) => setCv({ photoBlacks: v })} display={displaySigned("% ")} />
-                                    <RangeRow label="Température" value={cv.photoTemperature} min={-100} max={100} step={1} onChange={(v) => setCv({ photoTemperature: v })} display={(v) => `${displaySigned("% ")(v)} (froid↔chaud)`} />
-                                    <RangeRow label="Teinte" value={cv.photoTint} min={-100} max={100} step={1} onChange={(v) => setCv({ photoTint: v })} display={(v) => `${displaySigned("% ")(v)} (vert↔magenta)`} />
-                                    <RangeRow label="Saturation" value={cv.photoSaturation} min={-100} max={100} step={1} onChange={(v) => setCv({ photoSaturation: v })} display={displaySigned("% ")} />
-                                    <RangeRow label="Netteté" value={cv.photoSharpness} min={-100} max={100} step={1} onChange={(v) => setCv({ photoSharpness: v })} display={displaySigned("% ")} />
-                                </div>
-                            </div>
-
-                            <Row label="Qualité">
-                                <div className="flex items-center gap-2">
-                                    <input
-                                        type="range" min="1" max="100" step="1"
-                                        value={cv.imageQuality === "lossless" ? "100" : cv.imageQuality}
-                                        onChange={(e) => setCv({ imageQuality: e.target.value })}
-                                        className="flex-1 h-1.5 accent-primary"
-                                    />
-                                    <span className="text-xs w-6 text-center font-mono">{cv.imageQuality}</span>
-                                </div>
-                            </Row>
-                            <Row label="Redimensionner">
-                                <Select value={cv.imageResizeMode} onValueChange={(v) => setCv({ imageResizeMode: v as ConvertSettings["imageResizeMode"] })}>
-                                    <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="none">Aucun</SelectItem>
-                                        <SelectItem value="dimension">Dimension max (px)</SelectItem>
-                                        <SelectItem value="percent">Pourcentage (%)</SelectItem>
-                                    </SelectContent>
-                                </Select>
-                            </Row>
-                            {cv.imageResizeMode === "dimension" && (
-                                <Row label="Taille max (px)">
-                                    <SmallInput value={cv.imageMaxSize} onChange={(v) => setCv({ imageMaxSize: v })} placeholder="ex: 1920" />
-                                </Row>
-                            )}
-                            {cv.imageResizeMode === "percent" && (
-                                <Row label="Réduction (%)">
-                                    <SmallInput value={cv.imageResizePercent} onChange={(v) => setCv({ imageResizePercent: v })} placeholder="75" />
-                                </Row>
-                            )}
-                            {cv.format === "ico" && (
-                                <Row label="Taille ICO">
-                                    <Select value={cv.icoSize} onValueChange={(v) => setCv({ icoSize: v })}>
-                                        <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-                                        <SelectContent>
-                                            {["16", "32", "48", "64", "128", "256"].map((s) => (
-                                                <SelectItem key={s} value={s}>{s}×{s}px</SelectItem>
-                                            ))}
-                                        </SelectContent>
-                                    </Select>
-                                </Row>
                             )}
                         </Section>
                     )}
@@ -1154,7 +1239,7 @@ export function ConfigPanel({
             {(currentAction === "compress" || currentAction === "convert_compress") && (
                 <div className="space-y-3">
                     <label className="flex items-center gap-2 text-xs text-muted-foreground uppercase tracking-wide font-semibold">
-                        <span className="flex h-5 w-5 items-center justify-center rounded-full bg-muted text-[10px] text-foreground">
+                        <span className="flex h-6 w-6 items-center justify-center rounded-full bg-muted text-[11px] font-semibold text-foreground">
                             {currentAction === "compress" ? "2" : "4"}
                         </span>
                         Objectif de compression
@@ -1244,195 +1329,153 @@ export function ConfigPanel({
                         </>
                     )}
 
-                    {isAdvanced && <Section icon={<IconSliders size={14} />} title="Paramètres avancés" defaultOpen={false}>
-                        <Row label="Activer avancé">
-                            <Switch checked={cp.advancedEnabled} onCheckedChange={(v) => setCp({ advancedEnabled: v })} />
-                        </Row>
-                        {cp.advancedEnabled && (
-                            <>
-                                <Row label="Codec vidéo">
-                                    <Select value={cp.videoCodec} onValueChange={(v) => setCp({ videoCodec: v })}>
-                                        <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-                                        <SelectContent>
-                                            <SelectItem value="libx264">H.264 (libx264)</SelectItem>
-                                            <SelectItem value="libx265">H.265 / HEVC</SelectItem>
-                                            <SelectItem value="libvpx-vp9">VP9</SelectItem>
-                                            <SelectItem value="libaom-av1">AV1</SelectItem>
-                                        </SelectContent>
-                                    </Select>
-                                </Row>
-                                <Row label="Preset">
-                                    <Select value={cp.preset} onValueChange={(v) => setCp({ preset: v })}>
-                                        <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-                                        <SelectContent>
-                                            {["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"].map((p) => (
-                                                <SelectItem key={p} value={p}>{p}</SelectItem>
-                                            ))}
-                                        </SelectContent>
-                                    </Select>
-                                </Row>
-                                <Row label="Qualité">
-                                    <Select value={cp.qualityMode} onValueChange={(v) => setCp({ qualityMode: v as CompressSettings["qualityMode"] })}>
-                                        <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-                                        <SelectContent>
-                                            <SelectItem value="auto">Auto</SelectItem>
-                                            <SelectItem value="crf">CRF</SelectItem>
-                                            <SelectItem value="bitrate">Bitrate</SelectItem>
-                                        </SelectContent>
-                                    </Select>
-                                </Row>
-                                {cp.qualityMode === "crf" && (
-                                    <Row label="CRF">
-                                        <div className="flex items-center gap-2">
-                                            <input type="range" min="0" max="51" step="1"
-                                                value={cp.videoCrf}
-                                                onChange={(e) => setCp({ videoCrf: e.target.value })}
-                                                className="flex-1 h-1.5 accent-primary" />
-                                            <span className="text-xs w-6 text-center font-mono">{cp.videoCrf}</span>
-                                        </div>
-                                    </Row>
-                                )}
-                                {cp.qualityMode === "bitrate" && (
-                                    <Row label="Bitrate (kbps)">
-                                        <SmallInput value={cp.videoBitrateK} onChange={(v) => setCp({ videoBitrateK: v })} placeholder="2500" />
-                                    </Row>
-                                )}
-                                <Row label="FPS">
-                                    <Select value={cp.fps} onValueChange={(v) => setCp({ fps: v })}>
-                                        <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-                                        <SelectContent>
-                                            <SelectItem value="original">Original</SelectItem>
-                                            {["60", "30", "25", "24", "15", "10"].map((f) => (
-                                                <SelectItem key={f} value={f}>{f} fps</SelectItem>
-                                            ))}
-                                        </SelectContent>
-                                    </Select>
-                                </Row>
-                                <Row label="Profil">
-                                    <Select value={cp.videoProfile} onValueChange={(v) => setCp({ videoProfile: v })}>
-                                        <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-                                        <SelectContent>
-                                            <SelectItem value="auto">Auto</SelectItem>
-                                            <SelectItem value="baseline">Baseline</SelectItem>
-                                            <SelectItem value="main">Main</SelectItem>
-                                            <SelectItem value="high">High</SelectItem>
-                                        </SelectContent>
-                                    </Select>
-                                </Row>
-                                <Row label="Tune">
-                                    <Select value={cp.videoTune} onValueChange={(v) => setCp({ videoTune: v })}>
-                                        <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-                                        <SelectContent>
-                                            <SelectItem value="none">Aucun</SelectItem>
-                                            <SelectItem value="film">Film</SelectItem>
-                                            <SelectItem value="animation">Animation</SelectItem>
-                                            <SelectItem value="grain">Grain</SelectItem>
-                                            <SelectItem value="fastdecode">Décodage rapide</SelectItem>
-                                            <SelectItem value="zerolatency">Zéro latence</SelectItem>
-                                        </SelectContent>
-                                    </Select>
-                                </Row>
-                                <Row label="Format pixel">
-                                    <Select value={cp.videoPixelFormat} onValueChange={(v) => setCp({ videoPixelFormat: v })}>
-                                        <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-                                        <SelectContent>
-                                            <SelectItem value="auto">Auto</SelectItem>
-                                            <SelectItem value="yuv420p">yuv420p (compatible)</SelectItem>
-                                            <SelectItem value="yuv422p">yuv422p</SelectItem>
-                                            <SelectItem value="yuv444p">yuv444p</SelectItem>
-                                        </SelectContent>
-                                    </Select>
-                                </Row>
-                                <Row label="Codec audio">
-                                    <Select value={cp.audioCodec} onValueChange={(v) => setCp({ audioCodec: v })}>
-                                        <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-                                        <SelectContent>
-                                            <SelectItem value="original">Original</SelectItem>
-                                            <SelectItem value="aac">AAC</SelectItem>
-                                            <SelectItem value="libmp3lame">MP3</SelectItem>
-                                            <SelectItem value="libopus">Opus</SelectItem>
-                                            <SelectItem value="copy">Copier</SelectItem>
-                                        </SelectContent>
-                                    </Select>
-                                </Row>
-                                <Row label="Bitrate audio">
-                                    <Select value={cp.audioBitrate} onValueChange={(v) => setCp({ audioBitrate: v })}>
-                                        <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-                                        <SelectContent>
-                                            <SelectItem value="original">Original</SelectItem>
-                                            {["64k", "96k", "128k", "160k", "192k", "256k", "320k"].map((b) => (
-                                                <SelectItem key={b} value={b}>{b}</SelectItem>
-                                            ))}
-                                        </SelectContent>
-                                    </Select>
-                                </Row>
-                                <Row label="Canaux audio">
-                                    <Select value={cp.audioChannels} onValueChange={(v) => setCp({ audioChannels: v })}>
-                                        <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-                                        <SelectContent>
-                                            <SelectItem value="original">Original</SelectItem>
-                                            <SelectItem value="1">Mono</SelectItem>
-                                            <SelectItem value="2">Stéréo</SelectItem>
-                                            <SelectItem value="6">5.1 Surround</SelectItem>
-                                        </SelectContent>
-                                    </Select>
-                                </Row>
-                                <Row label="Sample rate">
-                                    <Select value={cp.audioSampleRate} onValueChange={(v) => setCp({ audioSampleRate: v })}>
-                                        <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-                                        <SelectContent>
-                                            <SelectItem value="original">Original</SelectItem>
-                                            <SelectItem value="22050">22050 Hz</SelectItem>
-                                            <SelectItem value="44100">44100 Hz</SelectItem>
-                                            <SelectItem value="48000">48000 Hz</SelectItem>
-                                        </SelectContent>
-                                    </Select>
-                                </Row>
-                                <div className="flex flex-col gap-2 pt-1 border-t border-border">
-                                    <div className="flex items-center justify-between">
-                                        <span className="text-xs">2-pass encoding</span>
-                                        <Switch checked={cp.twoPass} onCheckedChange={(v) => setCp({ twoPass: v })} />
-                                    </div>
-                                    <div className="flex items-center justify-between">
-                                        <span className="text-xs">Faststart (streaming)</span>
-                                        <Switch checked={cp.faststart} onCheckedChange={(v) => setCp({ faststart: v })} />
-                                    </div>
-                                    <div className="flex items-center justify-between">
-                                        <span className="text-xs">Désentrelacement</span>
-                                        <Switch checked={cp.deinterlace} onCheckedChange={(v) => setCp({ deinterlace: v })} />
-                                    </div>
-                                </div>
-                            </>
-                        )}
-                    </Section>}
-
                     {isAdvanced && (
-                        <>
-                            <Row label="Résolution max">
-                                <div className="flex items-center gap-1.5">
-                                    <SmallInput value={cp.videoResizeWidth} onChange={(v) => setCp({ videoResizeWidth: v })} placeholder="Largeur" />
-                                    <span className="text-xs text-muted-foreground">×</span>
-                                    <SmallInput value={cp.videoResizeHeight} onChange={(v) => setCp({ videoResizeHeight: v })} placeholder="Hauteur" />
+                        <div className="rounded-xl border border-border bg-card/60 p-3 space-y-3">
+                            <div className="flex items-center justify-between">
+                                <span className="text-xs font-semibold flex items-center gap-1.5">
+                                    <IconSliders size={12} /> Paramètres techniques
+                                </span>
+                                <Switch checked={cp.advancedEnabled} onCheckedChange={(v) => setCp({ advancedEnabled: v })} />
+                            </div>
+                            {cp.advancedEnabled && (
+                                <div className="space-y-3 pt-1 border-t border-border">
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <div className="space-y-1.5">
+                                            <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold">Codec vidéo</span>
+                                            <Select value={cp.videoCodec} onValueChange={(v) => setCp({ videoCodec: v })}>
+                                                <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                                                <SelectContent>
+                                                    <SelectItem value="libx264">H.264</SelectItem>
+                                                    <SelectItem value="libx265">H.265 / HEVC</SelectItem>
+                                                    <SelectItem value="libvpx-vp9">VP9</SelectItem>
+                                                    <SelectItem value="libaom-av1">AV1</SelectItem>
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
+                                        <div className="space-y-1.5">
+                                            <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold">Preset</span>
+                                            <Select value={cp.preset} onValueChange={(v) => setCp({ preset: v })}>
+                                                <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                                                <SelectContent>
+                                                    {["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"].map((p) => (
+                                                        <SelectItem key={p} value={p}>{p}</SelectItem>
+                                                    ))}
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
+                                        <div className="space-y-1.5">
+                                            <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold">Qualité</span>
+                                            <Select value={cp.qualityMode} onValueChange={(v) => setCp({ qualityMode: v as CompressSettings["qualityMode"] })}>
+                                                <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                                                <SelectContent>
+                                                    <SelectItem value="auto">Auto</SelectItem>
+                                                    <SelectItem value="crf">CRF</SelectItem>
+                                                    <SelectItem value="bitrate">Bitrate</SelectItem>
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
+                                        <div className="space-y-1.5">
+                                            <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold">FPS</span>
+                                            <Select value={cp.fps} onValueChange={(v) => setCp({ fps: v })}>
+                                                <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                                                <SelectContent>
+                                                    <SelectItem value="original">Original</SelectItem>
+                                                    {["60", "30", "25", "24", "15", "10"].map((f) => (
+                                                        <SelectItem key={f} value={f}>{f} fps</SelectItem>
+                                                    ))}
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
+                                    </div>
+
+                                    {cp.qualityMode === "crf" && (
+                                        <Row label="CRF">
+                                            <div className="flex items-center gap-2">
+                                                <input type="range" min="0" max="51" step="1"
+                                                    value={cp.videoCrf}
+                                                    onChange={(e) => setCp({ videoCrf: e.target.value })}
+                                                    className="flex-1 h-1.5 accent-primary" />
+                                                <span className="text-xs w-6 text-center font-mono">{cp.videoCrf}</span>
+                                            </div>
+                                        </Row>
+                                    )}
+                                    {cp.qualityMode === "bitrate" && (
+                                        <Row label="Bitrate (kbps)">
+                                            <SmallInput value={cp.videoBitrateK} onChange={(v) => setCp({ videoBitrateK: v })} placeholder="2500" />
+                                        </Row>
+                                    )}
+
+                                    <div className="grid grid-cols-2 gap-2 pt-1 border-t border-border">
+                                        <div className="space-y-1.5">
+                                            <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold">Codec audio</span>
+                                            <Select value={cp.audioCodec} onValueChange={(v) => setCp({ audioCodec: v })}>
+                                                <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                                                <SelectContent>
+                                                    <SelectItem value="original">Original</SelectItem>
+                                                    <SelectItem value="aac">AAC</SelectItem>
+                                                    <SelectItem value="libmp3lame">MP3</SelectItem>
+                                                    <SelectItem value="libopus">Opus</SelectItem>
+                                                    <SelectItem value="copy">Copier</SelectItem>
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
+                                        <div className="space-y-1.5">
+                                            <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold">Bitrate audio</span>
+                                            <Select value={cp.audioBitrate} onValueChange={(v) => setCp({ audioBitrate: v })}>
+                                                <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                                                <SelectContent>
+                                                    <SelectItem value="original">Original</SelectItem>
+                                                    {["64k", "96k", "128k", "160k", "192k", "256k", "320k"].map((b) => (
+                                                        <SelectItem key={b} value={b}>{b}</SelectItem>
+                                                    ))}
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
+                                    </div>
+
+                                    <div className="space-y-2 pt-1 border-t border-border">
+                                        <div className="flex items-center justify-between">
+                                            <span className="text-xs">Résolution max</span>
+                                            <div className="flex items-center gap-1.5">
+                                                <SmallInput className="w-20" value={cp.videoResizeWidth} onChange={(v) => setCp({ videoResizeWidth: v })} placeholder="L" />
+                                                <span className="text-xs text-muted-foreground">×</span>
+                                                <SmallInput className="w-20" value={cp.videoResizeHeight} onChange={(v) => setCp({ videoResizeHeight: v })} placeholder="H" />
+                                            </div>
+                                        </div>
+                                        <div className="flex items-center justify-between">
+                                            <span className="text-xs">Taille image max</span>
+                                            <SmallInput className="w-28" value={cp.imageMaxSize} onChange={(v) => setCp({ imageMaxSize: v })} placeholder="1920" />
+                                        </div>
+                                        <div className="flex items-center justify-between">
+                                            <span className="text-xs">2-pass encoding</span>
+                                            <Switch checked={cp.twoPass} onCheckedChange={(v) => setCp({ twoPass: v })} />
+                                        </div>
+                                        <div className="flex items-center justify-between">
+                                            <span className="text-xs">Faststart (streaming)</span>
+                                            <Switch checked={cp.faststart} onCheckedChange={(v) => setCp({ faststart: v })} />
+                                        </div>
+                                        <div className="flex items-center justify-between">
+                                            <span className="text-xs">Désentrelacement</span>
+                                            <Switch checked={cp.deinterlace} onCheckedChange={(v) => setCp({ deinterlace: v })} />
+                                        </div>
+                                    </div>
                                 </div>
-                            </Row>
-                            <Row label="Taille image max">
-                                <SmallInput value={cp.imageMaxSize} onChange={(v) => setCp({ imageMaxSize: v })} placeholder="ex: 1920" />
-                            </Row>
-                        </>
+                            )}
+                        </div>
                     )}
                 </div>
             )}
 
             {/* ─── Global options ─── */}
-            <div className="border-t border-border pt-4 space-y-3">
-                {isAdvanced && <div>
-                    <label className="text-xs text-muted-foreground uppercase tracking-wide font-semibold block mb-2">
+            <div className="border-t border-border pt-5 space-y-4">
+                {isAdvanced && <div className="space-y-2">
+                    <label className="text-xs text-muted-foreground uppercase tracking-wide font-semibold block">
                         Mode de sortie
                     </label>
                     <SlidingSegment
                         value={outputMode}
                         onChange={onOutputModeChange}
-                        buttonClassName="py-1.5 px-2"
+                        buttonClassName="py-2 px-3"
                         options={[
                             { value: "global", label: "Tous pareils" },
                             { value: "per-file", label: "Par fichier" },
@@ -1440,11 +1483,11 @@ export function ConfigPanel({
                     />
                 </div>}
 
-                <div className="space-y-2 rounded-lg border border-border bg-muted/35 p-3">
+                <div className="space-y-3 rounded-xl border border-border bg-muted/35 p-4">
                     <div className="flex items-center justify-between gap-3">
                         <span className="text-xs font-medium">Export</span>
                         <Select value={exportMode} onValueChange={(v) => onExportModeChange(v as ExportMode)}>
-                            <SelectTrigger className="h-8 w-[132px] bg-card text-xs">
+                            <SelectTrigger className="h-9 w-[140px] bg-card text-xs">
                                 <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
@@ -1468,9 +1511,9 @@ export function ConfigPanel({
             <Button
                 onClick={onStart}
                 disabled={!canStart || isProcessing}
-                className="w-full h-11 text-sm font-semibold gap-2 shadow-sm"
+                className="w-full h-12 text-sm font-semibold gap-2 shadow-sm rounded-xl"
             >
-                <IconPlay size={15} />
+                <IconPlay size={16} />
                 {isProcessing
                     ? "Traitement en cours…"
                     : currentAction === "convert"

@@ -86,6 +86,14 @@ export interface ConvertSettings {
   videoDenoise: "none" | "light" | "medium" | "strong";
   videoHDRtoSDR: boolean;
   videoRemoveAudio: boolean;
+  // Video color grading (FFmpeg eq + colortemperature + hue)
+  videoExposure: string;     // -2 to +2 (EV)
+  videoContrast: string;     // -100 to +100 (%)
+  videoSaturation: string;   // -100 to +100 (%)
+  videoTemperature: string;  // -100 to +100 (cool/warm)
+  videoHue: string;          // -180 to +180 (degrees)
+  // Image upscaler (Lanczos): "1" / "2" / "3" / "4"
+  imageUpscale: string;
   // Mini video editor
   videoTrimStart: string;
   videoTrimEnd: string;

@@ -100,9 +100,10 @@ export function useConverter() {
     const raw = localStorage.getItem(LS_EXPORT_MODE);
     return raw === "files" ? "files" : "zip";
   });
-  const [uiMode, setUiModeState] = useState<"simple" | "pro">(() => {
+  const [uiMode, setUiModeState] = useState<"simple" | "pro" | "color-lab">(() => {
     const raw = localStorage.getItem(LS_UI_MODE);
-    return raw === "pro" ? "pro" : "simple";
+    if (raw === "pro" || raw === "color-lab") return raw;
+    return "simple";
   });
   const pollingRef = useRef<number | null>(null);
   const uploadingRef = useRef(false);
@@ -128,7 +129,7 @@ export function useConverter() {
     setExportModeState(val);
   }, []);
 
-  const setUiMode = useCallback((val: "simple" | "pro") => {
+  const setUiMode = useCallback((val: "simple" | "pro" | "color-lab") => {
     localStorage.setItem(LS_UI_MODE, val);
     setUiModeState(val);
   }, []);
@@ -211,6 +212,12 @@ export function useConverter() {
     videoDenoise: "none",
     videoHDRtoSDR: false,
     videoRemoveAudio: false,
+    videoExposure: "0",
+    videoContrast: "0",
+    videoSaturation: "0",
+    videoTemperature: "0",
+    videoHue: "0",
+    imageUpscale: "1",
     videoTrimStart: "",
     videoTrimEnd: "",
     overlayText: "",
@@ -570,6 +577,31 @@ export function useConverter() {
           if (effectiveConvertSettings.videoRemoveAudio) {
             formData.append("remove_audio", "true");
           }
+          // Video color grading
+          if (parseFloat(effectiveConvertSettings.videoExposure) !== 0) {
+            formData.append("video_exposure", effectiveConvertSettings.videoExposure);
+          }
+          if (parseFloat(effectiveConvertSettings.videoContrast) !== 0) {
+            formData.append("video_contrast", effectiveConvertSettings.videoContrast);
+          }
+          if (parseFloat(effectiveConvertSettings.videoSaturation) !== 0) {
+            formData.append("video_saturation", effectiveConvertSettings.videoSaturation);
+          }
+          if (parseFloat(effectiveConvertSettings.videoTemperature) !== 0) {
+            formData.append("video_temperature", effectiveConvertSettings.videoTemperature);
+          }
+          if (parseFloat(effectiveConvertSettings.videoHue) !== 0) {
+            formData.append("video_hue", effectiveConvertSettings.videoHue);
+          }
+        }
+
+        // Image upscaler
+        if (
+          effectiveConvertSettings.category === "image" &&
+          effectiveConvertSettings.imageUpscale &&
+          effectiveConvertSettings.imageUpscale !== "1"
+        ) {
+          formData.append("image_upscale", effectiveConvertSettings.imageUpscale);
         }
 
         // GIF settings
