@@ -33,12 +33,15 @@ export interface VideoGrade {
     grain: number          // 0..100
     chromatic: number      // 0..20 px
     glow: number           // 0..100
+    // Output controls
+    targetFps?: number | null  // null/undefined = keep original
 }
 
 const ZERO_GRADE: VideoGrade = {
     exposure: 0, contrast: 0, highlights: 0, shadows: 0, whites: 0, blacks: 0,
     saturation: 0, temperature: 0, tint: 0, hue: 0,
     sharpness: 0, vignette: 0, grain: 0, chromatic: 0, glow: 0,
+    targetFps: null,
 }
 
 async function getFFmpeg(onProgress?: (msg: string) => void): Promise<FFmpeg> {
@@ -146,6 +149,7 @@ export async function processVideoClientSide(
     outputFormat: string,
     grade: Partial<VideoGrade> = {},
     onProgress?: (msg: string, ratio?: number) => void,
+    lutFile?: File | null,
 ): Promise<{ blob: Blob; filename: string }> {
     const ffmpeg = await getFFmpeg(onProgress)
     const g: VideoGrade = { ...ZERO_GRADE, ...grade }
@@ -159,7 +163,14 @@ export async function processVideoClientSide(
     onProgress?.('Préparation du fichier…')
     await ffmpeg.writeFile(inputName, await fetchFile(file))
 
-    // Progress listener for the duration of this conversion.
+    // Optional .cube LUT: write to the wasm FS and prepend lut3d filter.
+    let lutName = ''
+    if (lutFile) {
+        lutName = 'grade.cube'
+        await ffmpeg.writeFile(lutName, await fetchFile(lutFile))
+        filters.unshift(`lut3d=${lutName}`)
+    }
+
     const progressHandler = ({ progress }: { progress: number }) => {
         onProgress?.(`Conversion ${Math.round(progress * 100)} %`, progress)
     }
@@ -173,6 +184,9 @@ export async function processVideoClientSide(
         args.push('-c:v', codec)
         if (codec === 'libx264') args.push('-preset', 'veryfast', '-crf', '23')
         if (codec === 'libvpx-vp9') args.push('-b:v', '0', '-crf', '32')
+        if (g.targetFps && g.targetFps > 0) {
+            args.push('-r', String(g.targetFps))
+        }
         // Audio passthrough where possible, else AAC.
         if (ext !== 'gif') {
             args.push('-c:a', 'aac', '-b:a', '128k')
@@ -190,6 +204,7 @@ export async function processVideoClientSide(
     // Cleanup
     try { await ffmpeg.deleteFile(inputName) } catch { /* ignore */ }
     try { await ffmpeg.deleteFile(outputName) } catch { /* ignore */ }
+    if (lutName) { try { await ffmpeg.deleteFile(lutName) } catch { /* ignore */ } }
 
     const mime =
         ext === 'mp4' || ext === 'm4v' ? 'video/mp4' :

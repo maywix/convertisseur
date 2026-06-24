@@ -597,6 +597,8 @@ export function useConverter() {
 
         if (canDoClientVideo) {
           const { processVideoClientSide } = await import("@/lib/clientVideoProcessor");
+          const fpsRaw = effectiveConvertSettings.videoFps || "";
+          const targetFps = fpsRaw && fpsRaw !== "original" ? parseInt(fpsRaw, 10) || null : null;
           const vg = {
             exposure: parseFloat(effectiveConvertSettings.photoExposure || "0") || 0,
             contrast: parseFloat(effectiveConvertSettings.photoContrast || "0") || 0,
@@ -609,6 +611,7 @@ export function useConverter() {
             tint: parseFloat(effectiveConvertSettings.photoTint || "0") || 0,
             hue: 0, sharpness: 0,
             vignette: 0, grain: 0, chromatic: 0, glow: 0,
+            targetFps,
           };
           setQueue((prev) =>
             prev.map((it) => it.id === item.id ? { ...it, status: "processing", progress: 5 } : it),
@@ -622,6 +625,7 @@ export function useConverter() {
                 );
               }
             },
+            effectiveConvertSettings.lutFile || null,
           );
           const url = URL.createObjectURL(blob);
           setQueue((prev) =>

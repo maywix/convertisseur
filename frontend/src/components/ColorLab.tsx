@@ -11,8 +11,21 @@ import {
 } from '@/components/icons'
 import { Button } from '@/components/ui/button'
 import { processImageClientSide, isClientSupportedFormat, type ClientGrade } from '@/lib/clientProcessor'
+import { parseCubeLut, type Lut3D } from '@/lib/cubeLut'
+import { createLutRenderer, gradeToExtraFilter, type LutRenderer } from '@/lib/lutGLPreview'
 import { cn } from '@/lib/utils'
 import { formatSize, getFileType } from '@/types'
+
+// ──────────────────────────────────────────────────────────
+// Color Lab — multi-file colour grading workspace.
+//
+// Highlights:
+//   - per-file Grade objects, navigated with ← / → buttons or arrow keys
+//   - LUT (.cube) can apply globally (one for all videos) or per file
+//   - live WebGL2 LUT preview on video (LUT + brightness/contrast/sat/hue/vignette
+//     applied in a fragment shader, real-time at native frame rate)
+//   - FPS slider 1..original (estimated client-side via rVFC when available)
+// ──────────────────────────────────────────────────────────
 
 type ProcessingMode = 'frontend' | 'backend'
 
@@ -20,45 +33,43 @@ interface ColorLabProps {
     processingMode: ProcessingMode
 }
 
-// ──────────────────────────────────────────────────────────
-// Color Lab — Lightroom + DaVinci-style grading + effects + LUT batch.
-// Live CSS-filter preview while the user moves sliders. Final render is done
-// server-side (FFmpeg for video, Pillow for image) for accurate output.
-// ──────────────────────────────────────────────────────────
-
 type MediaKind = 'image' | 'video'
 
 interface Grade {
     // Light
-    exposure: number       // -2..+2 EV
-    contrast: number       // -100..+100
-    highlights: number     // -100..+100
-    shadows: number        // -100..+100
-    whites: number         // -100..+100
-    blacks: number         // -100..+100
-    // Color (basic)
-    saturation: number     // -100..+100
-    temperature: number    // -100..+100 cool/warm
-    tint: number           // -100..+100 green/magenta
-    hue: number            // -180..+180°
+    exposure: number
+    contrast: number
+    highlights: number
+    shadows: number
+    whites: number
+    blacks: number
+    // Color
+    saturation: number
+    temperature: number
+    tint: number
+    hue: number
     // Color wheels (DaVinci LGG)
-    liftColor: string      // hex, neutral = #808080
-    liftAmount: number     // 0..2 (intensity multiplier)
+    liftColor: string
+    liftAmount: number
     gammaColor: string
     gammaAmount: number
     gainColor: string
     gainAmount: number
     // Detail
-    sharpness: number      // -100..+100
+    sharpness: number
     // Effects
-    vignette: number       // 0..100
-    glow: number           // 0..100
-    grain: number          // 0..100
-    chromatic: number      // 0..20 (px)
+    vignette: number
+    glow: number
+    grain: number
+    chromatic: number
     // Color remover
     removeEnabled: boolean
-    removeColor: string    // hex
-    removeTolerance: number // 0..100
+    removeColor: string
+    removeTolerance: number
+    // Output
+    targetFps: number | null   // null = original; 1..originalFps otherwise
+    // Per-file LUT (used only when scope === 'per-file')
+    lutFile: File | null
 }
 
 const NEUTRAL = '#808080'
@@ -73,6 +84,8 @@ const DEFAULT_GRADE: Grade = {
     sharpness: 0,
     vignette: 0, glow: 0, grain: 0, chromatic: 0,
     removeEnabled: false, removeColor: '#ffffff', removeTolerance: 15,
+    targetFps: null,
+    lutFile: null,
 }
 
 const VIDEO_OUTPUTS = ['mp4', 'webm', 'mov', 'mkv'] as const
@@ -94,31 +107,9 @@ function gradeToCssFilter(g: Grade): string {
     const contrast = clamp(1 + g.contrast / 100 + g.highlights * -0.002 + g.shadows * -0.002, 0, 2)
     const saturate = clamp(1 + g.saturation / 100, 0, 3)
     const hueDeg = clamp(g.hue + g.tint * 0.45, -180, 180)
-    // Glow approximated by a small blur kernel (CSS blur).
     const blurPx = g.glow > 0 ? (g.glow / 100) * 3.5 : 0
     const blurPart = blurPx > 0 ? ` blur(${blurPx.toFixed(2)}px)` : ''
     return `brightness(${brightness.toFixed(3)}) contrast(${contrast.toFixed(3)}) saturate(${saturate.toFixed(3)}) hue-rotate(${hueDeg}deg)${blurPart}`
-}
-
-function temperatureToOverlay(temp: number): { rgba: string; mixBlend: 'multiply' | 'normal' } {
-    const amount = clamp(Math.abs(temp) / 100, 0, 1)
-    if (amount < 0.01) return { rgba: 'transparent', mixBlend: 'normal' }
-    const a = (amount * 0.30).toFixed(3)
-    return {
-        rgba: temp >= 0 ? `rgba(255, 170, 80, ${a})` : `rgba(100, 160, 255, ${a})`,
-        mixBlend: 'multiply',
-    }
-}
-
-function lggToOverlay(color: string, amount: number, alphaMax: number): { rgba: string; mixBlend: 'soft-light' | 'normal' } {
-    // Tints the preview with the picked colour for LGG.
-    const c = color.replace('#', '')
-    if (c.length !== 6 || color.toLowerCase() === '#808080') return { rgba: 'transparent', mixBlend: 'normal' }
-    const r = parseInt(c.substring(0, 2), 16)
-    const g = parseInt(c.substring(2, 4), 16)
-    const b = parseInt(c.substring(4, 6), 16)
-    const a = clamp(amount * alphaMax, 0, 0.5).toFixed(3)
-    return { rgba: `rgba(${r}, ${g}, ${b}, ${a})`, mixBlend: 'soft-light' }
 }
 
 function Slider({
@@ -155,28 +146,16 @@ function ColorSwatch({
         <div className="rounded-lg border border-border bg-background/40 p-2.5 space-y-2">
             <div className="flex items-center justify-between">
                 <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</span>
-                <button
-                    type="button"
-                    onClick={onReset}
-                    className="text-[10px] text-muted-foreground hover:text-destructive"
-                >
-                    Reset
-                </button>
+                <button type="button" onClick={onReset} className="text-[10px] text-muted-foreground hover:text-destructive">Reset</button>
             </div>
             <div className="flex items-center gap-2">
                 <input
-                    type="color"
-                    value={color}
+                    type="color" value={color}
                     onChange={(e) => onColorChange(e.target.value)}
                     className="h-9 w-9 shrink-0 rounded-md border border-border bg-background cursor-pointer"
                 />
                 <div className="flex-1">
-                    <Slider
-                        label="Intensité"
-                        value={amount}
-                        min={0} max={2} step={0.05}
-                        onChange={onAmountChange}
-                    />
+                    <Slider label="Intensité" value={amount} min={0} max={2} step={0.05} onChange={onAmountChange} />
                 </div>
             </div>
         </div>
@@ -190,8 +169,7 @@ function CollapsibleSection({
     return (
         <div className="overflow-hidden rounded-lg border border-border bg-background/40">
             <button
-                type="button"
-                onClick={() => setOpen((v) => !v)}
+                type="button" onClick={() => setOpen((v) => !v)}
                 className="flex w-full items-center justify-between px-3 py-2 text-left transition-colors hover:bg-muted/40"
             >
                 <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{title}</span>
@@ -223,14 +201,9 @@ async function uploadAndConvert(
     fd.append('file', file)
     fd.append('action', 'convert')
     fd.append('format', targetFormat)
+    if (lutFile) fd.append('lut_file', lutFile)
 
-    if (lutFile) {
-        fd.append('lut_file', lutFile)
-    }
-
-    // Lightroom-style sliders
     const slidersMap: Record<string, [keyof Grade, string, string]> = {
-        // sliderKey: [Grade key, video param name, image param name]
         exposure:    ['exposure', 'video_exposure', 'photo_exposure'],
         contrast:    ['contrast', 'video_contrast', 'photo_contrast'],
         highlights:  ['highlights', 'video_highlights', 'photo_highlights'],
@@ -253,7 +226,6 @@ async function uploadAndConvert(
     if (kind === 'video' && grade.hue !== 0) fd.append('video_hue', String(grade.hue))
 
     if (kind === 'video') {
-        // LGG color wheels
         if (grade.liftColor.toLowerCase() !== NEUTRAL) {
             fd.append('video_lift_color', grade.liftColor)
             fd.append('video_lift_amount', String(grade.liftAmount))
@@ -266,14 +238,13 @@ async function uploadAndConvert(
             fd.append('video_gain_color', grade.gainColor)
             fd.append('video_gain_amount', String(grade.gainAmount))
         }
-        // Effects
         if (grade.vignette > 0) fd.append('video_vignette', String(grade.vignette))
         if (grade.glow > 0) fd.append('video_glow', String(grade.glow))
         if (grade.grain > 0) fd.append('video_grain', String(grade.grain))
         if (grade.chromatic > 0) fd.append('video_chromatic', String(grade.chromatic))
+        if (grade.targetFps && grade.targetFps > 0) fd.append('fps', String(grade.targetFps))
     }
 
-    // Color remover (image + video)
     if (grade.removeEnabled && grade.removeColor) {
         fd.append('color_remove_color', grade.removeColor)
         fd.append('color_remove_tolerance', String(grade.removeTolerance))
@@ -300,7 +271,6 @@ async function uploadAndConvert(
 }
 
 interface BatchItem {
-    file: File
     state: 'idle' | 'busy' | 'done' | 'error'
     progress: string
     downloadUrl?: string
@@ -308,37 +278,163 @@ interface BatchItem {
     error?: string
 }
 
+// Estimate video FPS via requestVideoFrameCallback if available, falling back to 30.
+async function estimateFps(video: HTMLVideoElement): Promise<number> {
+    return new Promise((resolve) => {
+        const w = video as HTMLVideoElement & {
+            requestVideoFrameCallback?: (cb: (now: number, meta: { mediaTime: number }) => void) => void
+        }
+        if (typeof w.requestVideoFrameCallback !== 'function') {
+            resolve(30)
+            return
+        }
+        let count = 0
+        let first = -1
+        const onFrame = (_now: number, meta: { mediaTime: number }) => {
+            if (first < 0) first = meta.mediaTime
+            count++
+            const dt = meta.mediaTime - first
+            if (count > 30 || dt > 1.2) {
+                const fps = count / Math.max(0.1, dt)
+                resolve(Math.round(Math.max(1, Math.min(240, fps))))
+                return
+            }
+            w.requestVideoFrameCallback!(onFrame)
+        }
+        w.requestVideoFrameCallback(onFrame)
+        const wasPaused = video.paused
+        video.muted = true
+        video.play().catch(() => resolve(30))
+        // Restore pause shortly after if we paused before
+        setTimeout(() => { if (wasPaused) video.pause() }, 1500)
+    })
+}
+
 export function ColorLab({ processingMode }: ColorLabProps) {
+    // Files + per-file state
     const [files, setFiles] = useState<File[]>([])
-    const [previewUrl, setPreviewUrl] = useState<string | null>(null)
-    const [grade, setGrade] = useState<Grade>(DEFAULT_GRADE)
-    const [lutFile, setLutFile] = useState<File | null>(null)
+    const [grades, setGrades] = useState<Grade[]>([])
+    const [activeIndex, setActiveIndex] = useState(0)
     const [batch, setBatch] = useState<BatchItem[]>([])
+
+    // LUT scope & global LUT file
+    const [lutScope, setLutScope] = useState<'global' | 'per-file'>('global')
+    const [globalLutFile, setGlobalLutFile] = useState<File | null>(null)
+    const [parsedGlobalLut, setParsedGlobalLut] = useState<Lut3D | null>(null)
+    const parsedLutCacheRef = useRef<Map<string, Lut3D>>(new Map())
+
+    // FPS estimation
+    const [originalFps, setOriginalFps] = useState<Record<number, number>>({})
+
+    // Preview / runtime
+    const [previewUrl, setPreviewUrl] = useState<string | null>(null)
     const [busy, setBusy] = useState(false)
     const [busyMessage, setBusyMessage] = useState('')
     const [err, setErr] = useState<string | null>(null)
     const [outputFormat, setOutputFormat] = useState<string>('')
     const fileInputRef = useRef<HTMLInputElement>(null)
     const lutInputRef = useRef<HTMLInputElement>(null)
+    const videoRef = useRef<HTMLVideoElement | null>(null)
+    const glCanvasRef = useRef<HTMLCanvasElement | null>(null)
+    const lutRendererRef = useRef<LutRenderer | null>(null)
 
-    // The "primary" file is the first one — used for live preview.
-    const primaryFile = files[0] || null
-    const kind: MediaKind | null = primaryFile ? detectKind(primaryFile) : null
-    const isMultiBatch = files.length > 1
+    const file = files[activeIndex] || null
+    const grade = grades[activeIndex] || DEFAULT_GRADE
+    const kind: MediaKind | null = file ? detectKind(file) : null
     const isVideo = kind === 'video'
 
+    // Active LUT (depending on scope)
+    const activeLutFile = lutScope === 'global' ? globalLutFile : grade.lutFile
+    const activeParsedLut = useMemo(() => {
+        if (!activeLutFile) return null
+        const key = `${activeLutFile.name}-${activeLutFile.size}-${activeLutFile.lastModified}`
+        if (parsedLutCacheRef.current.has(key)) return parsedLutCacheRef.current.get(key)!
+        return null
+    }, [activeLutFile])
+
+    // Object URL for the active preview
     useEffect(() => {
-        if (!primaryFile) { setPreviewUrl(null); return }
-        const url = URL.createObjectURL(primaryFile)
+        if (!file) { setPreviewUrl(null); return }
+        const url = URL.createObjectURL(file)
         setPreviewUrl(url)
         return () => URL.revokeObjectURL(url)
-    }, [primaryFile])
+    }, [file])
 
+    // Pick a reasonable default output format whenever the active file changes
     useEffect(() => {
-        if (!primaryFile) return
-        if (kind === 'image') setOutputFormat('png')
-        else if (kind === 'video') setOutputFormat('mp4')
-    }, [primaryFile, kind])
+        if (!file) return
+        if (kind === 'image') setOutputFormat((prev) => prev || 'png')
+        else if (kind === 'video') setOutputFormat((prev) => prev || 'mp4')
+    }, [file, kind])
+
+    // Parse the active LUT once (cache by file identity)
+    useEffect(() => {
+        if (!activeLutFile) {
+            if (lutScope === 'global') setParsedGlobalLut(null)
+            return
+        }
+        const key = `${activeLutFile.name}-${activeLutFile.size}-${activeLutFile.lastModified}`
+        if (parsedLutCacheRef.current.has(key)) {
+            if (lutScope === 'global') setParsedGlobalLut(parsedLutCacheRef.current.get(key)!)
+            return
+        }
+        activeLutFile.text().then((txt) => {
+            try {
+                const lut = parseCubeLut(txt)
+                parsedLutCacheRef.current.set(key, lut)
+                if (lutScope === 'global') setParsedGlobalLut(lut)
+            } catch (e) {
+                console.warn('[lut] parse failed:', e)
+            }
+        })
+    }, [activeLutFile, lutScope])
+
+    // WebGL renderer lifecycle — when active file is video and refs exist
+    useEffect(() => {
+        if (!isVideo || !videoRef.current || !glCanvasRef.current) return
+        const r = createLutRenderer(glCanvasRef.current, videoRef.current)
+        if (!r) return
+        lutRendererRef.current = r
+        r.start()
+        return () => { r.stop(); lutRendererRef.current = null }
+    }, [isVideo, file])
+
+    // Push LUT + filter into renderer whenever they change
+    useEffect(() => {
+        if (!lutRendererRef.current) return
+        lutRendererRef.current.setLut(activeParsedLut || parsedGlobalLut || null)
+        lutRendererRef.current.setExtraFilter(
+            gradeToExtraFilter({
+                exposure: grade.exposure, contrast: grade.contrast, saturation: grade.saturation,
+                hue: grade.hue, tint: grade.tint, vignette: grade.vignette,
+            }),
+        )
+    }, [grade, activeParsedLut, parsedGlobalLut])
+
+    // Estimate FPS for the currently active video once it can play
+    useEffect(() => {
+        if (!isVideo || !videoRef.current || originalFps[activeIndex]) return
+        const v = videoRef.current
+        const onCanPlay = () => {
+            estimateFps(v).then((fps) => {
+                setOriginalFps((prev) => ({ ...prev, [activeIndex]: fps }))
+            })
+        }
+        if (v.readyState >= 2) onCanPlay()
+        else v.addEventListener('loadeddata', onCanPlay, { once: true })
+        return () => v.removeEventListener('loadeddata', onCanPlay)
+    }, [isVideo, activeIndex, originalFps])
+
+    // Keyboard arrows to navigate
+    useEffect(() => {
+        const onKey = (e: KeyboardEvent) => {
+            if ((e.target as HTMLElement)?.tagName === 'INPUT') return
+            if (e.key === 'ArrowLeft') setActiveIndex((i) => Math.max(0, i - 1))
+            else if (e.key === 'ArrowRight') setActiveIndex((i) => Math.min(files.length - 1, i + 1))
+        }
+        window.addEventListener('keydown', onKey)
+        return () => window.removeEventListener('keydown', onKey)
+    }, [files.length])
 
     const handlePick = (incoming: FileList | File[] | null) => {
         if (!incoming) return
@@ -348,13 +444,8 @@ export function ColorLab({ processingMode }: ColorLabProps) {
             return
         }
         setErr(null)
-        // Batch only allowed when LUT is loaded OR if user explicitly picks multiple
-        if (lutFile || arr.length > 1) {
-            setFiles((prev) => [...prev, ...arr])
-        } else {
-            setFiles(arr.slice(0, 1))
-            setGrade(DEFAULT_GRADE)
-        }
+        setFiles((prev) => [...prev, ...arr])
+        setGrades((prev) => [...prev, ...arr.map(() => ({ ...DEFAULT_GRADE }))])
     }
 
     const onDrop = (e: React.DragEvent) => {
@@ -364,71 +455,106 @@ export function ColorLab({ processingMode }: ColorLabProps) {
     }
     const onDragOver = (e: React.DragEvent) => e.preventDefault()
 
-    const cssFilter = useMemo(() => gradeToCssFilter(grade), [grade])
-    const tempOverlay = useMemo(() => temperatureToOverlay(grade.temperature), [grade.temperature])
-    const liftOverlay = useMemo(() => lggToOverlay(grade.liftColor, grade.liftAmount, 0.20), [grade.liftColor, grade.liftAmount])
-    const gainOverlay = useMemo(() => lggToOverlay(grade.gainColor, grade.gainAmount, 0.20), [grade.gainColor, grade.gainAmount])
-
     const updateGrade = useCallback((patch: Partial<Grade>) => {
-        setGrade((g) => ({ ...g, ...patch }))
-    }, [])
+        setGrades((prev) => prev.map((g, i) => (i === activeIndex ? { ...g, ...patch } : g)))
+    }, [activeIndex])
 
-    // Convert one file, picking the runtime based on the global processingMode.
-    const convertOne = useCallback(async (
-        file: File,
-        fmt: string,
-        fileKind: MediaKind,
-        progress: (m: string) => void,
-    ): Promise<{ downloadUrl: string; filename: string }> => {
-        // Frontend path: images only, no LUT (we don't have a CSS-side LUT yet).
-        if (
-            processingMode === 'frontend' &&
-            fileKind === 'image' &&
-            !lutFile &&
-            isClientSupportedFormat(fmt)
-        ) {
-            const cg: ClientGrade = {
-                exposure: grade.exposure, contrast: grade.contrast,
-                highlights: grade.highlights, shadows: grade.shadows,
-                whites: grade.whites, blacks: grade.blacks,
-                saturation: grade.saturation, temperature: grade.temperature, tint: grade.tint,
-                sharpness: grade.sharpness,
-                vignette: grade.vignette, grain: grade.grain,
-                chromatic: grade.chromatic, glow: grade.glow,
-                removeEnabled: grade.removeEnabled,
-                removeColor: grade.removeColor,
-                removeTolerance: grade.removeTolerance,
-            }
-            const { blob, filename } = await processImageClientSide(file, cg, fmt, progress)
-            const url = URL.createObjectURL(blob)
-            return { downloadUrl: url, filename }
-        }
-        // Backend path: everything else.
-        return uploadAndConvert(file, fmt, grade, fileKind, lutFile, progress)
-    }, [processingMode, grade, lutFile])
+    const removeFile = (idx: number) => {
+        setFiles((prev) => prev.filter((_, i) => i !== idx))
+        setGrades((prev) => prev.filter((_, i) => i !== idx))
+        setBatch((prev) => prev.filter((_, i) => i !== idx))
+        setActiveIndex((curr) => {
+            if (curr > idx) return curr - 1
+            if (curr >= files.length - 1) return Math.max(0, files.length - 2)
+            return curr
+        })
+    }
+
+    const cssFilter = useMemo(() => gradeToCssFilter(grade), [grade])
 
     const apply = useCallback(async () => {
-        if (files.length === 0 || !kind || !outputFormat) return
+        if (files.length === 0 || !outputFormat) return
         setBusy(true); setErr(null)
         try {
-            if (files.length === 1) {
-                const file = files[0]
-                const { downloadUrl, filename } = await convertOne(file, outputFormat, kind, setBusyMessage)
-                setBatch([{ file, state: 'done', progress: 'Prêt', downloadUrl, filename }])
-            } else {
-                const initial = files.map<BatchItem>((f) => ({ file: f, state: 'idle', progress: '' }))
-                setBatch(initial)
-                for (let i = 0; i < files.length; i++) {
-                    setBatch((b) => b.map((it, j) => j === i ? { ...it, state: 'busy', progress: 'En cours…' } : it))
-                    try {
-                        const fileKind = detectKind(files[i])
-                        if (!fileKind) throw new Error('type non supporté')
-                        const fmt = fileKind === 'video' ? outputFormat : (IMAGE_OUTPUTS.includes(outputFormat as typeof IMAGE_OUTPUTS[number]) ? outputFormat : 'png')
-                        const { downloadUrl, filename } = await convertOne(files[i], fmt, fileKind, () => {})
-                        setBatch((b) => b.map((it, j) => j === i ? { ...it, state: 'done', progress: 'Prêt', downloadUrl, filename } : it))
-                    } catch (e) {
-                        setBatch((b) => b.map((it, j) => j === i ? { ...it, state: 'error', progress: '', error: e instanceof Error ? e.message : 'Erreur' } : it))
+            const initial: BatchItem[] = files.map(() => ({ state: 'idle', progress: '' }))
+            setBatch(initial)
+
+            for (let i = 0; i < files.length; i++) {
+                const f = files[i]
+                const fKind = detectKind(f)
+                if (!fKind) {
+                    setBatch((b) => b.map((it, j) => j === i ? { ...it, state: 'error', error: 'type non supporté' } : it))
+                    continue
+                }
+                const fGrade = grades[i] || DEFAULT_GRADE
+                const fLut = lutScope === 'global' ? globalLutFile : fGrade.lutFile
+                const fmt = fKind === 'video'
+                    ? (VIDEO_OUTPUTS.includes(outputFormat as typeof VIDEO_OUTPUTS[number]) ? outputFormat : 'mp4')
+                    : (IMAGE_OUTPUTS.includes(outputFormat as typeof IMAGE_OUTPUTS[number]) ? outputFormat : 'png')
+
+                setBatch((b) => b.map((it, j) => j === i ? { ...it, state: 'busy', progress: 'En cours…' } : it))
+
+                try {
+                    // Frontend image processing if conditions allow
+                    if (
+                        processingMode === 'frontend' &&
+                        fKind === 'image' &&
+                        isClientSupportedFormat(fmt)
+                    ) {
+                        const cg: ClientGrade = {
+                            exposure: fGrade.exposure, contrast: fGrade.contrast,
+                            highlights: fGrade.highlights, shadows: fGrade.shadows,
+                            whites: fGrade.whites, blacks: fGrade.blacks,
+                            saturation: fGrade.saturation, temperature: fGrade.temperature, tint: fGrade.tint,
+                            sharpness: fGrade.sharpness,
+                            vignette: fGrade.vignette, grain: fGrade.grain,
+                            chromatic: fGrade.chromatic, glow: fGrade.glow,
+                            removeEnabled: fGrade.removeEnabled,
+                            removeColor: fGrade.removeColor,
+                            removeTolerance: fGrade.removeTolerance,
+                        }
+                        const { blob, filename } = await processImageClientSide(f, cg, fmt, undefined, fLut)
+                        const url = URL.createObjectURL(blob)
+                        setBatch((b) => b.map((it, j) => j === i ? { ...it, state: 'done', progress: 'Prêt', downloadUrl: url, filename } : it))
+                        continue
                     }
+
+                    // Frontend video processing via ffmpeg.wasm
+                    if (processingMode === 'frontend' && fKind === 'video') {
+                        const { processVideoClientSide, isClientSupportedVideoFormat } = await import('@/lib/clientVideoProcessor')
+                        if (isClientSupportedVideoFormat(fmt)) {
+                            const vg = {
+                                exposure: fGrade.exposure, contrast: fGrade.contrast,
+                                highlights: fGrade.highlights, shadows: fGrade.shadows,
+                                whites: fGrade.whites, blacks: fGrade.blacks,
+                                saturation: fGrade.saturation, temperature: fGrade.temperature,
+                                tint: fGrade.tint, hue: fGrade.hue,
+                                sharpness: fGrade.sharpness,
+                                vignette: fGrade.vignette, grain: fGrade.grain,
+                                chromatic: fGrade.chromatic, glow: fGrade.glow,
+                                targetFps: fGrade.targetFps,
+                            }
+                            const { blob, filename } = await processVideoClientSide(
+                                f, fmt, vg,
+                                (msg, ratio) => {
+                                    setBatch((b) => b.map((it, j) => j === i
+                                        ? { ...it, state: 'busy', progress: ratio != null ? `${Math.round(ratio * 100)} %` : msg }
+                                        : it,
+                                    ))
+                                },
+                                fLut,
+                            )
+                            const url = URL.createObjectURL(blob)
+                            setBatch((b) => b.map((it, j) => j === i ? { ...it, state: 'done', progress: 'Prêt', downloadUrl: url, filename } : it))
+                            continue
+                        }
+                    }
+
+                    // Backend fallback
+                    const { downloadUrl, filename } = await uploadAndConvert(f, fmt, fGrade, fKind, fLut)
+                    setBatch((b) => b.map((it, j) => j === i ? { ...it, state: 'done', progress: 'Prêt', downloadUrl, filename } : it))
+                } catch (e) {
+                    setBatch((b) => b.map((it, j) => j === i ? { ...it, state: 'error', progress: '', error: e instanceof Error ? e.message : 'Erreur' } : it))
                 }
             }
             setBusyMessage('Terminé ✓')
@@ -437,15 +563,17 @@ export function ColorLab({ processingMode }: ColorLabProps) {
         } finally {
             setBusy(false)
         }
-    }, [files, kind, outputFormat, convertOne])
+    }, [files, grades, outputFormat, lutScope, globalLutFile, processingMode])
 
     const reset = () => {
-        setFiles([]); setGrade(DEFAULT_GRADE)
-        setLutFile(null); setBatch([])
-        setErr(null); setBusyMessage('')
+        setFiles([]); setGrades([]); setActiveIndex(0)
+        setGlobalLutFile(null); setParsedGlobalLut(null)
+        setBatch([]); setErr(null); setBusyMessage('')
+        setOriginalFps({})
     }
 
     const outputs = kind === 'video' ? VIDEO_OUTPUTS : kind === 'image' ? IMAGE_OUTPUTS : []
+    const detectedOriginalFps = originalFps[activeIndex] || 60
 
     return (
         <div className="mx-auto w-full max-w-6xl px-4 py-8 sm:py-10">
@@ -455,18 +583,13 @@ export function ColorLab({ processingMode }: ColorLabProps) {
                     Color Lab
                 </h1>
                 <p className="mt-2 text-sm text-muted-foreground">
-                    Étalonnage couleur image et vidéo avec aperçu temps réel.
+                    Étalonnage couleur image et vidéo avec aperçu temps réel, multi-fichiers et LUT live.
                 </p>
                 <div className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-border bg-card/60 px-3 py-1 text-[11px]">
                     <span className={`h-1.5 w-1.5 rounded-full ${processingMode === 'frontend' ? 'bg-emerald-500' : 'bg-amber-500'}`} />
                     <span className="text-muted-foreground">Mode :</span>
                     <span className="font-semibold text-foreground">
                         {processingMode === 'frontend' ? 'Frontend (navigateur)' : 'Backend (serveur)'}
-                    </span>
-                    <span className="text-muted-foreground">
-                        — {processingMode === 'frontend'
-                            ? 'images locales sans upload'
-                            : 'images + vidéos avec FFmpeg'}
                     </span>
                 </div>
             </div>
@@ -480,72 +603,94 @@ export function ColorLab({ processingMode }: ColorLabProps) {
                     <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 text-primary">
                         <IconImage size={26} />
                     </div>
-                    <p className="mt-4 text-sm font-medium text-foreground">Déposez une image ou des vidéos</p>
+                    <p className="mt-4 text-sm font-medium text-foreground">Déposez une ou plusieurs images / vidéos</p>
                     <p className="mt-1 text-xs text-muted-foreground">
-                        Charge un fichier pour l'étalonnage. Importe un LUT pour traiter plusieurs vidéos d'un coup.
+                        Naviguez avec les flèches, réglez l'étalonnage par fichier, exportez tout d'un coup.
                     </p>
                     <input
-                        ref={fileInputRef} type="file" multiple
-                        accept="image/*,video/*" className="hidden"
+                        ref={fileInputRef} type="file" multiple accept="image/*,video/*"
+                        className="hidden"
                         onChange={(e) => handlePick(e.target.files)}
                     />
                 </div>
             )}
 
-            {files.length > 0 && previewUrl && (
+            {file && previewUrl && (
                 <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_400px]">
-                    {/* ── Preview / batch list ── */}
+                    {/* ── Preview ── */}
                     <div className="space-y-3">
                         <div className="relative overflow-hidden rounded-2xl border border-border bg-black/60 shadow-sm" style={{ aspectRatio: isVideo ? '16/9' : 'auto' }}>
-                            <div className="absolute inset-0 flex items-center justify-center">
-                                {kind === 'image' ? (
+                            {kind === 'image' ? (
+                                <div className="absolute inset-0 flex items-center justify-center">
                                     <img
                                         src={previewUrl} alt="Aperçu"
                                         className="max-h-[70vh] max-w-full object-contain"
                                         style={{ filter: cssFilter }}
                                     />
-                                ) : (
+                                </div>
+                            ) : (
+                                <div className="absolute inset-0">
+                                    {/* The actual <video> is the media source; hidden visually. */}
                                     <video
+                                        ref={videoRef}
                                         src={previewUrl}
-                                        controls loop playsInline
-                                        className="max-h-[70vh] w-full object-contain"
-                                        style={{ filter: cssFilter }}
+                                        controls loop playsInline muted
+                                        className="absolute inset-0 h-full w-full object-contain opacity-0 pointer-events-none"
                                     />
-                                )}
-                                {/* Temperature overlay */}
-                                <div className="pointer-events-none absolute inset-0" style={{ backgroundColor: tempOverlay.rgba, mixBlendMode: tempOverlay.mixBlend }} />
-                                {/* LGG hint overlays (approximation) */}
-                                <div className="pointer-events-none absolute inset-0" style={{ backgroundColor: liftOverlay.rgba, mixBlendMode: liftOverlay.mixBlend }} />
-                                <div className="pointer-events-none absolute inset-0" style={{ backgroundColor: gainOverlay.rgba, mixBlendMode: gainOverlay.mixBlend }} />
-                                {/* Vignette overlay (visual hint only) */}
-                                {grade.vignette > 0 && (
-                                    <div
-                                        className="pointer-events-none absolute inset-0"
-                                        style={{
-                                            background: `radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,${(grade.vignette / 100) * 0.7}) 110%)`,
-                                        }}
+                                    {/* WebGL canvas displays the LUT + filter result. */}
+                                    <canvas
+                                        ref={glCanvasRef}
+                                        className="absolute inset-0 h-full w-full"
                                     />
-                                )}
-                                {/* Grain overlay */}
-                                {grade.grain > 0 && (
-                                    <div
-                                        className="pointer-events-none absolute inset-0 opacity-30"
-                                        style={{
-                                            backgroundImage: "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence baseFrequency='0.9' numOctaves='2'/></filter><rect width='100%' height='100%' filter='url(%23n)' opacity='0.5'/></svg>\")",
-                                            opacity: grade.grain / 200,
-                                            mixBlendMode: 'overlay',
-                                        }}
-                                    />
-                                )}
-                            </div>
+                                    {/* Custom controls bar */}
+                                    <VideoControls videoRef={videoRef} />
+                                </div>
+                            )}
                         </div>
+
+                        {/* Navigation arrows */}
+                        {files.length > 1 && (
+                            <div className="flex items-center justify-between text-xs">
+                                <button
+                                    type="button"
+                                    onClick={() => setActiveIndex((i) => Math.max(0, i - 1))}
+                                    disabled={activeIndex === 0}
+                                    className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-border bg-card px-3 font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-30"
+                                >
+                                    ← Précédent
+                                </button>
+                                <span className="text-muted-foreground">
+                                    Fichier <span className="font-semibold text-foreground">{activeIndex + 1}</span> / {files.length}
+                                    <span className="ml-2 hidden sm:inline">— navigue avec ← →</span>
+                                </span>
+                                <button
+                                    type="button"
+                                    onClick={() => setActiveIndex((i) => Math.min(files.length - 1, i + 1))}
+                                    disabled={activeIndex >= files.length - 1}
+                                    className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-border bg-card px-3 font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-30"
+                                >
+                                    Suivant →
+                                </button>
+                            </div>
+                        )}
 
                         {/* File list */}
                         <div className="space-y-1.5">
                             {files.map((f, i) => {
                                 const item = batch[i]
+                                const isCurrent = i === activeIndex
                                 return (
-                                    <div key={`${f.name}-${i}`} className="flex items-center justify-between gap-2 rounded-lg border border-border bg-card/60 px-3 py-2 text-xs">
+                                    <button
+                                        key={`${f.name}-${i}`}
+                                        type="button"
+                                        onClick={() => setActiveIndex(i)}
+                                        className={cn(
+                                            'flex w-full items-center justify-between gap-2 rounded-lg border px-3 py-2 text-left text-xs transition-colors',
+                                            isCurrent
+                                                ? 'border-primary bg-primary/10'
+                                                : 'border-border bg-card/60 hover:bg-card',
+                                        )}
+                                    >
                                         <div className="flex min-w-0 items-center gap-2">
                                             {detectKind(f) === 'video' ? <IconVideo size={13} /> : <IconImage size={13} />}
                                             <span className="truncate font-medium text-foreground">{f.name}</span>
@@ -555,43 +700,35 @@ export function ColorLab({ processingMode }: ColorLabProps) {
                                             {item?.state === 'done' && item.downloadUrl && (
                                                 <a
                                                     href={item.downloadUrl} download={item.filename}
-                                                    className="inline-flex h-6 items-center gap-1 rounded-md bg-emerald-500/15 px-2 text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/25"
+                                                    onClick={(e) => e.stopPropagation()}
+                                                    className="inline-flex h-6 items-center gap-1 rounded-md bg-emerald-500/15 px-2 text-[11px] font-semibold text-emerald-600 hover:bg-emerald-500/25 dark:text-emerald-400"
                                                 >
-                                                    <IconDownload size={11} />
-                                                    Télécharger
+                                                    <IconDownload size={11} /> Télécharger
                                                 </a>
                                             )}
-                                            {item?.state === 'busy' && (
-                                                <span className="h-3 w-3 animate-spin rounded-full border-2 border-primary/30 border-t-primary" />
-                                            )}
-                                            {item?.state === 'error' && (
-                                                <span className="text-destructive">{item.error}</span>
-                                            )}
-                                            <button
-                                                type="button"
-                                                onClick={() => setFiles((p) => p.filter((_, j) => j !== i))}
-                                                className="text-muted-foreground hover:text-destructive"
-                                                disabled={busy}
+                                            {item?.state === 'busy' && <span className="h-3 w-3 animate-spin rounded-full border-2 border-primary/30 border-t-primary" />}
+                                            {item?.state === 'error' && <span className="text-destructive">{item.error}</span>}
+                                            <span
+                                                onClick={(e) => { e.stopPropagation(); removeFile(i) }}
+                                                className="text-muted-foreground hover:text-destructive cursor-pointer"
                                             >
                                                 <IconX size={12} />
-                                            </button>
+                                            </span>
                                         </div>
-                                    </div>
+                                    </button>
                                 )
                             })}
-                            {(lutFile || isMultiBatch) && (
-                                <button
-                                    type="button"
-                                    onClick={() => fileInputRef.current?.click()}
-                                    className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-border px-3 py-2 text-xs text-muted-foreground hover:border-primary/40 hover:text-foreground"
-                                >
-                                    + Ajouter d'autres fichiers
-                                </button>
-                            )}
+                            <button
+                                type="button"
+                                onClick={() => fileInputRef.current?.click()}
+                                className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-border px-3 py-2 text-xs text-muted-foreground hover:border-primary/40 hover:text-foreground"
+                            >
+                                + Ajouter d'autres fichiers
+                            </button>
                         </div>
 
                         <div className="flex items-center justify-between text-xs text-muted-foreground">
-                            <span>Aperçu sur le 1er fichier</span>
+                            <span>Aperçu sur le fichier actif</span>
                             <button type="button" onClick={reset} className="hover:text-destructive">
                                 <IconX size={11} className="inline-block mr-1" /> Tout effacer
                             </button>
@@ -605,11 +742,10 @@ export function ColorLab({ processingMode }: ColorLabProps) {
                                 <h2 className="text-sm font-semibold">Étalonnage</h2>
                                 <button
                                     type="button"
-                                    onClick={() => setGrade(DEFAULT_GRADE)}
+                                    onClick={() => updateGrade(DEFAULT_GRADE)}
                                     className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
                                 >
-                                    <IconRefresh size={11} />
-                                    Reset
+                                    <IconRefresh size={11} /> Reset
                                 </button>
                             </div>
 
@@ -627,46 +763,63 @@ export function ColorLab({ processingMode }: ColorLabProps) {
                                 <Slider label="Température" value={grade.temperature} min={-100} max={100} step={1} onChange={(v) => updateGrade({ temperature: v })} />
                                 <Slider label="Teinte" value={grade.tint} min={-100} max={100} step={1} onChange={(v) => updateGrade({ tint: v })} />
                                 <Slider label="Hue (°)" value={grade.hue} min={-180} max={180} step={1} onChange={(v) => updateGrade({ hue: v })} suffix="°" disabled={!isVideo} />
-                                {!isVideo && <p className="text-[10px] italic text-muted-foreground">Hue n'est dispo que pour la vidéo.</p>}
                             </CollapsibleSection>
 
                             {isVideo && (
-                                <CollapsibleSection title="Color Wheels (DaVinci)">
-                                    <ColorSwatch
-                                        label="Lift (ombres)"
-                                        color={grade.liftColor} amount={grade.liftAmount}
+                                <CollapsibleSection title="Color Wheels (DaVinci)" defaultOpen={false}>
+                                    <ColorSwatch label="Lift (ombres)" color={grade.liftColor} amount={grade.liftAmount}
                                         onColorChange={(c) => updateGrade({ liftColor: c })}
                                         onAmountChange={(a) => updateGrade({ liftAmount: a })}
-                                        onReset={() => updateGrade({ liftColor: NEUTRAL, liftAmount: 1 })}
-                                    />
-                                    <ColorSwatch
-                                        label="Gamma (mids)"
-                                        color={grade.gammaColor} amount={grade.gammaAmount}
+                                        onReset={() => updateGrade({ liftColor: NEUTRAL, liftAmount: 1 })} />
+                                    <ColorSwatch label="Gamma (mids)" color={grade.gammaColor} amount={grade.gammaAmount}
                                         onColorChange={(c) => updateGrade({ gammaColor: c })}
                                         onAmountChange={(a) => updateGrade({ gammaAmount: a })}
-                                        onReset={() => updateGrade({ gammaColor: NEUTRAL, gammaAmount: 1 })}
-                                    />
-                                    <ColorSwatch
-                                        label="Gain (hautes lumières)"
-                                        color={grade.gainColor} amount={grade.gainAmount}
+                                        onReset={() => updateGrade({ gammaColor: NEUTRAL, gammaAmount: 1 })} />
+                                    <ColorSwatch label="Gain (hautes lumières)" color={grade.gainColor} amount={grade.gainAmount}
                                         onColorChange={(c) => updateGrade({ gainColor: c })}
                                         onAmountChange={(a) => updateGrade({ gainAmount: a })}
-                                        onReset={() => updateGrade({ gainColor: NEUTRAL, gainAmount: 1 })}
-                                    />
-                                    <p className="text-[10px] italic text-muted-foreground">FFmpeg <code className="font-mono">colorbalance</code>. Couleurs proches du gris = neutre.</p>
+                                        onReset={() => updateGrade({ gainColor: NEUTRAL, gainAmount: 1 })} />
                                 </CollapsibleSection>
                             )}
 
-                            <CollapsibleSection title="Détail">
+                            <CollapsibleSection title="Détail" defaultOpen={false}>
                                 <Slider label="Netteté" value={grade.sharpness} min={-100} max={100} step={1} onChange={(v) => updateGrade({ sharpness: v })} />
                             </CollapsibleSection>
 
                             {isVideo && (
                                 <CollapsibleSection title="Effets" defaultOpen={false}>
                                     <Slider label="Vignette" value={grade.vignette} min={0} max={100} step={1} onChange={(v) => updateGrade({ vignette: v })} suffix=" %" />
-                                    <Slider label="Glow (flou doux)" value={grade.glow} min={0} max={100} step={1} onChange={(v) => updateGrade({ glow: v })} suffix=" %" />
+                                    <Slider label="Glow" value={grade.glow} min={0} max={100} step={1} onChange={(v) => updateGrade({ glow: v })} suffix=" %" />
                                     <Slider label="Grain film" value={grade.grain} min={0} max={100} step={1} onChange={(v) => updateGrade({ grain: v })} suffix=" %" />
                                     <Slider label="Aberration chromatique" value={grade.chromatic} min={0} max={20} step={1} onChange={(v) => updateGrade({ chromatic: v })} suffix=" px" />
+                                </CollapsibleSection>
+                            )}
+
+                            {isVideo && (
+                                <CollapsibleSection title="Compression" defaultOpen={false}>
+                                    <div className="space-y-1.5">
+                                        <div className="flex items-center justify-between">
+                                            <span className="text-xs font-medium">FPS de sortie</span>
+                                            <span className="text-[11px] font-mono text-muted-foreground tabular-nums">
+                                                {grade.targetFps ? `${grade.targetFps} fps` : `original (${detectedOriginalFps} fps)`}
+                                            </span>
+                                        </div>
+                                        <input
+                                            type="range"
+                                            min={1}
+                                            max={detectedOriginalFps}
+                                            step={1}
+                                            value={grade.targetFps ?? detectedOriginalFps}
+                                            onChange={(e) => {
+                                                const v = parseInt(e.target.value, 10)
+                                                updateGrade({ targetFps: v >= detectedOriginalFps ? null : v })
+                                            }}
+                                            className="h-1.5 w-full accent-primary"
+                                        />
+                                        <p className="text-[10px] italic text-muted-foreground">
+                                            Baisser le FPS = fichier plus léger. {detectedOriginalFps && `FPS d'origine détecté : ${detectedOriginalFps}.`}
+                                        </p>
+                                    </div>
                                 </CollapsibleSection>
                             )}
 
@@ -674,12 +827,9 @@ export function ColorLab({ processingMode }: ColorLabProps) {
                                 <div className="flex items-center justify-between">
                                     <span className="text-xs">Activer</span>
                                     <label className="relative inline-flex h-5 w-9 cursor-pointer items-center">
-                                        <input
-                                            type="checkbox"
-                                            checked={grade.removeEnabled}
+                                        <input type="checkbox" checked={grade.removeEnabled}
                                             onChange={(e) => updateGrade({ removeEnabled: e.target.checked })}
-                                            className="peer sr-only"
-                                        />
+                                            className="peer sr-only" />
                                         <span className="absolute inset-0 rounded-full bg-muted peer-checked:bg-primary transition-colors" />
                                         <span className="absolute left-0.5 h-4 w-4 rounded-full bg-background shadow transition-transform peer-checked:translate-x-4" />
                                     </label>
@@ -687,54 +837,76 @@ export function ColorLab({ processingMode }: ColorLabProps) {
                                 {grade.removeEnabled && (
                                     <>
                                         <div className="flex items-center gap-2">
-                                            <input type="color"
-                                                value={grade.removeColor}
+                                            <input type="color" value={grade.removeColor}
                                                 onChange={(e) => updateGrade({ removeColor: e.target.value })}
-                                                className="h-8 w-10 shrink-0 rounded border border-border bg-background cursor-pointer"
-                                            />
-                                            <input
-                                                type="text"
-                                                value={grade.removeColor}
+                                                className="h-8 w-10 shrink-0 rounded border border-border bg-background cursor-pointer" />
+                                            <input type="text" value={grade.removeColor}
                                                 onChange={(e) => updateGrade({ removeColor: e.target.value })}
                                                 placeholder="#ffffff"
-                                                className="h-8 flex-1 rounded-md border border-input bg-background px-2 text-xs"
-                                            />
+                                                className="h-8 flex-1 rounded-md border border-input bg-background px-2 text-xs" />
                                         </div>
                                         <Slider label="Tolérance" value={grade.removeTolerance} min={0} max={100} step={1} onChange={(v) => updateGrade({ removeTolerance: v })} suffix=" %" />
-                                        <p className="text-[10px] italic text-muted-foreground">
-                                            Sortie {kind === 'image' ? 'PNG/WebP' : 'WebM/MOV'} pour préserver la transparence.
-                                        </p>
                                     </>
                                 )}
                             </CollapsibleSection>
 
-                            <CollapsibleSection title="LUT (.cube)" defaultOpen={false}>
-                                {lutFile ? (
-                                    <div className="flex items-center justify-between gap-2 rounded-md border border-border bg-background/60 px-2 py-1.5">
-                                        <span className="truncate text-xs text-emerald-500">{lutFile.name}</span>
-                                        <button type="button" onClick={() => setLutFile(null)} className="text-muted-foreground hover:text-destructive">
-                                            <IconX size={12} />
+                            <CollapsibleSection title="LUT (.cube)" defaultOpen>
+                                <div className="space-y-2">
+                                    <div className="flex items-center gap-1 rounded-md border border-border bg-background/60 p-0.5">
+                                        <button
+                                            type="button"
+                                            onClick={() => setLutScope('global')}
+                                            className={cn(
+                                                'flex-1 rounded px-2 py-1 text-[11px] font-semibold transition-colors',
+                                                lutScope === 'global' ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:text-foreground',
+                                            )}
+                                        >
+                                            Global (tous les fichiers)
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => setLutScope('per-file')}
+                                            className={cn(
+                                                'flex-1 rounded px-2 py-1 text-[11px] font-semibold transition-colors',
+                                                lutScope === 'per-file' ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:text-foreground',
+                                            )}
+                                        >
+                                            Par fichier
                                         </button>
                                     </div>
-                                ) : (
-                                    <label className="flex h-9 cursor-pointer items-center justify-center rounded-md border border-dashed border-border bg-background/40 text-xs text-muted-foreground hover:border-primary/40 hover:text-foreground">
-                                        Charger un fichier .cube…
-                                        <input
-                                            ref={lutInputRef}
-                                            type="file" accept=".cube" className="hidden"
-                                            onChange={(e) => {
-                                                const f = e.target.files?.[0]
-                                                if (f) setLutFile(f)
-                                                e.target.value = ''
-                                            }}
-                                        />
-                                    </label>
-                                )}
-                                <p className="text-[10px] italic text-muted-foreground">
-                                    {lutFile
-                                        ? "Mode batch actif : tu peux ajouter plusieurs vidéos, le LUT sera appliqué à toutes."
-                                        : "Charge un LUT pour appliquer un look pré-fait. En mode LUT tu peux convertir plusieurs vidéos d'un coup."}
-                                </p>
+
+                                    {(() => {
+                                        const lutForSlot = lutScope === 'global' ? globalLutFile : grade.lutFile
+                                        const setLut = (f: File | null) => {
+                                            if (lutScope === 'global') setGlobalLutFile(f)
+                                            else updateGrade({ lutFile: f })
+                                        }
+                                        return lutForSlot ? (
+                                            <div className="flex items-center justify-between gap-2 rounded-md border border-border bg-background/60 px-2 py-1.5">
+                                                <span className="truncate text-xs text-emerald-500">{lutForSlot.name}</span>
+                                                <button type="button" onClick={() => setLut(null)} className="text-muted-foreground hover:text-destructive">
+                                                    <IconX size={12} />
+                                                </button>
+                                            </div>
+                                        ) : (
+                                            <label className="flex h-9 cursor-pointer items-center justify-center rounded-md border border-dashed border-border bg-background/40 text-xs text-muted-foreground hover:border-primary/40 hover:text-foreground">
+                                                Charger un fichier .cube…
+                                                <input
+                                                    ref={lutInputRef}
+                                                    type="file" accept=".cube" className="hidden"
+                                                    onChange={(e) => {
+                                                        const f = e.target.files?.[0]
+                                                        if (f) setLut(f)
+                                                        e.target.value = ''
+                                                    }}
+                                                />
+                                            </label>
+                                        )
+                                    })()}
+                                    <p className="text-[10px] italic text-muted-foreground">
+                                        L'aperçu vidéo applique le LUT en temps réel (WebGL). Les sliders s'ajoutent par-dessus.
+                                    </p>
+                                </div>
                             </CollapsibleSection>
 
                             <div className="space-y-2 border-t border-border pt-3">
@@ -745,10 +917,10 @@ export function ColorLab({ processingMode }: ColorLabProps) {
                                             key={fmt} type="button"
                                             onClick={() => setOutputFormat(fmt)}
                                             className={cn(
-                                                "rounded-md border px-2.5 py-1 text-xs font-mono font-semibold transition-colors",
+                                                'rounded-md border px-2.5 py-1 text-xs font-mono font-semibold transition-colors',
                                                 outputFormat === fmt
-                                                    ? "border-primary bg-primary text-primary-foreground"
-                                                    : "border-border bg-background text-muted-foreground hover:border-muted-foreground hover:text-foreground",
+                                                    ? 'border-primary bg-primary text-primary-foreground'
+                                                    : 'border-border bg-background text-muted-foreground hover:border-muted-foreground hover:text-foreground',
                                             )}
                                         >
                                             {fmt.toUpperCase()}
@@ -783,12 +955,71 @@ export function ColorLab({ processingMode }: ColorLabProps) {
                             </Button>
 
                             <p className="text-[11px] leading-4 text-muted-foreground">
-                                Aperçu approximatif (CSS). Rendu final précis : FFmpeg pour vidéo, Pillow pour image.
+                                Chaque fichier garde ses propres réglages (sliders, color wheels, etc.). Le LUT s'applique selon la portée choisie ci-dessus.
                             </p>
                         </div>
                     </div>
                 </div>
             )}
+        </div>
+    )
+}
+
+// ─────────────────────────────────────────────────────────
+// Minimal controls underlay for the WebGL canvas: lets the user play/pause
+// and seek without showing the hidden <video> tag.
+// ─────────────────────────────────────────────────────────
+function VideoControls({ videoRef }: { videoRef: React.MutableRefObject<HTMLVideoElement | null> }) {
+    const [playing, setPlaying] = useState(false)
+    const [progress, setProgress] = useState(0)
+
+    useEffect(() => {
+        const v = videoRef.current
+        if (!v) return
+        const onPlay = () => setPlaying(true)
+        const onPause = () => setPlaying(false)
+        const onTime = () => {
+            if (v.duration) setProgress(v.currentTime / v.duration)
+        }
+        v.addEventListener('play', onPlay)
+        v.addEventListener('pause', onPause)
+        v.addEventListener('timeupdate', onTime)
+        return () => {
+            v.removeEventListener('play', onPlay)
+            v.removeEventListener('pause', onPause)
+            v.removeEventListener('timeupdate', onTime)
+        }
+    }, [videoRef])
+
+    const toggle = () => {
+        const v = videoRef.current
+        if (!v) return
+        if (v.paused) v.play().catch(() => { /* ignore */ })
+        else v.pause()
+    }
+
+    const onScrub = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const v = videoRef.current
+        if (!v || !v.duration) return
+        v.currentTime = v.duration * parseFloat(e.target.value)
+    }
+
+    return (
+        <div className="pointer-events-auto absolute bottom-2 left-2 right-2 flex items-center gap-3 rounded-lg bg-black/70 px-3 py-2 backdrop-blur-sm">
+            <button
+                type="button"
+                onClick={toggle}
+                className="text-white text-base leading-none w-6 text-center"
+                aria-label={playing ? 'Pause' : 'Lecture'}
+            >
+                {playing ? '❚❚' : '▶'}
+            </button>
+            <input
+                type="range" min={0} max={1} step={0.001}
+                value={progress}
+                onChange={onScrub}
+                className="h-1 flex-1 accent-primary"
+            />
         </div>
     )
 }
