@@ -35,6 +35,12 @@ export interface VideoGrade {
     glow: number           // 0..100
     // Output controls
     targetFps?: number | null  // null/undefined = keep original
+    // Trim + overlay text
+    trimStart?: string         // "" or "HH:MM:SS" / seconds
+    trimEnd?: string
+    overlayText?: string
+    overlayTextX?: string
+    overlayTextY?: string
 }
 
 const ZERO_GRADE: VideoGrade = {
@@ -132,6 +138,15 @@ function buildVideoFilters(g: VideoGrade): string[] {
         filters.push(`gblur=sigma=${sigma.toFixed(2)}:steps=1`)
     }
 
+    // Overlay text on top (drawtext). Position defaults to bottom-center.
+    if (g.overlayText && g.overlayText.trim()) {
+        const escape = (s: string) => s.replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, "\\'").replace(/%/g, '\\%')
+        const text = escape(g.overlayText.trim())
+        const x = g.overlayTextX || '(w-text_w)/2'
+        const y = g.overlayTextY || 'h-(text_h*2)'
+        filters.push(`drawtext=text='${text}':x=${x}:y=${y}:fontsize=36:fontcolor=white:box=1:boxcolor=black@0.35:boxborderw=8`)
+    }
+
     return filters
 }
 
@@ -177,7 +192,10 @@ export async function processVideoClientSide(
     ffmpeg.on('progress', progressHandler)
 
     try {
-        const args: string[] = ['-i', inputName]
+        const args: string[] = []
+        if (g.trimStart) args.push('-ss', g.trimStart)
+        if (g.trimEnd) args.push('-to', g.trimEnd)
+        args.push('-i', inputName)
         if (filters.length > 0) {
             args.push('-vf', filters.join(','))
         }
