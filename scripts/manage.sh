@@ -3,16 +3,18 @@
 # Convertisseur Studio — unified management script.
 #
 # Usage:
-#   scripts/manage.sh up                  # start (build frontend + docker, fast cache reuse)
-#   scripts/manage.sh fast                # alias of `up`
-#   scripts/manage.sh full                # full rebuild (no cache, prune, fresh container)
-#   scripts/manage.sh restart             # restart container only (no rebuild)
-#   scripts/manage.sh maintenance         # health check + prune docker + clear caches
-#   scripts/manage.sh logs                # tail container logs
-#   scripts/manage.sh status              # show container + health
-#   scripts/manage.sh stop                # stop and remove container
-#   scripts/manage.sh install-cron        # install cron (every 4 days at 04:00)
-#   scripts/manage.sh uninstall-cron      # remove cron entry
+#   scripts/manage.sh download             # fetch all deps (npm + docker base images)
+#   scripts/manage.sh up                   # start (build frontend + docker, fast cache reuse)
+#   scripts/manage.sh fast                 # alias of `up`
+#   scripts/manage.sh full                 # download + full rebuild (no cache, prune, fresh container)
+#   scripts/manage.sh rebuild              # full rebuild WITHOUT re-downloading
+#   scripts/manage.sh restart              # restart container only (no rebuild)
+#   scripts/manage.sh maintenance          # health check + prune docker + clear caches
+#   scripts/manage.sh logs                 # tail container logs
+#   scripts/manage.sh status               # show container + health
+#   scripts/manage.sh stop                 # stop and remove container
+#   scripts/manage.sh install-cron         # install cron (every 4 days at 04:00)
+#   scripts/manage.sh uninstall-cron       # remove cron entry
 #   scripts/manage.sh help
 #
 set -euo pipefail
@@ -23,6 +25,12 @@ IMAGE="convertisseur-backend"
 HOST_PORT="6060"
 LOG_FILE="${PROJECT_DIR}/scripts/manage.log"
 HEALTH_URL="http://localhost:${HOST_PORT}/health"
+
+# Base Docker images we want pre-pulled to avoid surprise downloads during build.
+BASE_IMAGES=(
+    "python:3.12-slim"
+    "alpine:latest"
+)
 
 # ───────────────────────────── helpers
 ts()  { date '+%Y-%m-%d %H:%M:%S'; }
@@ -116,7 +124,37 @@ clear_caches() {
     find /tmp -maxdepth 2 -user "$(id -un)" -name 'ffpass_*' -mtime +1 -delete 2>/dev/null || true
 }
 
+# Download all dependencies the user needs before building or running.
+download_deps() {
+    require_docker
+    log "===== DOWNLOAD ====="
+
+    # 1) Pre-pull Docker base images so the build doesn't stall on network later.
+    for img in "${BASE_IMAGES[@]}"; do
+        log "docker pull ${img}"
+        docker pull "${img}" >>"${LOG_FILE}" 2>&1 || log "WARN: failed to pull ${img}"
+    done
+
+    # 2) Install npm / bun deps for the frontend.
+    cd "${PROJECT_DIR}/frontend"
+    if command -v bun >/dev/null 2>&1 && bun --version >/dev/null 2>&1; then
+        log "bun install (frontend deps)…"
+        bun install
+    elif command -v npm >/dev/null 2>&1; then
+        log "npm install (frontend deps)…"
+        npm install --no-audit --no-fund
+    else
+        log "WARN: neither bun nor npm found — frontend deps not installed"
+    fi
+
+    log "DOWNLOAD complete ✓"
+}
+
 # ───────────────────────────── commands
+cmd_download() {
+    download_deps
+}
+
 cmd_up() {
     require_docker
     log "===== UP (fast rebuild) ====="
@@ -131,7 +169,8 @@ cmd_up() {
 
 cmd_full() {
     require_docker
-    log "===== FULL REBUILD ====="
+    log "===== FULL (download + rebuild) ====="
+    download_deps
     FORCE_FRONTEND=1 build_frontend
     prune_docker
     clear_caches
@@ -140,7 +179,21 @@ cmd_full() {
     start_container
     sleep 3
     health_check || die "Service unhealthy after start"
-    log "FULL REBUILD complete ✓"
+    log "FULL complete ✓"
+}
+
+cmd_rebuild() {
+    require_docker
+    log "===== REBUILD (no download) ====="
+    FORCE_FRONTEND=1 build_frontend
+    prune_docker
+    clear_caches
+    build_image 1
+    stop_container
+    start_container
+    sleep 3
+    health_check || die "Service unhealthy after start"
+    log "REBUILD complete ✓"
 }
 
 cmd_restart() {
@@ -203,14 +256,16 @@ cmd_uninstall_cron() {
 }
 
 usage() {
-    sed -n '2,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 main() {
     local cmd="${1:-help}"
     case "$cmd" in
+        download)        cmd_download ;;
         up|fast)         cmd_up ;;
         full)            cmd_full ;;
+        rebuild)         cmd_rebuild ;;
         restart)         cmd_restart ;;
         maintenance)     cmd_maintenance ;;
         stop)            cmd_stop ;;
