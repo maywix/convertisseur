@@ -1001,7 +1001,8 @@ export function ColorLab({
                                 </div>
                             )}
 
-                            {/* Before / After compare button — hold to see the raw frame */}
+                            {/* Before / After compare button — hold to see the raw frame.
+                                Bottom-right corner so it doesn't sit on the scrubber. */}
                             <button
                                 type="button"
                                 onMouseDown={() => setComparing(true)}
@@ -1010,14 +1011,15 @@ export function ColorLab({
                                 onTouchStart={(e) => { e.preventDefault(); setComparing(true) }}
                                 onTouchEnd={() => setComparing(false)}
                                 className={cn(
-                                    "absolute bottom-2 left-1/2 -translate-x-1/2 z-20 inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-[11px] font-semibold backdrop-blur-sm select-none transition-colors",
+                                    "absolute bottom-12 right-2 z-20 inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] font-semibold backdrop-blur-sm select-none transition-colors",
                                     comparing
                                         ? "bg-white text-black"
                                         : "bg-black/70 text-white hover:bg-black/85",
                                 )}
                                 aria-label="Maintenir pour comparer avant / après"
+                                title="Maintenir pour voir l'original sans grade"
                             >
-                                {comparing ? '◉ Original (maintenu)' : '◐ Maintenir : Avant / Après'}
+                                {comparing ? '◉ Original' : '◐ Avant / Après'}
                             </button>
                             {comparing && kind === 'image' && (
                                 <div className="absolute top-2 right-2 rounded-md bg-white text-black px-2 py-0.5 text-[10px] font-bold pointer-events-none">
