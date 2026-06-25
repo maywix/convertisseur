@@ -238,7 +238,13 @@ function App() {
 
       {uiMode === 'color-lab' ? (
         <div key="color-lab" className={`animate-in fade-in duration-300 ease-out fill-mode-both ${showProgress ? 'pt-16' : ''}`}>
-          <ColorLab processingMode={processingMode} />
+          <ColorLab
+            processingMode={processingMode}
+            queue={queue}
+            onFilesAdded={addFiles}
+            onRemove={removeFile}
+            onClearAll={clearAll}
+          />
         </div>
       ) : uiMode === 'simple' ? (
         <div key="simple" className={`animate-in fade-in slide-in-from-bottom-3 duration-300 ease-out fill-mode-both ${showProgress ? 'pt-16' : ''}`}>

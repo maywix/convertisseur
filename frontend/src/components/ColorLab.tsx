@@ -14,7 +14,7 @@ import { processImageClientSide, isClientSupportedFormat, type ClientGrade } fro
 import { parseCubeLut, type Lut3D } from '@/lib/cubeLut'
 import { createCanvas2DLutRenderer, gradeToExtraFilter, type Canvas2DLutRenderer } from '@/lib/lutCanvas2D'
 import { cn } from '@/lib/utils'
-import { formatSize, getFileType } from '@/types'
+import { formatSize, getFileType, type QueueItem } from '@/types'
 
 // ──────────────────────────────────────────────────────────
 // Color Lab — multi-file colour grading workspace.
@@ -31,6 +31,11 @@ type ProcessingMode = 'frontend' | 'backend'
 
 interface ColorLabProps {
     processingMode: ProcessingMode
+    /** Shared queue so files added in Simple / Pro also show up here, and vice versa. */
+    queue: QueueItem[]
+    onFilesAdded: (files: FileList | File[]) => Promise<void> | void
+    onRemove: (id: string) => void
+    onClearAll: () => void
 }
 
 type MediaKind = 'image' | 'video'
@@ -325,12 +330,37 @@ async function estimateFps(video: HTMLVideoElement): Promise<number> {
     })
 }
 
-export function ColorLab({ processingMode }: ColorLabProps) {
-    // Files + per-file state
-    const [files, setFiles] = useState<File[]>([])
-    const [grades, setGrades] = useState<Grade[]>([])
+export function ColorLab({ processingMode, queue, onFilesAdded, onRemove, onClearAll }: ColorLabProps) {
+    // Lab works on the subset of the shared queue that contains images or videos.
+    const labItems = useMemo(
+        () => queue.filter((it) => detectKind(it.file) !== null),
+        [queue],
+    )
+    const files = useMemo(() => labItems.map((it) => it.file), [labItems])
+
+    // Grades are keyed by queue item id so they survive reorders.
+    const [gradesMap, setGradesMap] = useState<Record<string, Grade>>({})
     const [activeIndex, setActiveIndex] = useState(0)
-    const [batch, setBatch] = useState<BatchItem[]>([])
+    const [batch, setBatch] = useState<Record<string, BatchItem>>({})
+
+    // Initialise grade for any new item that enters the queue.
+    useEffect(() => {
+        setGradesMap((prev) => {
+            const next: Record<string, Grade> = { ...prev }
+            let changed = false
+            for (const it of labItems) {
+                if (!next[it.id]) { next[it.id] = { ...DEFAULT_GRADE }; changed = true }
+            }
+            return changed ? next : prev
+        })
+    }, [labItems])
+
+    // Keep activeIndex within bounds.
+    useEffect(() => {
+        if (activeIndex >= labItems.length && labItems.length > 0) setActiveIndex(labItems.length - 1)
+    }, [labItems.length, activeIndex])
+
+    const grades = labItems.map((it) => gradesMap[it.id] || DEFAULT_GRADE)
 
     // LUT scope & global LUT file
     const [lutScope, setLutScope] = useState<'global' | 'per-file'>('global')
@@ -471,7 +501,7 @@ export function ColorLab({ processingMode }: ColorLabProps) {
         return () => window.removeEventListener('keydown', onKey)
     }, [files.length])
 
-    const handlePick = (incoming: FileList | File[] | null) => {
+    const handlePick = async (incoming: FileList | File[] | null) => {
         if (!incoming) return
         const arr = Array.from(incoming).filter((f) => detectKind(f) !== null)
         if (arr.length === 0) {
@@ -479,28 +509,39 @@ export function ColorLab({ processingMode }: ColorLabProps) {
             return
         }
         setErr(null)
-        setFiles((prev) => [...prev, ...arr])
-        setGrades((prev) => [...prev, ...arr.map(() => ({ ...DEFAULT_GRADE }))])
+        // Delegate to the shared queue — items appear in Simple / Pro too.
+        await onFilesAdded(arr)
     }
 
     const onDrop = (e: React.DragEvent) => {
         e.preventDefault()
         if (busy) return
-        handlePick(e.dataTransfer.files)
+        void handlePick(e.dataTransfer.files)
     }
     const onDragOver = (e: React.DragEvent) => e.preventDefault()
 
     const updateGrade = useCallback((patch: Partial<Grade>) => {
-        setGrades((prev) => prev.map((g, i) => (i === activeIndex ? { ...g, ...patch } : g)))
-    }, [activeIndex])
+        const item = labItems[activeIndex]
+        if (!item) return
+        setGradesMap((prev) => ({
+            ...prev,
+            [item.id]: { ...(prev[item.id] || DEFAULT_GRADE), ...patch },
+        }))
+    }, [activeIndex, labItems])
 
     const removeFile = (idx: number) => {
-        setFiles((prev) => prev.filter((_, i) => i !== idx))
-        setGrades((prev) => prev.filter((_, i) => i !== idx))
-        setBatch((prev) => prev.filter((_, i) => i !== idx))
+        const item = labItems[idx]
+        if (!item) return
+        onRemove(item.id)
+        setBatch((prev) => {
+            const next = { ...prev }; delete next[item.id]; return next
+        })
+        setGradesMap((prev) => {
+            const next = { ...prev }; delete next[item.id]; return next
+        })
         setActiveIndex((curr) => {
             if (curr > idx) return curr - 1
-            if (curr >= files.length - 1) return Math.max(0, files.length - 2)
+            if (curr >= labItems.length - 1) return Math.max(0, labItems.length - 2)
             return curr
         })
     }
@@ -508,29 +549,38 @@ export function ColorLab({ processingMode }: ColorLabProps) {
     const cssFilter = useMemo(() => gradeToCssFilter(grade), [grade])
 
     const apply = useCallback(async () => {
-        if (files.length === 0 || !outputFormat) return
+        if (labItems.length === 0 || !outputFormat) return
         setBusy(true); setErr(null)
         try {
-            const initial: BatchItem[] = files.map(() => ({ state: 'idle', progress: '' }))
+            const initial: Record<string, BatchItem> = {}
+            for (const it of labItems) initial[it.id] = { state: 'idle', progress: '' }
             setBatch(initial)
 
-            for (let i = 0; i < files.length; i++) {
-                const f = files[i]
+            for (let i = 0; i < labItems.length; i++) {
+                const item = labItems[i]
+                const f = item.file
                 const fKind = detectKind(f)
                 if (!fKind) {
-                    setBatch((b) => b.map((it, j) => j === i ? { ...it, state: 'error', error: 'type non supporté' } : it))
+                    setBatch((b) => ({ ...b, [item.id]: { state: 'error', progress: '', error: 'type non supporté' } }))
                     continue
                 }
-                const fGrade = grades[i] || DEFAULT_GRADE
+                const fGrade = gradesMap[item.id] || DEFAULT_GRADE
                 const fLut = lutScope === 'global' ? globalLutFile : fGrade.lutFile
                 const fmt = fKind === 'video'
                     ? (VIDEO_OUTPUTS.includes(outputFormat as typeof VIDEO_OUTPUTS[number]) ? outputFormat : 'mp4')
                     : (IMAGE_OUTPUTS.includes(outputFormat as typeof IMAGE_OUTPUTS[number]) ? outputFormat : 'png')
 
-                setBatch((b) => b.map((it, j) => j === i ? { ...it, state: 'busy', progress: 'En cours…' } : it))
+                setBatch((b) => ({ ...b, [item.id]: { state: 'busy', progress: 'En cours…' } }))
+
+                // eslint-disable-next-line no-console
+                console.info('[ColorLab.apply]', {
+                    file: f.name, kind: fKind, fmt, processingMode,
+                    path: processingMode === 'frontend'
+                        ? (fKind === 'image' && isClientSupportedFormat(fmt) ? 'frontend-image' : fKind === 'video' ? 'frontend-video' : 'backend')
+                        : 'backend',
+                })
 
                 try {
-                    // Frontend image processing if conditions allow
                     if (
                         processingMode === 'frontend' &&
                         fKind === 'image' &&
@@ -550,11 +600,10 @@ export function ColorLab({ processingMode }: ColorLabProps) {
                         }
                         const { blob, filename } = await processImageClientSide(f, cg, fmt, undefined, fLut)
                         const url = URL.createObjectURL(blob)
-                        setBatch((b) => b.map((it, j) => j === i ? { ...it, state: 'done', progress: 'Prêt', downloadUrl: url, filename } : it))
+                        setBatch((b) => ({ ...b, [item.id]: { state: 'done', progress: 'Prêt', downloadUrl: url, filename } }))
                         continue
                     }
 
-                    // Frontend video processing via ffmpeg.wasm
                     if (processingMode === 'frontend' && fKind === 'video') {
                         const { processVideoClientSide, isClientSupportedVideoFormat } = await import('@/lib/clientVideoProcessor')
                         if (isClientSupportedVideoFormat(fmt)) {
@@ -576,24 +625,27 @@ export function ColorLab({ processingMode }: ColorLabProps) {
                             const { blob, filename } = await processVideoClientSide(
                                 f, fmt, vg,
                                 (msg, ratio) => {
-                                    setBatch((b) => b.map((it, j) => j === i
-                                        ? { ...it, state: 'busy', progress: ratio != null ? `${Math.round(ratio * 100)} %` : msg }
-                                        : it,
-                                    ))
+                                    setBatch((b) => ({
+                                        ...b,
+                                        [item.id]: { state: 'busy', progress: ratio != null ? `${Math.round(ratio * 100)} %` : msg },
+                                    }))
                                 },
                                 fLut,
                             )
                             const url = URL.createObjectURL(blob)
-                            setBatch((b) => b.map((it, j) => j === i ? { ...it, state: 'done', progress: 'Prêt', downloadUrl: url, filename } : it))
+                            setBatch((b) => ({ ...b, [item.id]: { state: 'done', progress: 'Prêt', downloadUrl: url, filename } }))
                             continue
                         }
                     }
 
-                    // Backend fallback
+                    // Backend path (default in Backend mode, or fallback)
                     const { downloadUrl, filename } = await uploadAndConvert(f, fmt, fGrade, fKind, fLut)
-                    setBatch((b) => b.map((it, j) => j === i ? { ...it, state: 'done', progress: 'Prêt', downloadUrl, filename } : it))
+                    setBatch((b) => ({ ...b, [item.id]: { state: 'done', progress: 'Prêt', downloadUrl, filename } }))
                 } catch (e) {
-                    setBatch((b) => b.map((it, j) => j === i ? { ...it, state: 'error', progress: '', error: e instanceof Error ? e.message : 'Erreur' } : it))
+                    setBatch((b) => ({
+                        ...b,
+                        [item.id]: { state: 'error', progress: '', error: e instanceof Error ? e.message : 'Erreur' },
+                    }))
                 }
             }
             setBusyMessage('Terminé ✓')
@@ -602,12 +654,14 @@ export function ColorLab({ processingMode }: ColorLabProps) {
         } finally {
             setBusy(false)
         }
-    }, [files, grades, outputFormat, lutScope, globalLutFile, processingMode])
+    }, [labItems, gradesMap, outputFormat, lutScope, globalLutFile, processingMode])
 
     const reset = () => {
-        setFiles([]); setGrades([]); setActiveIndex(0)
+        onClearAll()
+        setGradesMap({})
+        setActiveIndex(0)
         setGlobalLutFile(null); setParsedGlobalLut(null)
-        setBatch([]); setErr(null); setBusyMessage('')
+        setBatch({}); setErr(null); setBusyMessage('')
         setOriginalFps({})
     }
 
@@ -660,11 +714,11 @@ export function ColorLab({ processingMode }: ColorLabProps) {
                 <>
                     {/* ─── Top row: large preview + file queue on the right ─── */}
                     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_280px] mb-4">
-                        {/* Preview — sticky on mobile/tablet so it stays visible while tweaking params below.
-                            Constrained to 35vh on small screens so the params remain reachable. */}
+                        {/* Preview. Stays `relative` everywhere so children absolutes don't escape.
+                            On mobile we wrap in a sticky outer div instead to keep the video visible. */}
                         <div
-                            className="relative overflow-hidden rounded-2xl border border-border bg-black/60 shadow-sm sticky top-[60px] z-30 lg:static lg:top-auto max-h-[35vh] lg:max-h-none"
-                            style={{ aspectRatio: isVideo ? '16/9' : undefined }}
+                            className="relative overflow-hidden rounded-2xl border border-border bg-black/60 shadow-sm w-full"
+                            style={{ aspectRatio: isVideo ? '16 / 9' : undefined, maxHeight: isVideo ? undefined : '70vh' }}
                         >
                             {kind === 'image' ? (
                                 <div className="absolute inset-0 flex items-center justify-center">
@@ -724,8 +778,9 @@ export function ColorLab({ processingMode }: ColorLabProps) {
                             <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground px-1">
                                 File d'attente ({files.length})
                             </h3>
-                            {files.map((f, i) => {
-                                const item = batch[i]
+                            {labItems.map((labItem, i) => {
+                                const f = labItem.file
+                                const item = batch[labItem.id]
                                 const isCurrent = i === activeIndex
                                 return (
                                     <button
