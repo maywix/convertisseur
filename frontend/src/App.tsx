@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ColorLab } from '@/components/ColorLab'
+import { ColorLab, type Grade } from '@/components/ColorLab'
 import { ConfigPanel, VideoColorSampler } from '@/components/ConfigPanel'
 import { FileQueue } from '@/components/FileQueue'
 import { SimpleConverter } from '@/components/SimpleConverter'
@@ -114,6 +114,11 @@ function App() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   // Close the mobile menu whenever the user changes mode or theme.
   useEffect(() => { setMobileMenuOpen(false) }, [uiMode, processingMode, theme])
+
+  // Color Lab state lifted here so it survives mode switches (Simple ↔ Pro ↔ Color Lab).
+  const [colorLabGrades, setColorLabGrades] = useState<Record<string, Grade>>({})
+  const [colorLabLutScope, setColorLabLutScope] = useState<'global' | 'per-file'>('global')
+  const [colorLabGlobalLutFile, setColorLabGlobalLutFile] = useState<File | null>(null)
   const colorPickerVideoFile =
     queue.find((item) => {
       const kind = item.mediaKind || getFileType(item.file.name)
@@ -244,6 +249,12 @@ function App() {
             onFilesAdded={addFiles}
             onRemove={removeFile}
             onClearAll={clearAll}
+            gradesMap={colorLabGrades}
+            setGradesMap={setColorLabGrades}
+            lutScope={colorLabLutScope}
+            setLutScope={setColorLabLutScope}
+            globalLutFile={colorLabGlobalLutFile}
+            setGlobalLutFile={setColorLabGlobalLutFile}
           />
         </div>
       ) : uiMode === 'simple' ? (

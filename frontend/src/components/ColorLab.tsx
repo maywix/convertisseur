@@ -36,11 +36,18 @@ interface ColorLabProps {
     onFilesAdded: (files: FileList | File[]) => Promise<void> | void
     onRemove: (id: string) => void
     onClearAll: () => void
+    /** Persisted grading state (lifted to App so it survives mode switches). */
+    gradesMap: Record<string, Grade>
+    setGradesMap: React.Dispatch<React.SetStateAction<Record<string, Grade>>>
+    lutScope: 'global' | 'per-file'
+    setLutScope: (scope: 'global' | 'per-file') => void
+    globalLutFile: File | null
+    setGlobalLutFile: (f: File | null) => void
 }
 
 type MediaKind = 'image' | 'video'
 
-interface Grade {
+export interface Grade {
     // Light
     exposure: number
     contrast: number
@@ -83,9 +90,9 @@ interface Grade {
     overlayTextY: string
 }
 
-const NEUTRAL = '#808080'
+export const NEUTRAL = '#808080'
 
-const DEFAULT_GRADE: Grade = {
+export const DEFAULT_GRADE: Grade = {
     exposure: 0, contrast: 0,
     highlights: 0, shadows: 0, whites: 0, blacks: 0,
     saturation: 0, temperature: 0, tint: 0, hue: 0,
@@ -330,7 +337,10 @@ async function estimateFps(video: HTMLVideoElement): Promise<number> {
     })
 }
 
-export function ColorLab({ processingMode, queue, onFilesAdded, onRemove, onClearAll }: ColorLabProps) {
+export function ColorLab({
+    processingMode, queue, onFilesAdded, onRemove, onClearAll,
+    gradesMap, setGradesMap, lutScope, setLutScope, globalLutFile, setGlobalLutFile,
+}: ColorLabProps) {
     // Lab works on the subset of the shared queue that contains images or videos.
     const labItems = useMemo(
         () => queue.filter((it) => detectKind(it.file) !== null),
@@ -338,8 +348,7 @@ export function ColorLab({ processingMode, queue, onFilesAdded, onRemove, onClea
     )
     const files = useMemo(() => labItems.map((it) => it.file), [labItems])
 
-    // Grades are keyed by queue item id so they survive reorders.
-    const [gradesMap, setGradesMap] = useState<Record<string, Grade>>({})
+    // Local UI state (active selection, batch results — these don't need to outlive a mode switch).
     const [activeIndex, setActiveIndex] = useState(0)
     const [batch, setBatch] = useState<Record<string, BatchItem>>({})
 
@@ -362,9 +371,7 @@ export function ColorLab({ processingMode, queue, onFilesAdded, onRemove, onClea
 
     const grades = labItems.map((it) => gradesMap[it.id] || DEFAULT_GRADE)
 
-    // LUT scope & global LUT file
-    const [lutScope, setLutScope] = useState<'global' | 'per-file'>('global')
-    const [globalLutFile, setGlobalLutFile] = useState<File | null>(null)
+    // LUT parsing cache (lifted to component lifetime; the Lut3D blob is heavy).
     const [parsedGlobalLut, setParsedGlobalLut] = useState<Lut3D | null>(null)
     const parsedLutCacheRef = useRef<Map<string, Lut3D>>(new Map())
 
@@ -768,6 +775,44 @@ export function ColorLab({ processingMode, queue, onFilesAdded, onRemove, onClea
                                         <div className="absolute top-2 right-2 rounded-md bg-emerald-500/15 px-2 py-1 text-[10px] font-semibold text-emerald-400 pointer-events-none">
                                             LUT {useGLPreview ? 'live ✓' : 'actif'}
                                         </div>
+                                    )}
+                                </div>
+                            )}
+
+                            {/* LUT picker overlay — top-left corner of the preview */}
+                            {isVideo && (
+                                <div className="absolute top-2 left-2 z-10 flex items-center gap-1">
+                                    {activeLutForRender ? (
+                                        <div className="flex items-center gap-1 rounded-md bg-black/70 px-2 py-1 backdrop-blur-sm">
+                                            <span className="text-[10px] font-medium text-white max-w-[140px] truncate">{activeLutForRender.name}</span>
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    if (lutScope === 'global') setGlobalLutFile(null)
+                                                    else updateGrade({ lutFile: null })
+                                                }}
+                                                className="text-white/70 hover:text-destructive"
+                                                aria-label="Retirer le LUT"
+                                            >
+                                                <IconX size={11} />
+                                            </button>
+                                        </div>
+                                    ) : (
+                                        <label className="inline-flex cursor-pointer items-center gap-1 rounded-md bg-black/70 px-2 py-1 text-[10px] font-semibold text-white backdrop-blur-sm hover:bg-black/85">
+                                            <IconWand size={11} />
+                                            Charger LUT (.cube)
+                                            <input
+                                                type="file" accept=".cube" className="hidden"
+                                                onChange={(e) => {
+                                                    const f = e.target.files?.[0]
+                                                    if (f) {
+                                                        if (lutScope === 'global') setGlobalLutFile(f)
+                                                        else updateGrade({ lutFile: f })
+                                                    }
+                                                    e.target.value = ''
+                                                }}
+                                            />
+                                        </label>
                                     )}
                                 </div>
                             )}
