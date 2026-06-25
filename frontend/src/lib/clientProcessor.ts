@@ -18,11 +18,19 @@ export interface ClientGrade {
     saturation: number     // -100..+100
     temperature: number    // -100..+100 cool/warm
     tint: number           // -100..+100 green/magenta
+    hue?: number           // -180..180 (image: skipped, but accepted to share Grade)
     sharpness: number      // -100..+100
     vignette: number       // 0..100
     grain: number          // 0..100
     chromatic: number      // 0..20 px
     glow: number           // 0..100
+    // DaVinci-style color wheels
+    liftColor?: string     // hex
+    liftAmount?: number    // 0..2
+    gammaColor?: string
+    gammaAmount?: number
+    gainColor?: string
+    gainAmount?: number
     // Color remover
     removeEnabled: boolean
     removeColor: string    // hex
@@ -43,6 +51,16 @@ function clamp(v: number, min: number, max: number): number {
     return v < min ? min : v > max ? max : v
 }
 
+function hexToDelta(hex?: string, amount = 1): [number, number, number] {
+    if (!hex) return [0, 0, 0]
+    const c = hex.replace('#', '')
+    if (c.length !== 6) return [0, 0, 0]
+    const r = parseInt(c.substring(0, 2), 16)
+    const g = parseInt(c.substring(2, 4), 16)
+    const b = parseInt(c.substring(4, 6), 16)
+    return [(r - 128) / 127 * amount, (g - 128) / 127 * amount, (b - 128) / 127 * amount]
+}
+
 // Apply Lightroom-style adjustments to RGBA pixel data in-place.
 function applyAdjustments(data: Uint8ClampedArray, w: number, h: number, g: ClientGrade) {
     const exposureScale = Math.pow(2, g.exposure)
@@ -54,6 +72,14 @@ function applyAdjustments(data: Uint8ClampedArray, w: number, h: number, g: Clie
     const tintR = 1 + (g.tint / 100) * 0.08
     const tintG = 1 - (g.tint / 100) * 0.18
     const tintB = 1 + (g.tint / 100) * 0.08
+
+    // DaVinci-style Lift / Gamma / Gain shifts (zone-based).
+    const [liftDr, liftDg, liftDb] = hexToDelta(g.liftColor, g.liftAmount ?? 1)
+    const [gammaDr, gammaDg, gammaDb] = hexToDelta(g.gammaColor, g.gammaAmount ?? 1)
+    const [gainDr, gainDg, gainDb] = hexToDelta(g.gainColor, g.gainAmount ?? 1)
+    const hasLgg = Math.abs(liftDr) + Math.abs(liftDg) + Math.abs(liftDb) +
+                   Math.abs(gammaDr) + Math.abs(gammaDg) + Math.abs(gammaDb) +
+                   Math.abs(gainDr) + Math.abs(gainDg) + Math.abs(gainDb) > 0.001
 
     // Color remover prep
     const rmEnabled = g.removeEnabled
@@ -119,6 +145,20 @@ function applyAdjustments(data: Uint8ClampedArray, w: number, h: number, g: Clie
             apply(g.shadows, sMask, true)
             apply(g.whites, wMask, true)
             apply(g.blacks, bMask, false)
+        }
+
+        // DaVinci Lift / Gamma / Gain — additive shift by zone (luma).
+        if (hasLgg) {
+            const lumaPost = (0.2126 * r + 0.7152 * g_ + 0.0722 * b) / 255
+            const sZone = clamp((0.5 - lumaPost) / 0.5, 0, 1)
+            const mZone = 1 - Math.abs(lumaPost - 0.5) * 2
+            const hZone = clamp((lumaPost - 0.5) / 0.5, 0, 1)
+            const lScale = 128 * sZone
+            const mScale = 128 * mZone
+            const hScale = 128 * hZone
+            r += liftDr * lScale + gammaDr * mScale + gainDr * hScale
+            g_ += liftDg * lScale + gammaDg * mScale + gainDg * hScale
+            b += liftDb * lScale + gammaDb * mScale + gainDb * hScale
         }
 
         // Contrast around 0.5 (midpoint).

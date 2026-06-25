@@ -26,6 +26,13 @@ export interface VideoGrade {
     temperature: number    // -100..+100
     tint: number           // -100..+100
     hue: number            // -180..+180°
+    // DaVinci Lift / Gamma / Gain (hex + amount). Neutral grey = #808080.
+    liftColor?: string
+    liftAmount?: number
+    gammaColor?: string
+    gammaAmount?: number
+    gainColor?: string
+    gainAmount?: number
     // Detail
     sharpness: number      // -100..+100
     // Effects
@@ -41,6 +48,11 @@ export interface VideoGrade {
     overlayText?: string
     overlayTextX?: string
     overlayTextY?: string
+    // Color remover (passes through to backend OR — here — through the
+    // optional colorkey filter for codecs that keep alpha).
+    removeEnabled?: boolean
+    removeColor?: string
+    removeTolerance?: number
 }
 
 const ZERO_GRADE: VideoGrade = {
@@ -119,6 +131,36 @@ function buildVideoFilters(g: VideoGrade): string[] {
     if (g.sharpness) {
         const amt = (g.sharpness / 100) * 2
         filters.push(`unsharp=5:5:${amt.toFixed(2)}:5:5:0.0`)
+    }
+
+    // DaVinci Lift / Gamma / Gain via FFmpeg colorbalance (mirrors backend).
+    const hexToBalance = (hex?: string): [number, number, number] => {
+        if (!hex) return [0, 0, 0]
+        const c = hex.replace('#', '')
+        if (c.length !== 6) return [0, 0, 0]
+        return [
+            (parseInt(c.slice(0, 2), 16) - 128) / 127,
+            (parseInt(c.slice(2, 4), 16) - 128) / 127,
+            (parseInt(c.slice(4, 6), 16) - 128) / 127,
+        ]
+    }
+    const [lr, lg_, lb] = hexToBalance(g.liftColor)
+    const [mr, mg, mb] = hexToBalance(g.gammaColor)
+    const [hr, hg, hb] = hexToBalance(g.gainColor)
+    const la = g.liftAmount ?? 1, ma = g.gammaAmount ?? 1, ha = g.gainAmount ?? 1
+    const cbParts: string[] = []
+    if (lr || lg_ || lb) cbParts.push(`rs=${(lr * la).toFixed(3)}:gs=${(lg_ * la).toFixed(3)}:bs=${(lb * la).toFixed(3)}`)
+    if (mr || mg || mb) cbParts.push(`rm=${(mr * ma).toFixed(3)}:gm=${(mg * ma).toFixed(3)}:bm=${(mb * ma).toFixed(3)}`)
+    if (hr || hg || hb) cbParts.push(`rh=${(hr * ha).toFixed(3)}:gh=${(hg * ha).toFixed(3)}:bh=${(hb * ha).toFixed(3)}`)
+    if (cbParts.length > 0) filters.push(`colorbalance=${cbParts.join(':')}`)
+
+    // Color remover (chroma key) when the user enabled it.
+    if (g.removeEnabled && g.removeColor) {
+        const c = g.removeColor.replace('#', '').toLowerCase()
+        if (c.length === 6) {
+            const tol = clamp((g.removeTolerance ?? 15) / 100, 0.01, 1)
+            filters.push(`colorkey=0x${c}:${tol.toFixed(3)}:0.1`)
+        }
     }
 
     if (g.vignette > 0) {

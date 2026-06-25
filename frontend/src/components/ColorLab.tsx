@@ -390,6 +390,8 @@ export function ColorLab({
     const glCanvasRef = useRef<HTMLCanvasElement | null>(null)
     const lutRendererRef = useRef<Canvas2DLutRenderer | null>(null)
     const [videoError, setVideoError] = useState<string | null>(null)
+    /** Hold-to-compare: when true the preview shows the original (no grade). */
+    const [comparing, setComparing] = useState(false)
     const [videoReady, setVideoReady] = useState(false)
 
     const file = files[activeIndex] || null
@@ -497,6 +499,11 @@ export function ColorLab({
         lutRendererRef.current.setLut(activeParsedLut || parsedGlobalLut || null)
         lutRendererRef.current.setExtraFilter(currentExtraFilter)
     }, [currentExtraFilter, activeParsedLut, parsedGlobalLut])
+
+    // Compare button: bypass the renderer pipeline so user sees the raw frame.
+    useEffect(() => {
+        lutRendererRef.current?.setBypass(comparing)
+    }, [comparing, useGLPreview])
 
     // Estimate FPS for the currently active video once it can play
     useEffect(() => {
@@ -616,6 +623,9 @@ export function ColorLab({
                             sharpness: fGrade.sharpness,
                             vignette: fGrade.vignette, grain: fGrade.grain,
                             chromatic: fGrade.chromatic, glow: fGrade.glow,
+                            liftColor: fGrade.liftColor, liftAmount: fGrade.liftAmount,
+                            gammaColor: fGrade.gammaColor, gammaAmount: fGrade.gammaAmount,
+                            gainColor: fGrade.gainColor, gainAmount: fGrade.gainAmount,
                             removeEnabled: fGrade.removeEnabled,
                             removeColor: fGrade.removeColor,
                             removeTolerance: fGrade.removeTolerance,
@@ -635,6 +645,9 @@ export function ColorLab({
                                 whites: fGrade.whites, blacks: fGrade.blacks,
                                 saturation: fGrade.saturation, temperature: fGrade.temperature,
                                 tint: fGrade.tint, hue: fGrade.hue,
+                                liftColor: fGrade.liftColor, liftAmount: fGrade.liftAmount,
+                                gammaColor: fGrade.gammaColor, gammaAmount: fGrade.gammaAmount,
+                                gainColor: fGrade.gainColor, gainAmount: fGrade.gainAmount,
                                 sharpness: fGrade.sharpness,
                                 vignette: fGrade.vignette, grain: fGrade.grain,
                                 chromatic: fGrade.chromatic, glow: fGrade.glow,
@@ -643,6 +656,9 @@ export function ColorLab({
                                 overlayText: fGrade.overlayText,
                                 overlayTextX: fGrade.overlayTextX,
                                 overlayTextY: fGrade.overlayTextY,
+                                removeEnabled: fGrade.removeEnabled,
+                                removeColor: fGrade.removeColor,
+                                removeTolerance: fGrade.removeTolerance,
                             }
                             const { blob, filename } = await processVideoClientSide(
                                 f, fmt, vg,
@@ -938,7 +954,7 @@ export function ColorLab({
                                     <img
                                         src={previewUrl} alt="Aperçu"
                                         className="max-h-[78vh] max-w-full object-contain"
-                                        style={{ filter: cssFilter }}
+                                        style={{ filter: comparing ? 'none' : cssFilter }}
                                     />
                                 </div>
                             ) : (
@@ -959,7 +975,7 @@ export function ColorLab({
                                             "absolute inset-0 h-full w-full object-contain transition-opacity",
                                             useGLPreview ? "opacity-0 pointer-events-none" : "opacity-100",
                                         )}
-                                        style={!useGLPreview ? { filter: cssFilter } : undefined}
+                                        style={!useGLPreview ? { filter: comparing ? 'none' : cssFilter } : undefined}
                                     />
                                     {useGLPreview && (
                                         <>
@@ -982,6 +998,30 @@ export function ColorLab({
                                             LUT {useGLPreview ? 'live ✓' : 'actif'}
                                         </div>
                                     )}
+                                </div>
+                            )}
+
+                            {/* Before / After compare button — hold to see the raw frame */}
+                            <button
+                                type="button"
+                                onMouseDown={() => setComparing(true)}
+                                onMouseUp={() => setComparing(false)}
+                                onMouseLeave={() => setComparing(false)}
+                                onTouchStart={(e) => { e.preventDefault(); setComparing(true) }}
+                                onTouchEnd={() => setComparing(false)}
+                                className={cn(
+                                    "absolute bottom-2 left-1/2 -translate-x-1/2 z-20 inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-[11px] font-semibold backdrop-blur-sm select-none transition-colors",
+                                    comparing
+                                        ? "bg-white text-black"
+                                        : "bg-black/70 text-white hover:bg-black/85",
+                                )}
+                                aria-label="Maintenir pour comparer avant / après"
+                            >
+                                {comparing ? '◉ Original (maintenu)' : '◐ Maintenir : Avant / Après'}
+                            </button>
+                            {comparing && kind === 'image' && (
+                                <div className="absolute top-2 right-2 rounded-md bg-white text-black px-2 py-0.5 text-[10px] font-bold pointer-events-none">
+                                    AVANT
                                 </div>
                             )}
 

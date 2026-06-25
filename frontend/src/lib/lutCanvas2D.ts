@@ -67,6 +67,8 @@ const DEFAULT_FILTER: ExtraFilter = {
 export interface Canvas2DLutRenderer {
     setLut(lut: Lut3D | null): void
     setExtraFilter(f: Partial<ExtraFilter>): void
+    /** When bypassed, the renderer draws the raw frame (no LUT, no post). */
+    setBypass(bypassed: boolean): void
     start(): void
     stop(): void
 }
@@ -322,14 +324,17 @@ export function createCanvas2DLutRenderer(
 ): Canvas2DLutRenderer {
     const ctx = canvas.getContext('2d', { willReadFrequently: true })
     if (!ctx) {
-        return { setLut() { }, setExtraFilter() { }, start() { }, stop() { } }
+        return { setLut() { }, setExtraFilter() { }, setBypass() { }, start() { }, stop() { } }
     }
 
     let lut: Lut3D | null = null
     let extra: ExtraFilter = { ...DEFAULT_FILTER }
+    let bypassed = false
     let rafId = 0
+    let lastFrameTs = 0
     let running = false
-    const MAX_W = 1280
+    const MAX_W = 1024              // smaller buffer = faster pixel ops, still sharp on most screens
+    const TARGET_FRAME_MS = 33      // ~30 fps cap; avoids hogging the main thread
 
     function ensureSize() {
         const vw = video.videoWidth, vh = video.videoHeight
@@ -342,12 +347,25 @@ export function createCanvas2DLutRenderer(
         }
     }
 
-    function render() {
+    function render(now: number = 0) {
         if (!running) return
+        // 30 fps cap — pixel pipeline can't sustain 60 fps anyway, so we skip
+        // frames to avoid blocking the main thread.
+        if (now - lastFrameTs < TARGET_FRAME_MS) {
+            rafId = requestAnimationFrame(render)
+            return
+        }
+        lastFrameTs = now
         try {
             if (video.readyState >= 2 && video.videoWidth > 0) {
                 ensureSize()
                 ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+
+                if (bypassed) {
+                    // Just paint the raw frame and bail out.
+                    rafId = requestAnimationFrame(render)
+                    return
+                }
 
                 const needsPixelOps =
                     lut ||
@@ -369,21 +387,18 @@ export function createCanvas2DLutRenderer(
                 if (needsPixelOps) {
                     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
 
-                    // Pre-pass: chromatic aberration (multi-source read)
                     if (extra.chromatic > 0) {
                         const tmp = new Uint8ClampedArray(imageData.data.length)
                         applyChromatic(imageData.data, tmp, canvas.width, canvas.height, extra.chromatic)
                         imageData.data.set(tmp)
                     }
 
-                    // Main pass: LUT + full grading pipeline
                     if (lut) applyLutInPlace(imageData.data, lut)
                     applyPost(imageData.data, canvas.width, canvas.height, extra)
 
                     ctx.putImageData(imageData, 0, 0)
                 }
 
-                // Post-pass: glow (canvas composite)
                 if (extra.glow > 0) applyGlow(canvas, extra.glow)
             }
         } catch (e) {
@@ -395,6 +410,7 @@ export function createCanvas2DLutRenderer(
     return {
         setLut(l) { lut = l },
         setExtraFilter(f) { extra = { ...extra, ...f } },
+        setBypass(b) { bypassed = b },
         start() {
             if (running) return
             running = true
