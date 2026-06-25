@@ -11,7 +11,7 @@ export function TotalProgress({ completed, total, isProcessing }: TotalProgressP
     const isComplete = completed === total && !isProcessing
 
     return (
-        <div className="fixed top-0 left-0 right-0 z-50 backdrop-blur-xl bg-background/90 border-b border-border">
+        <div className="fixed bottom-0 left-0 right-0 z-50 backdrop-blur-xl bg-background/90 border-t border-border shadow-[0_-4px_12px_rgba(0,0,0,0.12)]">
             <div className="max-w-[1500px] mx-auto px-4 lg:px-6 py-3">
                 <div className="flex items-center justify-between mb-2">
                     <span className="text-sm font-semibold">

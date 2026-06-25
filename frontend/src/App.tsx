@@ -242,7 +242,7 @@ function App() {
       </header>
 
       {uiMode === 'color-lab' ? (
-        <div key="color-lab" className={`animate-in fade-in duration-300 ease-out fill-mode-both ${showProgress ? 'pt-16' : ''}`}>
+        <div key="color-lab" className={`animate-in fade-in duration-300 ease-out fill-mode-both ${showProgress ? 'pb-24' : ''}`}>
           <ColorLab
             processingMode={processingMode}
             queue={queue}
@@ -258,7 +258,7 @@ function App() {
           />
         </div>
       ) : uiMode === 'simple' ? (
-        <div key="simple" className={`animate-in fade-in slide-in-from-bottom-3 duration-300 ease-out fill-mode-both ${showProgress ? 'pt-16' : ''}`}>
+        <div key="simple" className={`animate-in fade-in slide-in-from-bottom-3 duration-300 ease-out fill-mode-both ${showProgress ? 'pb-24' : ''}`}>
           <SimpleConverter
             queue={queue}
             canStart={canStart}
@@ -276,7 +276,7 @@ function App() {
           />
         </div>
       ) : (
-      <div key="pro" className={`max-w-[1600px] mx-auto px-4 lg:px-8 py-6 ${showProgress ? 'pt-16' : ''}`}>
+      <div key="pro" className={`max-w-[1600px] mx-auto px-4 lg:px-8 py-6 ${showProgress ? 'pb-24' : ''}`}>
         <div className="grid lg:grid-cols-[440px_minmax(0,1fr)] gap-8 items-start">
           <div className="order-2 lg:order-1 animate-in fade-in slide-in-from-left-6 duration-500 ease-out fill-mode-both">
             <ConfigPanel
@@ -340,7 +340,7 @@ function App() {
       )}
 
       {backgroundEnabled && (
-        <div className="fixed bottom-4 right-4 z-50 flex items-center gap-1.5 rounded-full border border-border bg-card/95 px-3 py-1.5 text-xs text-muted-foreground shadow-lg backdrop-blur">
+        <div className={`fixed right-4 z-[60] flex items-center gap-1.5 rounded-full border border-border bg-card/95 px-3 py-1.5 text-xs text-muted-foreground shadow-lg backdrop-blur ${showProgress ? 'bottom-24' : 'bottom-4'}`}>
           <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
           Arrière-plan actif
         </div>
