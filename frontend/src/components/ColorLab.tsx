@@ -452,36 +452,51 @@ export function ColorLab({
     const activeLutForRender = lutScope === 'global' ? globalLutFile : grade.lutFile
     const useGLPreview = isVideo && videoReady && !videoError
 
+    // Build the shape the renderer wants out of the current Grade.
+    const currentExtraFilter = useMemo(() => gradeToExtraFilter({
+        exposure: grade.exposure, contrast: grade.contrast, saturation: grade.saturation,
+        temperature: grade.temperature, tint: grade.tint, hue: grade.hue,
+        highlights: grade.highlights, shadows: grade.shadows,
+        whites: grade.whites, blacks: grade.blacks,
+        liftColor: grade.liftColor, liftAmount: grade.liftAmount,
+        gammaColor: grade.gammaColor, gammaAmount: grade.gammaAmount,
+        gainColor: grade.gainColor, gainAmount: grade.gainAmount,
+        vignette: grade.vignette, grain: grade.grain,
+        chromatic: grade.chromatic, glow: grade.glow,
+        removeEnabled: grade.removeEnabled,
+        removeColor: grade.removeColor,
+        removeTolerance: grade.removeTolerance,
+    }), [grade])
+
+    // Refs that the renderer-creation effect reads, so it always picks up the
+    // latest LUT / filter without listing them as deps (we don't want to
+    // recreate the renderer every time a slider moves).
+    const filterStateRef = useRef({ lut: null as Lut3D | null, filter: currentExtraFilter })
+    useEffect(() => {
+        filterStateRef.current = {
+            lut: activeParsedLut || parsedGlobalLut || null,
+            filter: currentExtraFilter,
+        }
+    }, [activeParsedLut, parsedGlobalLut, currentExtraFilter])
+
     useEffect(() => {
         if (!useGLPreview || !videoRef.current || !glCanvasRef.current) return
         const r = createCanvas2DLutRenderer(glCanvasRef.current, videoRef.current)
         lutRendererRef.current = r
+        // Apply whatever's currently in state before the renderer's first frame.
+        r.setLut(filterStateRef.current.lut)
+        r.setExtraFilter(filterStateRef.current.filter)
         r.start()
         videoRef.current.play().catch(() => { /* silent */ })
         return () => { r.stop(); lutRendererRef.current = null }
     }, [useGLPreview, file])
 
-    // Push current LUT + filter into the GL renderer.
+    // Live updates to the renderer when grade or LUT change without a remount.
     useEffect(() => {
         if (!lutRendererRef.current) return
         lutRendererRef.current.setLut(activeParsedLut || parsedGlobalLut || null)
-        lutRendererRef.current.setExtraFilter(
-            gradeToExtraFilter({
-                exposure: grade.exposure, contrast: grade.contrast, saturation: grade.saturation,
-                temperature: grade.temperature, tint: grade.tint, hue: grade.hue,
-                highlights: grade.highlights, shadows: grade.shadows,
-                whites: grade.whites, blacks: grade.blacks,
-                liftColor: grade.liftColor, liftAmount: grade.liftAmount,
-                gammaColor: grade.gammaColor, gammaAmount: grade.gammaAmount,
-                gainColor: grade.gainColor, gainAmount: grade.gainAmount,
-                vignette: grade.vignette, grain: grade.grain,
-                chromatic: grade.chromatic, glow: grade.glow,
-                removeEnabled: grade.removeEnabled,
-                removeColor: grade.removeColor,
-                removeTolerance: grade.removeTolerance,
-            }),
-        )
-    }, [grade, activeParsedLut, parsedGlobalLut])
+        lutRendererRef.current.setExtraFilter(currentExtraFilter)
+    }, [currentExtraFilter, activeParsedLut, parsedGlobalLut])
 
     // Estimate FPS for the currently active video once it can play
     useEffect(() => {
@@ -676,17 +691,19 @@ export function ColorLab({
     const detectedOriginalFps = originalFps[activeIndex] || 60
 
     return (
-        <div className="mx-auto w-full max-w-7xl px-4 py-6">
+        <div className="mx-auto w-full max-w-[1500px] px-4 lg:px-6 py-4 pb-12">
             {/* ─── Header ─── */}
-            <div className="mb-5 text-center">
-                <h1 className="inline-flex items-center gap-2 text-2xl font-semibold tracking-tight sm:text-3xl">
-                    <IconWand size={22} className="text-primary" />
-                    Color Lab
-                </h1>
-                <p className="mt-1.5 text-xs text-muted-foreground">
-                    Étalonnage multi-fichiers, LUT live, montage léger.
-                </p>
-                <div className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-border bg-card/60 px-2.5 py-0.5 text-[10px]">
+            <div className="mb-4 flex items-center justify-between gap-4 flex-wrap">
+                <div>
+                    <h1 className="inline-flex items-center gap-2 text-xl font-semibold tracking-tight sm:text-2xl">
+                        <IconWand size={20} className="text-primary" />
+                        Color Lab
+                    </h1>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                        Étalonnage multi-fichiers, LUT live, montage léger.
+                    </p>
+                </div>
+                <div className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card/60 px-2.5 py-0.5 text-[10px]">
                     <span className={`h-1.5 w-1.5 rounded-full ${processingMode === 'frontend' ? 'bg-emerald-500' : 'bg-amber-500'}`} />
                     <span className="text-muted-foreground">Mode :</span>
                     <span className="font-semibold text-foreground">
@@ -707,7 +724,7 @@ export function ColorLab({
                     </div>
                     <p className="mt-4 text-sm font-medium text-foreground">Déposez une ou plusieurs images / vidéos</p>
                     <p className="mt-1 text-xs text-muted-foreground">
-                        Naviguez avec les flèches, étalonnage par fichier, export en lot.
+                        Étalonnage par fichier, LUT live, export en lot.
                     </p>
                     <input
                         ref={fileInputRef} type="file" multiple accept="image/*,video/*"
@@ -718,20 +735,209 @@ export function ColorLab({
             )}
 
             {file && previewUrl && (
-                <>
-                    {/* ─── Top row: large preview + file queue on the right ─── */}
-                    <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_280px] mb-4">
-                        {/* Preview. Stays `relative` everywhere so children absolutes don't escape.
-                            On mobile we wrap in a sticky outer div instead to keep the video visible. */}
+                <div className="grid gap-4 lg:grid-cols-[400px_minmax(0,1fr)] items-start">
+                    {/* ───── LEFT: Controls panel (sticky) ───── */}
+                    <aside className="space-y-3 lg:sticky lg:top-[68px] lg:max-h-[calc(100vh-84px)] overflow-y-auto pr-1">
+                        <div className="rounded-2xl border border-border bg-card p-4 shadow-sm space-y-3">
+                            <div className="flex items-center justify-between">
+                                <h2 className="text-sm font-semibold">Réglages</h2>
+                                <button
+                                    type="button"
+                                    onClick={() => updateGrade(DEFAULT_GRADE)}
+                                    className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
+                                >
+                                    <IconRefresh size={11} /> Reset
+                                </button>
+                            </div>
+
+                            <CollapsibleSection title="Lumière" defaultOpen>
+                                <Slider label="Exposition" value={grade.exposure} min={-2} max={2} step={0.1} onChange={(v) => updateGrade({ exposure: v })} suffix=" EV" />
+                                <Slider label="Contraste" value={grade.contrast} min={-100} max={100} step={1} onChange={(v) => updateGrade({ contrast: v })} />
+                                <Slider label="Hautes lumières" value={grade.highlights} min={-100} max={100} step={1} onChange={(v) => updateGrade({ highlights: v })} />
+                                <Slider label="Ombres" value={grade.shadows} min={-100} max={100} step={1} onChange={(v) => updateGrade({ shadows: v })} />
+                                <Slider label="Blancs" value={grade.whites} min={-100} max={100} step={1} onChange={(v) => updateGrade({ whites: v })} />
+                                <Slider label="Noirs" value={grade.blacks} min={-100} max={100} step={1} onChange={(v) => updateGrade({ blacks: v })} />
+                            </CollapsibleSection>
+
+                            <CollapsibleSection title="Couleur" defaultOpen>
+                                <Slider label="Saturation" value={grade.saturation} min={-100} max={100} step={1} onChange={(v) => updateGrade({ saturation: v })} />
+                                <Slider label="Température" value={grade.temperature} min={-100} max={100} step={1} onChange={(v) => updateGrade({ temperature: v })} />
+                                <Slider label="Teinte" value={grade.tint} min={-100} max={100} step={1} onChange={(v) => updateGrade({ tint: v })} />
+                                <Slider label="Hue (°)" value={grade.hue} min={-180} max={180} step={1} onChange={(v) => updateGrade({ hue: v })} suffix="°" disabled={!isVideo} />
+                            </CollapsibleSection>
+
+                            {isVideo && (
+                                <CollapsibleSection title="Color Wheels (DaVinci)" defaultOpen={false}>
+                                    <ColorSwatch label="Lift (ombres)" color={grade.liftColor} amount={grade.liftAmount}
+                                        onColorChange={(c) => updateGrade({ liftColor: c })}
+                                        onAmountChange={(a) => updateGrade({ liftAmount: a })}
+                                        onReset={() => updateGrade({ liftColor: NEUTRAL, liftAmount: 1 })} />
+                                    <ColorSwatch label="Gamma (mids)" color={grade.gammaColor} amount={grade.gammaAmount}
+                                        onColorChange={(c) => updateGrade({ gammaColor: c })}
+                                        onAmountChange={(a) => updateGrade({ gammaAmount: a })}
+                                        onReset={() => updateGrade({ gammaColor: NEUTRAL, gammaAmount: 1 })} />
+                                    <ColorSwatch label="Gain (highlights)" color={grade.gainColor} amount={grade.gainAmount}
+                                        onColorChange={(c) => updateGrade({ gainColor: c })}
+                                        onAmountChange={(a) => updateGrade({ gainAmount: a })}
+                                        onReset={() => updateGrade({ gainColor: NEUTRAL, gainAmount: 1 })} />
+                                </CollapsibleSection>
+                            )}
+
+                            <CollapsibleSection title="Détail" defaultOpen={false}>
+                                <Slider label="Netteté" value={grade.sharpness} min={-100} max={100} step={1} onChange={(v) => updateGrade({ sharpness: v })} />
+                            </CollapsibleSection>
+
+                            {isVideo && (
+                                <CollapsibleSection title="Effets" defaultOpen={false}>
+                                    <Slider label="Vignette" value={grade.vignette} min={0} max={100} step={1} onChange={(v) => updateGrade({ vignette: v })} suffix=" %" />
+                                    <Slider label="Glow" value={grade.glow} min={0} max={100} step={1} onChange={(v) => updateGrade({ glow: v })} suffix=" %" />
+                                    <Slider label="Grain film" value={grade.grain} min={0} max={100} step={1} onChange={(v) => updateGrade({ grain: v })} suffix=" %" />
+                                    <Slider label="Aberration chromatique" value={grade.chromatic} min={0} max={20} step={1} onChange={(v) => updateGrade({ chromatic: v })} suffix=" px" />
+                                </CollapsibleSection>
+                            )}
+
+                            {isVideo && (
+                                <CollapsibleSection title="Compression" defaultOpen={false}>
+                                    <div className="space-y-1.5">
+                                        <div className="flex items-center justify-between">
+                                            <span className="text-xs font-medium">FPS de sortie</span>
+                                            <span className="text-[11px] font-mono text-muted-foreground tabular-nums">
+                                                {grade.targetFps ? `${grade.targetFps} fps` : `original (${detectedOriginalFps} fps)`}
+                                            </span>
+                                        </div>
+                                        <input
+                                            type="range" min={1} max={detectedOriginalFps} step={1}
+                                            value={grade.targetFps ?? detectedOriginalFps}
+                                            onChange={(e) => {
+                                                const v = parseInt(e.target.value, 10)
+                                                updateGrade({ targetFps: v >= detectedOriginalFps ? null : v })
+                                            }}
+                                            className="h-1.5 w-full accent-primary"
+                                        />
+                                    </div>
+                                </CollapsibleSection>
+                            )}
+
+                            <CollapsibleSection title="Color Remover" defaultOpen={false}>
+                                <div className="flex items-center justify-between">
+                                    <span className="text-xs">Activer</span>
+                                    <label className="relative inline-flex h-5 w-9 cursor-pointer items-center">
+                                        <input type="checkbox" checked={grade.removeEnabled}
+                                            onChange={(e) => updateGrade({ removeEnabled: e.target.checked })}
+                                            className="peer sr-only" />
+                                        <span className="absolute inset-0 rounded-full bg-muted peer-checked:bg-primary transition-colors" />
+                                        <span className="absolute left-0.5 h-4 w-4 rounded-full bg-background shadow transition-transform peer-checked:translate-x-4" />
+                                    </label>
+                                </div>
+                                {grade.removeEnabled && (
+                                    <>
+                                        <div className="flex items-center gap-2">
+                                            <input type="color" value={grade.removeColor}
+                                                onChange={(e) => updateGrade({ removeColor: e.target.value })}
+                                                className="h-8 w-10 shrink-0 rounded border border-border bg-background cursor-pointer" />
+                                            <input type="text" value={grade.removeColor}
+                                                onChange={(e) => updateGrade({ removeColor: e.target.value })}
+                                                placeholder="#ffffff"
+                                                className="h-8 flex-1 rounded-md border border-input bg-background px-2 text-xs" />
+                                        </div>
+                                        <Slider label="Tolérance" value={grade.removeTolerance} min={0} max={100} step={1} onChange={(v) => updateGrade({ removeTolerance: v })} suffix=" %" />
+                                    </>
+                                )}
+                            </CollapsibleSection>
+
+                            <CollapsibleSection title="LUT (.cube) scope" defaultOpen={false}>
+                                <div className="flex items-center gap-1 rounded-md border border-border bg-background/60 p-0.5">
+                                    <button type="button"
+                                        onClick={() => setLutScope('global')}
+                                        className={cn(
+                                            'flex-1 rounded px-2 py-1 text-[10px] font-semibold transition-colors',
+                                            lutScope === 'global' ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:text-foreground',
+                                        )}
+                                    >
+                                        Global
+                                    </button>
+                                    <button type="button"
+                                        onClick={() => setLutScope('per-file')}
+                                        className={cn(
+                                            'flex-1 rounded px-2 py-1 text-[10px] font-semibold transition-colors',
+                                            lutScope === 'per-file' ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:text-foreground',
+                                        )}
+                                    >
+                                        Par fichier
+                                    </button>
+                                </div>
+                                <p className="text-[10px] italic text-muted-foreground">
+                                    Le LUT se charge via le bouton en haut à gauche de la vidéo.
+                                </p>
+                            </CollapsibleSection>
+
+                            {isVideo && (
+                                <CollapsibleSection title="Avancé : montage" defaultOpen={false}>
+                                    <div className="space-y-2">
+                                        <p className="text-[11px] font-semibold text-muted-foreground">Trim</p>
+                                        <div className="grid grid-cols-2 gap-2">
+                                            <div>
+                                                <label className="text-[10px] text-muted-foreground">Début</label>
+                                                <input type="text"
+                                                    value={grade.trimStart}
+                                                    onChange={(e) => updateGrade({ trimStart: e.target.value })}
+                                                    placeholder="00:00:05"
+                                                    className="mt-0.5 h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="text-[10px] text-muted-foreground">Fin</label>
+                                                <input type="text"
+                                                    value={grade.trimEnd}
+                                                    onChange={(e) => updateGrade({ trimEnd: e.target.value })}
+                                                    placeholder="00:01:30"
+                                                    className="mt-0.5 h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
+                                                />
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div className="space-y-2 pt-2 border-t border-border">
+                                        <p className="text-[11px] font-semibold text-muted-foreground">Texte incrusté</p>
+                                        <input type="text"
+                                            value={grade.overlayText}
+                                            onChange={(e) => updateGrade({ overlayText: e.target.value })}
+                                            placeholder="Texte à afficher…"
+                                            className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
+                                        />
+                                        {grade.overlayText && (
+                                            <div className="grid grid-cols-2 gap-2">
+                                                <input type="text"
+                                                    value={grade.overlayTextX}
+                                                    onChange={(e) => updateGrade({ overlayTextX: e.target.value })}
+                                                    placeholder="X"
+                                                    className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
+                                                />
+                                                <input type="text"
+                                                    value={grade.overlayTextY}
+                                                    onChange={(e) => updateGrade({ overlayTextY: e.target.value })}
+                                                    placeholder="Y"
+                                                    className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
+                                                />
+                                            </div>
+                                        )}
+                                    </div>
+                                </CollapsibleSection>
+                            )}
+                        </div>
+                    </aside>
+
+                    {/* ───── RIGHT: Preview + controls + queue ───── */}
+                    <div className="space-y-3 min-w-0">
+                        {/* Preview — big */}
                         <div
                             className="relative overflow-hidden rounded-2xl border border-border bg-black/60 shadow-sm w-full"
-                            style={{ aspectRatio: isVideo ? '16 / 9' : undefined, maxHeight: isVideo ? undefined : '70vh' }}
+                            style={{ aspectRatio: isVideo ? '16 / 9' : undefined, maxHeight: isVideo ? undefined : '78vh' }}
                         >
                             {kind === 'image' ? (
                                 <div className="absolute inset-0 flex items-center justify-center">
                                     <img
                                         src={previewUrl} alt="Aperçu"
-                                        className="max-h-[75vh] max-w-full object-contain"
+                                        className="max-h-[78vh] max-w-full object-contain"
                                         style={{ filter: cssFilter }}
                                     />
                                 </div>
@@ -779,7 +985,7 @@ export function ColorLab({
                                 </div>
                             )}
 
-                            {/* LUT picker overlay — top-left corner of the preview */}
+                            {/* LUT picker overlay — top-left */}
                             {isVideo && (
                                 <div className="absolute top-2 left-2 z-10 flex items-center gap-1">
                                     {activeLutForRender ? (
@@ -818,394 +1024,147 @@ export function ColorLab({
                             )}
                         </div>
 
-                        {/* File queue on the right */}
-                        <div className="flex flex-col gap-2 lg:max-h-[75vh] lg:overflow-y-auto lg:pr-1">
-                            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground px-1">
-                                File d'attente ({files.length})
-                            </h3>
-                            {labItems.map((labItem, i) => {
-                                const f = labItem.file
-                                const item = batch[labItem.id]
-                                const isCurrent = i === activeIndex
-                                return (
-                                    <button
-                                        key={`${f.name}-${i}`}
-                                        type="button"
-                                        onClick={() => setActiveIndex(i)}
-                                        className={cn(
-                                            'flex w-full items-center justify-between gap-2 rounded-lg border px-2.5 py-2 text-left text-xs transition-colors',
-                                            isCurrent
-                                                ? 'border-primary bg-primary/10 shadow-sm'
-                                                : 'border-border bg-card/60 hover:bg-card',
-                                        )}
-                                    >
-                                        <div className="flex min-w-0 items-center gap-1.5">
-                                            {detectKind(f) === 'video' ? <IconVideo size={12} /> : <IconImage size={12} />}
-                                            <span className="truncate font-medium text-foreground">{f.name}</span>
-                                        </div>
-                                        <div className="flex shrink-0 items-center gap-1.5">
-                                            {item?.state === 'done' && item.downloadUrl && (
-                                                <a
-                                                    href={item.downloadUrl} download={item.filename}
-                                                    onClick={(e) => e.stopPropagation()}
-                                                    className="inline-flex h-5 items-center gap-0.5 rounded bg-emerald-500/15 px-1 text-[10px] font-semibold text-emerald-600 hover:bg-emerald-500/25 dark:text-emerald-400"
-                                                >
-                                                    <IconDownload size={10} />DL
-                                                </a>
-                                            )}
-                                            {item?.state === 'busy' && <span className="h-3 w-3 animate-spin rounded-full border-2 border-primary/30 border-t-primary" />}
-                                            <span
-                                                onClick={(e) => { e.stopPropagation(); removeFile(i) }}
-                                                className="text-muted-foreground hover:text-destructive cursor-pointer"
-                                            >
-                                                <IconX size={11} />
-                                            </span>
-                                        </div>
-                                    </button>
-                                )
-                            })}
+                        {/* Carousel + Lancer */}
+                        <div className="flex items-center justify-center gap-3 flex-wrap">
                             <button
                                 type="button"
-                                onClick={() => fileInputRef.current?.click()}
-                                className="flex w-full items-center justify-center gap-1 rounded-lg border border-dashed border-border px-2 py-1.5 text-[11px] text-muted-foreground hover:border-primary/40 hover:text-foreground"
+                                onClick={() => setActiveIndex((i) => Math.max(0, i - 1))}
+                                disabled={activeIndex === 0}
+                                className="inline-flex h-11 w-11 items-center justify-center rounded-xl border border-border bg-card text-foreground transition-colors hover:bg-muted disabled:opacity-30"
+                                aria-label="Fichier précédent"
                             >
-                                + Ajouter
+                                ←
                             </button>
-                        </div>
-                    </div>
 
-                    {/* ─── Carousel + Lancer button ─── */}
-                    <div className="mb-6 flex items-center justify-center gap-3">
-                        <button
-                            type="button"
-                            onClick={() => setActiveIndex((i) => Math.max(0, i - 1))}
-                            disabled={activeIndex === 0}
-                            className="inline-flex h-11 w-11 items-center justify-center rounded-xl border border-border bg-card text-foreground transition-colors hover:bg-muted disabled:opacity-30"
-                            aria-label="Fichier précédent"
-                        >
-                            ←
-                        </button>
-
-                        <Button
-                            type="button"
-                            onClick={apply}
-                            disabled={busy || !outputFormat || files.length === 0}
-                            className="h-11 flex-1 sm:flex-none text-sm font-semibold gap-2 rounded-xl px-4 sm:px-6 sm:min-w-[260px]"
-                        >
-                            {busy ? (
-                                <>
-                                    <span className="h-4 w-4 animate-spin rounded-full border-2 border-primary-foreground/40 border-t-primary-foreground" />
-                                    {busyMessage || 'Traitement…'}
-                                </>
-                            ) : (
-                                <>
-                                    <IconWand size={15} />
-                                    {files.length > 1 ? `Lancer le traitement (${files.length})` : 'Lancer le traitement'}
-                                </>
-                            )}
-                        </Button>
-
-                        <button
-                            type="button"
-                            onClick={() => setActiveIndex((i) => Math.min(files.length - 1, i + 1))}
-                            disabled={activeIndex >= files.length - 1}
-                            className="inline-flex h-11 w-11 items-center justify-center rounded-xl border border-border bg-card text-foreground transition-colors hover:bg-muted disabled:opacity-30"
-                            aria-label="Fichier suivant"
-                        >
-                            →
-                        </button>
-                    </div>
-                    <div className="mb-4 flex items-center justify-between text-[11px] text-muted-foreground">
-                        <span>
-                            Fichier <span className="font-semibold text-foreground">{activeIndex + 1}</span> / {files.length}
-                            {files.length > 1 && ' — flèches ← → ou clavier'}
-                        </span>
-                        <button type="button" onClick={reset} className="hover:text-destructive">
-                            <IconX size={11} className="inline-block mr-1" />Tout effacer
-                        </button>
-                    </div>
-
-                    {/* ─── Format de sortie ─── */}
-                    <div className="mb-4 rounded-xl border border-border bg-card p-3">
-                        <div className="flex items-center gap-3">
-                            <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Format de sortie</span>
-                            <div className="flex flex-wrap gap-1.5">
-                                {outputs.map((fmt) => (
-                                    <button
-                                        key={fmt} type="button"
-                                        onClick={() => setOutputFormat(fmt)}
-                                        className={cn(
-                                            'rounded-md border px-2.5 py-1 text-xs font-mono font-semibold transition-colors',
-                                            outputFormat === fmt
-                                                ? 'border-primary bg-primary text-primary-foreground'
-                                                : 'border-border bg-background text-muted-foreground hover:border-muted-foreground hover:text-foreground',
-                                        )}
-                                    >
-                                        {fmt.toUpperCase()}
-                                    </button>
-                                ))}
-                            </div>
-                        </div>
-                    </div>
-
-                    {err && (
-                        <div className="mb-4 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                            {err}
-                        </div>
-                    )}
-
-                    {/* ─── Params grid ─── */}
-                    <div className="mb-2 flex items-center justify-between">
-                        <h2 className="text-sm font-semibold tracking-tight">Paramètres du fichier actif</h2>
-                        <button
-                            type="button"
-                            onClick={() => updateGrade(DEFAULT_GRADE)}
-                            className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
-                        >
-                            <IconRefresh size={11} /> Reset
-                        </button>
-                    </div>
-
-                    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                        <div className="rounded-xl border border-border bg-card p-3">
-                            <CollapsibleSection title="Lumière" defaultOpen>
-                                <Slider label="Exposition" value={grade.exposure} min={-2} max={2} step={0.1} onChange={(v) => updateGrade({ exposure: v })} suffix=" EV" />
-                                <Slider label="Contraste" value={grade.contrast} min={-100} max={100} step={1} onChange={(v) => updateGrade({ contrast: v })} />
-                                <Slider label="Hautes lumières" value={grade.highlights} min={-100} max={100} step={1} onChange={(v) => updateGrade({ highlights: v })} />
-                                <Slider label="Ombres" value={grade.shadows} min={-100} max={100} step={1} onChange={(v) => updateGrade({ shadows: v })} />
-                                <Slider label="Blancs" value={grade.whites} min={-100} max={100} step={1} onChange={(v) => updateGrade({ whites: v })} />
-                                <Slider label="Noirs" value={grade.blacks} min={-100} max={100} step={1} onChange={(v) => updateGrade({ blacks: v })} />
-                            </CollapsibleSection>
-                        </div>
-
-                        <div className="rounded-xl border border-border bg-card p-3">
-                            <CollapsibleSection title="Couleur" defaultOpen>
-                                <Slider label="Saturation" value={grade.saturation} min={-100} max={100} step={1} onChange={(v) => updateGrade({ saturation: v })} />
-                                <Slider label="Température" value={grade.temperature} min={-100} max={100} step={1} onChange={(v) => updateGrade({ temperature: v })} />
-                                <Slider label="Teinte" value={grade.tint} min={-100} max={100} step={1} onChange={(v) => updateGrade({ tint: v })} />
-                                <Slider label="Hue (°)" value={grade.hue} min={-180} max={180} step={1} onChange={(v) => updateGrade({ hue: v })} suffix="°" disabled={!isVideo} />
-                            </CollapsibleSection>
-                        </div>
-
-                        {isVideo && (
-                            <div className="rounded-xl border border-border bg-card p-3">
-                                <CollapsibleSection title="Color Wheels (DaVinci)" defaultOpen={false}>
-                                    <ColorSwatch label="Lift (ombres)" color={grade.liftColor} amount={grade.liftAmount}
-                                        onColorChange={(c) => updateGrade({ liftColor: c })}
-                                        onAmountChange={(a) => updateGrade({ liftAmount: a })}
-                                        onReset={() => updateGrade({ liftColor: NEUTRAL, liftAmount: 1 })} />
-                                    <ColorSwatch label="Gamma (mids)" color={grade.gammaColor} amount={grade.gammaAmount}
-                                        onColorChange={(c) => updateGrade({ gammaColor: c })}
-                                        onAmountChange={(a) => updateGrade({ gammaAmount: a })}
-                                        onReset={() => updateGrade({ gammaColor: NEUTRAL, gammaAmount: 1 })} />
-                                    <ColorSwatch label="Gain (highlights)" color={grade.gainColor} amount={grade.gainAmount}
-                                        onColorChange={(c) => updateGrade({ gainColor: c })}
-                                        onAmountChange={(a) => updateGrade({ gainAmount: a })}
-                                        onReset={() => updateGrade({ gainColor: NEUTRAL, gainAmount: 1 })} />
-                                </CollapsibleSection>
-                            </div>
-                        )}
-
-                        <div className="rounded-xl border border-border bg-card p-3">
-                            <CollapsibleSection title="Détail" defaultOpen={false}>
-                                <Slider label="Netteté" value={grade.sharpness} min={-100} max={100} step={1} onChange={(v) => updateGrade({ sharpness: v })} />
-                            </CollapsibleSection>
-                        </div>
-
-                        {isVideo && (
-                            <div className="rounded-xl border border-border bg-card p-3">
-                                <CollapsibleSection title="Effets" defaultOpen={false}>
-                                    <Slider label="Vignette" value={grade.vignette} min={0} max={100} step={1} onChange={(v) => updateGrade({ vignette: v })} suffix=" %" />
-                                    <Slider label="Glow" value={grade.glow} min={0} max={100} step={1} onChange={(v) => updateGrade({ glow: v })} suffix=" %" />
-                                    <Slider label="Grain film" value={grade.grain} min={0} max={100} step={1} onChange={(v) => updateGrade({ grain: v })} suffix=" %" />
-                                    <Slider label="Aberration chromatique" value={grade.chromatic} min={0} max={20} step={1} onChange={(v) => updateGrade({ chromatic: v })} suffix=" px" />
-                                </CollapsibleSection>
-                            </div>
-                        )}
-
-                        {isVideo && (
-                            <div className="rounded-xl border border-border bg-card p-3">
-                                <CollapsibleSection title="Compression" defaultOpen={false}>
-                                    <div className="space-y-1.5">
-                                        <div className="flex items-center justify-between">
-                                            <span className="text-xs font-medium">FPS de sortie</span>
-                                            <span className="text-[11px] font-mono text-muted-foreground tabular-nums">
-                                                {grade.targetFps ? `${grade.targetFps} fps` : `original (${detectedOriginalFps} fps)`}
-                                            </span>
-                                        </div>
-                                        <input
-                                            type="range"
-                                            min={1}
-                                            max={detectedOriginalFps}
-                                            step={1}
-                                            value={grade.targetFps ?? detectedOriginalFps}
-                                            onChange={(e) => {
-                                                const v = parseInt(e.target.value, 10)
-                                                updateGrade({ targetFps: v >= detectedOriginalFps ? null : v })
-                                            }}
-                                            className="h-1.5 w-full accent-primary"
-                                        />
-                                        <p className="text-[10px] italic text-muted-foreground">
-                                            Baisser le FPS = fichier plus léger.
-                                        </p>
-                                    </div>
-                                </CollapsibleSection>
-                            </div>
-                        )}
-
-                        <div className="rounded-xl border border-border bg-card p-3">
-                            <CollapsibleSection title="Color Remover" defaultOpen={false}>
-                                <div className="flex items-center justify-between">
-                                    <span className="text-xs">Activer</span>
-                                    <label className="relative inline-flex h-5 w-9 cursor-pointer items-center">
-                                        <input type="checkbox" checked={grade.removeEnabled}
-                                            onChange={(e) => updateGrade({ removeEnabled: e.target.checked })}
-                                            className="peer sr-only" />
-                                        <span className="absolute inset-0 rounded-full bg-muted peer-checked:bg-primary transition-colors" />
-                                        <span className="absolute left-0.5 h-4 w-4 rounded-full bg-background shadow transition-transform peer-checked:translate-x-4" />
-                                    </label>
-                                </div>
-                                {grade.removeEnabled && (
+                            <Button
+                                type="button"
+                                onClick={apply}
+                                disabled={busy || !outputFormat || labItems.length === 0}
+                                className="h-11 text-sm font-semibold gap-2 rounded-xl px-6 min-w-[240px]"
+                            >
+                                {busy ? (
                                     <>
-                                        <div className="flex items-center gap-2">
-                                            <input type="color" value={grade.removeColor}
-                                                onChange={(e) => updateGrade({ removeColor: e.target.value })}
-                                                className="h-8 w-10 shrink-0 rounded border border-border bg-background cursor-pointer" />
-                                            <input type="text" value={grade.removeColor}
-                                                onChange={(e) => updateGrade({ removeColor: e.target.value })}
-                                                placeholder="#ffffff"
-                                                className="h-8 flex-1 rounded-md border border-input bg-background px-2 text-xs" />
-                                        </div>
-                                        <Slider label="Tolérance" value={grade.removeTolerance} min={0} max={100} step={1} onChange={(v) => updateGrade({ removeTolerance: v })} suffix=" %" />
+                                        <span className="h-4 w-4 animate-spin rounded-full border-2 border-primary-foreground/40 border-t-primary-foreground" />
+                                        {busyMessage || 'Traitement…'}
+                                    </>
+                                ) : (
+                                    <>
+                                        <IconWand size={15} />
+                                        {labItems.length > 1 ? `Lancer le traitement (${labItems.length})` : 'Lancer le traitement'}
                                     </>
                                 )}
-                            </CollapsibleSection>
+                            </Button>
+
+                            <button
+                                type="button"
+                                onClick={() => setActiveIndex((i) => Math.min(labItems.length - 1, i + 1))}
+                                disabled={activeIndex >= labItems.length - 1}
+                                className="inline-flex h-11 w-11 items-center justify-center rounded-xl border border-border bg-card text-foreground transition-colors hover:bg-muted disabled:opacity-30"
+                                aria-label="Fichier suivant"
+                            >
+                                →
+                            </button>
                         </div>
 
+                        <div className="flex items-center justify-between text-[11px] text-muted-foreground px-1">
+                            <span>
+                                Fichier <span className="font-semibold text-foreground">{activeIndex + 1}</span> / {labItems.length}
+                            </span>
+                            <button type="button" onClick={reset} className="hover:text-destructive">
+                                <IconX size={11} className="inline-block mr-1" />Tout effacer
+                            </button>
+                        </div>
+
+                        {/* Format de sortie */}
                         <div className="rounded-xl border border-border bg-card p-3">
-                            <CollapsibleSection title="LUT (.cube)" defaultOpen={false}>
-                                <div className="space-y-2">
-                                    <div className="flex items-center gap-1 rounded-md border border-border bg-background/60 p-0.5">
+                            <div className="flex items-center gap-3 flex-wrap">
+                                <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Format de sortie</span>
+                                <div className="flex flex-wrap gap-1.5">
+                                    {outputs.map((fmt) => (
                                         <button
-                                            type="button"
-                                            onClick={() => setLutScope('global')}
+                                            key={fmt} type="button"
+                                            onClick={() => setOutputFormat(fmt)}
                                             className={cn(
-                                                'flex-1 rounded px-2 py-1 text-[10px] font-semibold transition-colors',
-                                                lutScope === 'global' ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:text-foreground',
+                                                'rounded-md border px-2.5 py-1 text-xs font-mono font-semibold transition-colors',
+                                                outputFormat === fmt
+                                                    ? 'border-primary bg-primary text-primary-foreground'
+                                                    : 'border-border bg-background text-muted-foreground hover:border-muted-foreground hover:text-foreground',
                                             )}
                                         >
-                                            Global
+                                            {fmt.toUpperCase()}
                                         </button>
-                                        <button
-                                            type="button"
-                                            onClick={() => setLutScope('per-file')}
-                                            className={cn(
-                                                'flex-1 rounded px-2 py-1 text-[10px] font-semibold transition-colors',
-                                                lutScope === 'per-file' ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:text-foreground',
-                                            )}
-                                        >
-                                            Par fichier
-                                        </button>
-                                    </div>
-
-                                    {(() => {
-                                        const lutForSlot = lutScope === 'global' ? globalLutFile : grade.lutFile
-                                        const setLut = (f: File | null) => {
-                                            if (lutScope === 'global') setGlobalLutFile(f)
-                                            else updateGrade({ lutFile: f })
-                                        }
-                                        return lutForSlot ? (
-                                            <div className="flex items-center justify-between gap-2 rounded-md border border-border bg-background/60 px-2 py-1.5">
-                                                <span className="truncate text-[11px] text-emerald-500">{lutForSlot.name}</span>
-                                                <button type="button" onClick={() => setLut(null)} className="text-muted-foreground hover:text-destructive">
-                                                    <IconX size={12} />
-                                                </button>
-                                            </div>
-                                        ) : (
-                                            <label className="flex h-9 cursor-pointer items-center justify-center rounded-md border border-dashed border-border bg-background/40 text-xs text-muted-foreground hover:border-primary/40 hover:text-foreground">
-                                                Charger .cube
-                                                <input
-                                                    ref={lutInputRef}
-                                                    type="file" accept=".cube" className="hidden"
-                                                    onChange={(e) => {
-                                                        const f = e.target.files?.[0]
-                                                        if (f) setLut(f)
-                                                        e.target.value = ''
-                                                    }}
-                                                />
-                                            </label>
-                                        )
-                                    })()}
+                                    ))}
                                 </div>
-                            </CollapsibleSection>
+                            </div>
                         </div>
 
-                        {isVideo && (
-                            <div className="rounded-xl border border-border bg-card p-3 sm:col-span-2 lg:col-span-3">
-                                <CollapsibleSection title="Avancé : montage" defaultOpen={false}>
-                                    <div className="grid gap-3 sm:grid-cols-2">
-                                        <div className="space-y-2">
-                                            <p className="text-[11px] font-semibold text-muted-foreground">Couper la vidéo (trim)</p>
-                                            <div className="grid grid-cols-2 gap-2">
-                                                <div>
-                                                    <label className="text-[10px] text-muted-foreground">Début</label>
-                                                    <input type="text"
-                                                        value={grade.trimStart}
-                                                        onChange={(e) => updateGrade({ trimStart: e.target.value })}
-                                                        placeholder="00:00:05"
-                                                        className="mt-0.5 h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
-                                                    />
-                                                </div>
-                                                <div>
-                                                    <label className="text-[10px] text-muted-foreground">Fin</label>
-                                                    <input type="text"
-                                                        value={grade.trimEnd}
-                                                        onChange={(e) => updateGrade({ trimEnd: e.target.value })}
-                                                        placeholder="00:01:30"
-                                                        className="mt-0.5 h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
-                                                    />
-                                                </div>
-                                            </div>
-                                            <p className="text-[10px] italic text-muted-foreground">Laisse vide pour ne pas couper.</p>
-                                        </div>
-                                        <div className="space-y-2">
-                                            <p className="text-[11px] font-semibold text-muted-foreground">Texte incrusté</p>
-                                            <input type="text"
-                                                value={grade.overlayText}
-                                                onChange={(e) => updateGrade({ overlayText: e.target.value })}
-                                                placeholder="Texte à afficher…"
-                                                className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
-                                            />
-                                            {grade.overlayText && (
-                                                <div className="grid grid-cols-2 gap-2">
-                                                    <div>
-                                                        <label className="text-[10px] text-muted-foreground">Position X</label>
-                                                        <input type="text"
-                                                            value={grade.overlayTextX}
-                                                            onChange={(e) => updateGrade({ overlayTextX: e.target.value })}
-                                                            className="mt-0.5 h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
-                                                        />
-                                                    </div>
-                                                    <div>
-                                                        <label className="text-[10px] text-muted-foreground">Position Y</label>
-                                                        <input type="text"
-                                                            value={grade.overlayTextY}
-                                                            onChange={(e) => updateGrade({ overlayTextY: e.target.value })}
-                                                            className="mt-0.5 h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
-                                                        />
-                                                    </div>
-                                                </div>
-                                            )}
-                                            <p className="text-[10px] italic text-muted-foreground">
-                                                Position en pixels ou expression FFmpeg (ex : <code>(w-text_w)/2</code> pour centrer).
-                                            </p>
-                                        </div>
-                                    </div>
-                                </CollapsibleSection>
+                        {err && (
+                            <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                                {err}
                             </div>
                         )}
+
+                        {/* File queue — horizontal carousel below the preview */}
+                        <div className="rounded-xl border border-border bg-card p-3">
+                            <div className="mb-2 flex items-center justify-between">
+                                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                                    File d'attente ({labItems.length})
+                                </h3>
+                                <button
+                                    type="button"
+                                    onClick={() => fileInputRef.current?.click()}
+                                    className="text-[11px] font-medium text-primary hover:underline"
+                                >
+                                    + Ajouter
+                                </button>
+                            </div>
+                            <div className="flex gap-2 overflow-x-auto pb-1">
+                                {labItems.map((labItem, i) => {
+                                    const f = labItem.file
+                                    const isCurrent = i === activeIndex
+                                    const itemBatch = batch[labItem.id]
+                                    const itemKind = detectKind(f)
+                                    return (
+                                        <button
+                                            key={`${f.name}-${i}`}
+                                            type="button"
+                                            onClick={() => setActiveIndex(i)}
+                                            className={cn(
+                                                'shrink-0 w-32 rounded-lg border overflow-hidden text-left transition-all',
+                                                isCurrent
+                                                    ? 'border-primary shadow-md ring-2 ring-primary/20'
+                                                    : 'border-border hover:border-muted-foreground',
+                                            )}
+                                        >
+                                            <div className="flex h-16 w-full items-center justify-center bg-black/70 text-muted-foreground">
+                                                {itemKind === 'video' ? <IconVideo size={20} /> : <IconImage size={20} />}
+                                            </div>
+                                            <div className="px-2 py-1.5 bg-card">
+                                                <p className="truncate text-[11px] font-medium text-foreground">{f.name}</p>
+                                                <p className="text-[10px] text-muted-foreground">{formatSize(f.size)}</p>
+                                                {itemBatch?.state === 'done' && itemBatch.downloadUrl && (
+                                                    <a
+                                                        href={itemBatch.downloadUrl} download={itemBatch.filename}
+                                                        onClick={(e) => e.stopPropagation()}
+                                                        className="mt-1 inline-flex h-5 items-center gap-0.5 rounded bg-emerald-500/15 px-1 text-[10px] font-semibold text-emerald-600 hover:bg-emerald-500/25 dark:text-emerald-400"
+                                                    >
+                                                        <IconDownload size={10} /> DL
+                                                    </a>
+                                                )}
+                                                {itemBatch?.state === 'busy' && (
+                                                    <span className="mt-1 inline-block h-2.5 w-2.5 animate-spin rounded-full border-2 border-primary/30 border-t-primary" />
+                                                )}
+                                                {itemBatch?.state === 'error' && (
+                                                    <p className="mt-0.5 text-[9px] text-destructive truncate">{itemBatch.error}</p>
+                                                )}
+                                            </div>
+                                        </button>
+                                    )
+                                })}
+                            </div>
+                        </div>
                     </div>
-                </>
+                </div>
             )}
         </div>
     )
