@@ -253,6 +253,16 @@ export function IconMoon(props: IconProps) {
     )
 }
 
+export function IconMenu(props: IconProps) {
+    return (
+        <svg {...svgProps(props)}>
+            <line x1="4" x2="20" y1="6" y2="6" />
+            <line x1="4" x2="20" y1="12" y2="12" />
+            <line x1="4" x2="20" y1="18" y2="18" />
+        </svg>
+    )
+}
+
 export function IconSequence(props: IconProps) {
     return (
         <svg {...svgProps(props)}>

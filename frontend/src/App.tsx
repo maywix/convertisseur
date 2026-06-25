@@ -4,7 +4,7 @@ import { ConfigPanel, VideoColorSampler } from '@/components/ConfigPanel'
 import { FileQueue } from '@/components/FileQueue'
 import { SimpleConverter } from '@/components/SimpleConverter'
 import { TotalProgress } from '@/components/TotalProgress'
-import { IconMoon, IconSun } from '@/components/icons'
+import { IconMenu, IconMoon, IconSun, IconX } from '@/components/icons'
 import { useConverter } from '@/hooks/useConverter'
 import { getFileType } from '@/types'
 
@@ -111,6 +111,9 @@ function App() {
   }, [queue, completedCount])
 
   const showProgress = hasStarted && totalCount > 0
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  // Close the mobile menu whenever the user changes mode or theme.
+  useEffect(() => { setMobileMenuOpen(false) }, [uiMode, processingMode, theme])
   const colorPickerVideoFile =
     queue.find((item) => {
       const kind = item.mediaKind || getFileType(item.file.name)
@@ -131,25 +134,24 @@ function App() {
       )}
 
       <header className="sticky top-0 z-40 border-b border-border/80 bg-background/90 backdrop-blur-xl">
-        <div className="mx-auto max-w-[1500px] px-4 lg:px-6 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-lg bg-foreground flex items-center justify-center text-background font-bold text-sm shadow-sm">C</div>
-            <div>
-              <h1 className="text-[15px] font-semibold tracking-tight leading-none">Convertisseur Studio</h1>
-              <p className="text-xs text-muted-foreground leading-none mt-1">Vidéo · Audio · Image · Document · 3D</p>
+        <div className="mx-auto max-w-[1500px] px-3 sm:px-4 lg:px-6 py-2.5 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-9 h-9 shrink-0 rounded-lg bg-foreground flex items-center justify-center text-background font-bold text-sm shadow-sm">C</div>
+            <div className="min-w-0">
+              <h1 className="text-[15px] font-semibold tracking-tight leading-none truncate">Convertisseur Studio</h1>
+              <p className="hidden xs:block text-xs text-muted-foreground leading-none mt-1">Vidéo · Audio · Image · Document · 3D</p>
             </div>
           </div>
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            {/* Processing mode toggle: where the conversion runs */}
+
+          {/* ── Desktop controls (md+) ── */}
+          <div className="hidden md:flex items-center gap-2 text-xs text-muted-foreground">
             <div
-              className="hidden md:inline-flex items-center gap-2 rounded-lg border border-border bg-card px-2 py-1 shadow-sm"
+              className="inline-flex items-center gap-2 rounded-lg border border-border bg-card px-2 py-1 shadow-sm"
               title={processingMode === 'frontend'
-                ? "Conversion en local dans le navigateur (rapide, privé, images uniquement pour l'instant)"
-                : "Conversion sur le serveur (toutes les options dispo, vidéo incluse)"}
+                ? "Conversion en local dans le navigateur"
+                : "Conversion sur le serveur avec FFmpeg / Pillow"}
             >
-              <span className={`text-[10px] font-semibold uppercase ${processingMode === 'frontend' ? 'text-primary' : 'text-muted-foreground'}`}>
-                Front
-              </span>
+              <span className={`text-[10px] font-semibold uppercase ${processingMode === 'frontend' ? 'text-primary' : 'text-muted-foreground'}`}>Front</span>
               <button
                 type="button"
                 role="switch"
@@ -157,37 +159,15 @@ function App() {
                 onClick={() => setProcessingMode(processingMode === 'frontend' ? 'backend' : 'frontend')}
                 className="relative inline-flex h-5 w-9 items-center rounded-full bg-muted transition-colors"
               >
-                <span
-                  className={`inline-block h-4 w-4 transform rounded-full bg-background shadow transition-transform ${processingMode === 'backend' ? 'translate-x-4' : 'translate-x-0.5'}`}
-                />
+                <span className={`inline-block h-4 w-4 transform rounded-full bg-background shadow transition-transform ${processingMode === 'backend' ? 'translate-x-4' : 'translate-x-0.5'}`} />
               </button>
-              <span className={`text-[10px] font-semibold uppercase ${processingMode === 'backend' ? 'text-primary' : 'text-muted-foreground'}`}>
-                Back
-              </span>
+              <span className={`text-[10px] font-semibold uppercase ${processingMode === 'backend' ? 'text-primary' : 'text-muted-foreground'}`}>Back</span>
             </div>
 
             <div className="inline-flex items-center rounded-lg border border-border bg-card p-0.5 shadow-sm">
-              <button
-                type="button"
-                onClick={() => setUiMode('simple')}
-                className={`inline-flex h-8 items-center rounded-md px-3 text-xs font-semibold transition-colors ${uiMode === 'simple' ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground'}`}
-              >
-                Simple
-              </button>
-              <button
-                type="button"
-                onClick={() => setUiMode('pro')}
-                className={`inline-flex h-8 items-center rounded-md px-3 text-xs font-semibold transition-colors ${uiMode === 'pro' ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground'}`}
-              >
-                Pro
-              </button>
-              <button
-                type="button"
-                onClick={() => setUiMode('color-lab')}
-                className={`inline-flex h-8 items-center rounded-md px-3 text-xs font-semibold transition-colors ${uiMode === 'color-lab' ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground'}`}
-              >
-                Color Lab
-              </button>
+              <button type="button" onClick={() => setUiMode('simple')} className={`inline-flex h-8 items-center rounded-md px-3 text-xs font-semibold transition-colors ${uiMode === 'simple' ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground'}`}>Simple</button>
+              <button type="button" onClick={() => setUiMode('pro')} className={`inline-flex h-8 items-center rounded-md px-3 text-xs font-semibold transition-colors ${uiMode === 'pro' ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground'}`}>Pro</button>
+              <button type="button" onClick={() => setUiMode('color-lab')} className={`inline-flex h-8 items-center rounded-md px-3 text-xs font-semibold transition-colors ${uiMode === 'color-lab' ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground'}`}>Color Lab</button>
             </div>
             <button
               type="button"
@@ -196,10 +176,64 @@ function App() {
               aria-label={theme === 'dark' ? 'Passer au thème clair' : 'Passer au thème sombre'}
             >
               {theme === 'dark' ? <IconSun size={15} /> : <IconMoon size={15} />}
-              <span className="hidden sm:inline">{theme === 'dark' ? 'Clair' : 'Sombre'}</span>
+              <span className="hidden lg:inline">{theme === 'dark' ? 'Clair' : 'Sombre'}</span>
             </button>
           </div>
+
+          {/* ── Mobile hamburger ── */}
+          <button
+            type="button"
+            onClick={() => setMobileMenuOpen((v) => !v)}
+            className="md:hidden inline-flex h-9 w-9 items-center justify-center rounded-lg border border-border bg-card text-foreground shadow-sm hover:bg-muted"
+            aria-label={mobileMenuOpen ? 'Fermer le menu' : 'Ouvrir le menu'}
+            aria-expanded={mobileMenuOpen}
+          >
+            {mobileMenuOpen ? <IconX size={18} /> : <IconMenu size={18} />}
+          </button>
         </div>
+
+        {/* ── Mobile menu panel ── */}
+        {mobileMenuOpen && (
+          <div className="md:hidden border-t border-border bg-background/95 backdrop-blur-xl animate-in fade-in slide-in-from-top-2 duration-200">
+            <div className="px-4 py-4 space-y-3">
+              <div>
+                <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Mode d'affichage</p>
+                <div className="grid grid-cols-3 gap-1 rounded-lg border border-border bg-card p-0.5 shadow-sm">
+                  {(['simple','pro','color-lab'] as const).map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() => setUiMode(m)}
+                      className={`h-9 rounded-md text-xs font-semibold transition-colors ${uiMode === m ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground'}`}
+                    >
+                      {m === 'simple' ? 'Simple' : m === 'pro' ? 'Pro' : 'Color Lab'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Lieu de conversion</p>
+                <div className="grid grid-cols-2 gap-1 rounded-lg border border-border bg-card p-0.5 shadow-sm">
+                  <button type="button" onClick={() => setProcessingMode('frontend')} className={`h-9 rounded-md text-xs font-semibold transition-colors ${processingMode === 'frontend' ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:text-foreground'}`}>Front (navigateur)</button>
+                  <button type="button" onClick={() => setProcessingMode('backend')} className={`h-9 rounded-md text-xs font-semibold transition-colors ${processingMode === 'backend' ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:text-foreground'}`}>Back (serveur)</button>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setTheme((v) => v === 'dark' ? 'light' : 'dark')}
+                className="flex w-full items-center justify-between rounded-lg border border-border bg-card px-3 py-2 text-xs font-medium text-foreground shadow-sm"
+              >
+                <span>Thème</span>
+                <span className="inline-flex items-center gap-1.5">
+                  {theme === 'dark' ? <IconSun size={14} /> : <IconMoon size={14} />}
+                  {theme === 'dark' ? 'Clair' : 'Sombre'}
+                </span>
+              </button>
+            </div>
+          </div>
+        )}
       </header>
 
       {uiMode === 'color-lab' ? (

@@ -660,8 +660,12 @@ export function ColorLab({ processingMode }: ColorLabProps) {
                 <>
                     {/* ─── Top row: large preview + file queue on the right ─── */}
                     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_280px] mb-4">
-                        {/* Preview */}
-                        <div className="relative overflow-hidden rounded-2xl border border-border bg-black/60 shadow-sm" style={{ aspectRatio: isVideo ? '16/9' : 'auto' }}>
+                        {/* Preview — sticky on mobile/tablet so it stays visible while tweaking params below.
+                            Constrained to 35vh on small screens so the params remain reachable. */}
+                        <div
+                            className="relative overflow-hidden rounded-2xl border border-border bg-black/60 shadow-sm sticky top-[60px] z-30 lg:static lg:top-auto max-h-[35vh] lg:max-h-none"
+                            style={{ aspectRatio: isVideo ? '16/9' : undefined }}
+                        >
                             {kind === 'image' ? (
                                 <div className="absolute inset-0 flex items-center justify-center">
                                     <img
@@ -716,7 +720,7 @@ export function ColorLab({ processingMode }: ColorLabProps) {
                         </div>
 
                         {/* File queue on the right */}
-                        <div className="flex flex-col gap-2 max-h-[75vh] overflow-y-auto pr-1">
+                        <div className="flex flex-col gap-2 lg:max-h-[75vh] lg:overflow-y-auto lg:pr-1">
                             <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground px-1">
                                 File d'attente ({files.length})
                             </h3>
@@ -786,7 +790,7 @@ export function ColorLab({ processingMode }: ColorLabProps) {
                             type="button"
                             onClick={apply}
                             disabled={busy || !outputFormat || files.length === 0}
-                            className="h-11 text-sm font-semibold gap-2 rounded-xl px-6 min-w-[260px]"
+                            className="h-11 flex-1 sm:flex-none text-sm font-semibold gap-2 rounded-xl px-4 sm:px-6 sm:min-w-[260px]"
                         >
                             {busy ? (
                                 <>
