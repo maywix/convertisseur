@@ -1274,8 +1274,10 @@ def _process_with_ffmpeg(
             )
 
         # Tone curve via FFmpeg 'curves' filter (5 anchor points).
+        # max_shift bumped to 0.30 so the slider produces a visible change at
+        # ±100% (was 0.18 — way too subtle compared to the preview).
         if v_highlights or v_shadows or v_whites or v_blacks:
-            def _shift(base: float, delta_pct: float, max_shift: float = 0.18) -> float:
+            def _shift(base: float, delta_pct: float, max_shift: float = 0.30) -> float:
                 return max(0.0, min(1.0, base + (delta_pct / 100.0) * max_shift))
             p_black = _shift(0.00, v_blacks)
             p_shadow = _shift(0.25, v_shadows)
@@ -1286,14 +1288,18 @@ def _process_with_ffmpeg(
                 f"curves=all='0/{p_black:.3f} 0.25/{p_shadow:.3f} 0.5/{p_mid:.3f} 0.75/{p_high:.3f} 1/{p_white:.3f}'"
             )
 
-        if v_temperature:
-            # colortemperature: 1000..40000 K, neutral 6500
-            kelvin = max(1500, min(15000, int(6500 + v_temperature * 35)))
-            filters.append(f"colortemperature=temperature={kelvin}")
-
-        if v_tint:
-            # Approx tint via a tiny hue shift toward green/magenta.
-            filters.append(f"hue=h={v_tint * 0.45:.1f}")
+        # Temperature + tint: use lutrgb with the exact same multiplicative
+        # coefficients as the Canvas2D preview so the live look and the
+        # exported file land on the same colours.
+        if v_temperature or v_tint:
+            temp_n = v_temperature / 100.0
+            tint_n = v_tint / 100.0
+            r_mul = (1 + temp_n * 0.22) * (1 + tint_n * 0.08)
+            g_mul = (1 - temp_n * 0.04) * (1 - tint_n * 0.18)
+            b_mul = (1 - temp_n * 0.22) * (1 + tint_n * 0.08)
+            filters.append(
+                f"lutrgb=r='clip(val*{r_mul:.4f}, 0, 255)':g='clip(val*{g_mul:.4f}, 0, 255)':b='clip(val*{b_mul:.4f}, 0, 255)'"
+            )
 
         if v_hue:
             filters.append(f"hue=h={v_hue:.1f}")

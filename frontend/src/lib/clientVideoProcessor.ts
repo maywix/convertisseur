@@ -112,8 +112,9 @@ function buildVideoFilters(g: VideoGrade): string[] {
     }
 
     if (g.highlights || g.shadows || g.whites || g.blacks) {
+        // 0.30 max shift so the slider effect is visible (matches backend).
         const shift = (base: number, delta: number) =>
-            clamp(base + (delta / 100) * 0.18, 0, 1)
+            clamp(base + (delta / 100) * 0.30, 0, 1)
         const p_black = shift(0, g.blacks)
         const p_shadow = shift(0.25, g.shadows)
         const p_high = shift(0.75, g.highlights)
@@ -121,11 +122,17 @@ function buildVideoFilters(g: VideoGrade): string[] {
         filters.push(`curves=all='0/${p_black.toFixed(3)} 0.25/${p_shadow.toFixed(3)} 0.5/0.500 0.75/${p_high.toFixed(3)} 1/${p_white.toFixed(3)}'`)
     }
 
-    if (g.temperature) {
-        const kelvin = clamp(6500 + g.temperature * 35, 1500, 15000)
-        filters.push(`colortemperature=temperature=${Math.round(kelvin)}`)
+    // Temperature + tint via lutrgb (same coefficients as the Canvas preview).
+    if (g.temperature || g.tint) {
+        const tempN = g.temperature / 100
+        const tintN = g.tint / 100
+        const rMul = (1 + tempN * 0.22) * (1 + tintN * 0.08)
+        const gMul = (1 - tempN * 0.04) * (1 - tintN * 0.18)
+        const bMul = (1 - tempN * 0.22) * (1 + tintN * 0.08)
+        filters.push(
+            `lutrgb=r='clip(val*${rMul.toFixed(4)}, 0, 255)':g='clip(val*${gMul.toFixed(4)}, 0, 255)':b='clip(val*${bMul.toFixed(4)}, 0, 255)'`,
+        )
     }
-    if (g.tint) filters.push(`hue=h=${(g.tint * 0.45).toFixed(1)}`)
     if (g.hue) filters.push(`hue=h=${g.hue.toFixed(1)}`)
 
     if (g.sharpness) {
