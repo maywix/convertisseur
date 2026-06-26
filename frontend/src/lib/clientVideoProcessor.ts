@@ -239,7 +239,10 @@ export async function processVideoClientSide(
         if (g.trimEnd) args.push('-to', g.trimEnd)
         args.push('-i', inputName)
         if (filters.length > 0) {
-            args.push('-vf', filters.join(','))
+            const filterChain = filters.join(',')
+            // eslint-disable-next-line no-console
+            console.info('[ffmpeg.wasm -vf]', filterChain)
+            args.push('-vf', filterChain)
         }
         args.push('-c:v', codec)
         if (codec === 'libx264') args.push('-preset', 'veryfast', '-crf', '23')

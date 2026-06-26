@@ -277,6 +277,15 @@ async function uploadAndConvert(
         fd.append('color_remove_tolerance', String(grade.removeTolerance))
     }
 
+    // Log everything we're sending so the user can verify in DevTools.
+    const sentParams = Array.from(fd.entries())
+        .filter(([k]) => k !== 'file' && k !== 'lut_file')
+        .map(([k, v]) => `${k}=${v}`)
+    // eslint-disable-next-line no-console
+    console.info(
+        `[upload →] hasFile=${fd.has('file')} hasLut=${fd.has('lut_file')} params: ${sentParams.length === 0 ? '(aucun slider)' : sentParams.join(', ')}`,
+    )
+
     onProgress?.('Envoi du fichier…')
     const res = await fetch('/jobs', { method: 'POST', body: fd })
     if (!res.ok) {
@@ -290,6 +299,16 @@ async function uploadAndConvert(
         await new Promise((r) => setTimeout(r, 800))
         const j = await fetch(`/jobs/${job_id}`).then((r) => r.json() as Promise<JobResult>)
         if (j.status === 'done' && j.download_url) {
+            // Fetch the FFmpeg command from the server logs so we can see what
+            // actually ran. Helps diagnose "the slider didn't take effect" bugs.
+            try {
+                const logs = await fetch(`/jobs/${job_id}/logs`).then((r) => r.text())
+                const ffmpegLine = logs.split('\n').find((l) => l.includes('ffmpeg') && (l.startsWith('$') || l.includes('-vf')))
+                if (ffmpegLine) {
+                    // eslint-disable-next-line no-console
+                    console.info(`[backend FFmpeg] ${ffmpegLine.trim()}`)
+                }
+            } catch { /* ignore log fetch errors */ }
             return { downloadUrl: j.download_url, filename: j.output_filename || file.name }
         }
         if (j.status === 'error') throw new Error(j.error || 'conversion failed')
@@ -601,13 +620,18 @@ export function ColorLab({
 
                 setBatch((b) => ({ ...b, [item.id]: { state: 'busy', progress: 'En cours…' } }))
 
-                // eslint-disable-next-line no-console
-                console.info('[ColorLab.apply]', {
-                    file: f.name, kind: fKind, fmt, processingMode,
-                    path: processingMode === 'frontend'
-                        ? (fKind === 'image' && isClientSupportedFormat(fmt) ? 'frontend-image' : fKind === 'video' ? 'frontend-video' : 'backend')
-                        : 'backend',
+                const nonZero = Object.entries(fGrade).filter(([_k, v]) => {
+                    if (typeof v === 'number') return v !== 0 && !Number.isNaN(v)
+                    if (typeof v === 'string') return v.length > 0 && v.toLowerCase() !== '#808080' && v !== '#ffffff' && v !== '(w-text_w)/2' && v !== 'h-(text_h*2)'
+                    if (typeof v === 'boolean') return v === true
+                    return v !== null
                 })
+                // eslint-disable-next-line no-console
+                console.info(
+                    `[apply] ${f.name} | mode=${processingMode} | fmt=${fmt} | hasLut=${!!fLut} | sliders actifs: ${
+                        nonZero.length === 0 ? '(aucun)' : nonZero.map(([k, v]) => `${k}=${v}`).join(', ')
+                    }`,
+                )
 
                 try {
                     if (

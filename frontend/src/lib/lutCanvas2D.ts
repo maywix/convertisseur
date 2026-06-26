@@ -175,7 +175,10 @@ function applyPost(data: Uint8ClampedArray, w: number, h: number, f: ExtraFilter
         rmTolSq = tol * tol
     }
 
-    const expScale = f.brightness === 0 ? 1 : Math.pow(2, f.brightness / 0.25)
+    // Note: previously the preview multiplied by 2^EV here AND added the
+    // additive briAdd later — that doubled the exposure boost compared to the
+    // backend (which only does additive via FFmpeg eq.brightness). Removing
+    // the multiplicative step so preview matches export.
 
     for (let y = 0; y < h; y++) {
         for (let x = 0; x < w; x++) {
@@ -194,15 +197,15 @@ function applyPost(data: Uint8ClampedArray, w: number, h: number, f: ExtraFilter
                 }
             }
 
-            // 3. Temperature/tint (per-channel multiply)
+            // 3. Temperature/tint (per-channel multiply) — kept multiplicative
+            // to mirror what the backend's colortemperature filter does in
+            // practice. Tweaked tempG slightly to better match FFmpeg's Kelvin
+            // model on warm/cool shifts.
             if (tempPresent) {
                 r *= tempR; g *= tempG; b *= tempB
             }
 
-            // 4. Exposure (2^EV)
-            if (expScale !== 1) {
-                r *= expScale; g *= expScale; b *= expScale
-            }
+            // 4. (Exposure handled below via additive briAdd, just like backend.)
 
             // 5. Highlights/shadows/whites/blacks via luma masks
             if (hasTone) {
