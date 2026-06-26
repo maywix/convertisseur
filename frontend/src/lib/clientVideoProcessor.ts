@@ -104,25 +104,10 @@ function clamp(v: number, min: number, max: number) {
 function buildVideoFilters(g: VideoGrade): string[] {
     const filters: string[] = []
 
-    if (g.exposure || g.contrast || g.saturation) {
-        const brightness = clamp(g.exposure * 0.25, -1, 1)
-        const contrast = clamp(1 + g.contrast / 100, 0, 2)
-        const saturation = clamp(1 + g.saturation / 100, 0, 3)
-        filters.push(`eq=brightness=${brightness.toFixed(3)}:contrast=${contrast.toFixed(3)}:saturation=${saturation.toFixed(3)}`)
-    }
+    // === Order matches Canvas2D preview exactly ===
+    // temp → exposure → HSWB → LGG → contrast → saturation → hue → vignette → grain → glow
 
-    if (g.highlights || g.shadows || g.whites || g.blacks) {
-        // 0.30 max shift so the slider effect is visible (matches backend).
-        const shift = (base: number, delta: number) =>
-            clamp(base + (delta / 100) * 0.30, 0, 1)
-        const p_black = shift(0, g.blacks)
-        const p_shadow = shift(0.25, g.shadows)
-        const p_high = shift(0.75, g.highlights)
-        const p_white = shift(1, g.whites)
-        filters.push(`curves=all='0/${p_black.toFixed(3)} 0.25/${p_shadow.toFixed(3)} 0.5/0.500 0.75/${p_high.toFixed(3)} 1/${p_white.toFixed(3)}'`)
-    }
-
-    // Temperature + tint via lutrgb (same coefficients as the Canvas preview).
+    // 1. Temperature + tint (per-channel multiply).
     if (g.temperature || g.tint) {
         const tempN = g.temperature / 100
         const tintN = g.tint / 100
@@ -133,14 +118,30 @@ function buildVideoFilters(g: VideoGrade): string[] {
             `lutrgb=r='clip(val*${rMul.toFixed(4)}, 0, 255)':g='clip(val*${gMul.toFixed(4)}, 0, 255)':b='clip(val*${bMul.toFixed(4)}, 0, 255)'`,
         )
     }
-    if (g.hue) filters.push(`hue=h=${g.hue.toFixed(1)}`)
 
-    if (g.sharpness) {
-        const amt = (g.sharpness / 100) * 2
-        filters.push(`unsharp=5:5:${amt.toFixed(2)}:5:5:0.0`)
+    // 2. Exposure (additive brightness).
+    if (g.exposure) {
+        const brightness = clamp(g.exposure * 0.25, -1, 1)
+        filters.push(`eq=brightness=${brightness.toFixed(3)}`)
     }
 
-    // DaVinci Lift / Gamma / Gain via FFmpeg colorbalance (mirrors backend).
+    // 3. Tone curve.
+    if (g.highlights || g.shadows || g.whites || g.blacks) {
+        const MAX = 0.30
+        let pBlack = 0
+        let pShadow = 0.25
+        let pHigh = 0.75
+        let pWhite = 1
+        pHigh = clamp(pHigh + (g.highlights / 100) * MAX, 0, 1)
+        pShadow = clamp(pShadow + (g.shadows / 100) * MAX, 0, 1)
+        if (g.whites > 0) pHigh = clamp(pHigh + (g.whites / 100) * MAX * 0.5, 0, 1)
+        else if (g.whites < 0) pWhite = clamp(pWhite + (g.whites / 100) * MAX, 0, 1)
+        if (g.blacks > 0) pShadow = clamp(pShadow - (g.blacks / 100) * MAX * 0.5, 0, 1)
+        else if (g.blacks < 0) pBlack = clamp(pBlack - (g.blacks / 100) * MAX, 0, 1)
+        filters.push(`curves=all='0/${pBlack.toFixed(3)} 0.25/${pShadow.toFixed(3)} 0.5/0.500 0.75/${pHigh.toFixed(3)} 1/${pWhite.toFixed(3)}'`)
+    }
+
+    // 4. DaVinci Lift / Gamma / Gain via FFmpeg colorbalance.
     const hexToBalance = (hex?: string): [number, number, number] => {
         if (!hex) return [0, 0, 0]
         const c = hex.replace('#', '')
@@ -160,6 +161,22 @@ function buildVideoFilters(g: VideoGrade): string[] {
     if (mr || mg || mb) cbParts.push(`rm=${(mr * ma).toFixed(3)}:gm=${(mg * ma).toFixed(3)}:bm=${(mb * ma).toFixed(3)}`)
     if (hr || hg || hb) cbParts.push(`rh=${(hr * ha).toFixed(3)}:gh=${(hg * ha).toFixed(3)}:bh=${(hb * ha).toFixed(3)}`)
     if (cbParts.length > 0) filters.push(`colorbalance=${cbParts.join(':')}`)
+
+    // 5. Contrast + saturation AFTER tone + LGG.
+    if (g.contrast || g.saturation) {
+        const contrast = clamp(1 + g.contrast / 100, 0, 2)
+        const saturation = clamp(1 + g.saturation / 100, 0, 3)
+        filters.push(`eq=contrast=${contrast.toFixed(3)}:saturation=${saturation.toFixed(3)}`)
+    }
+
+    // 6. Hue.
+    if (g.hue) filters.push(`hue=h=${g.hue.toFixed(1)}`)
+
+    // 7. Sharpness.
+    if (g.sharpness) {
+        const amt = (g.sharpness / 100) * 2
+        filters.push(`unsharp=5:5:${amt.toFixed(2)}:5:5:0.0`)
+    }
 
     // Color remover (chroma key) when the user enabled it.
     if (g.removeEnabled && g.removeColor) {

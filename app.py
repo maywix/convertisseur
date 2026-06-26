@@ -1264,33 +1264,12 @@ def _process_with_ffmpeg(
         v_blacks = max(-100.0, min(100.0, _f("video_blacks")))
         v_sharpness = max(-100.0, min(100.0, _f("video_sharpness")))
 
-        if v_exposure or v_contrast or v_saturation:
-            # eq: brightness (-1..1), contrast (0..2, 1=neutral), saturation (0..3, 1=neutral)
-            eq_brightness = v_exposure * 0.25       # ±0.5 max for ±2 EV
-            eq_contrast = 1.0 + (v_contrast / 100.0)
-            eq_saturation = 1.0 + (v_saturation / 100.0)
-            filters.append(
-                f"eq=brightness={eq_brightness:.3f}:contrast={eq_contrast:.3f}:saturation={eq_saturation:.3f}"
-            )
+        # === Filter order: matches Canvas2D preview pipeline exactly ===
+        # preview:  temp → exposure → HSWB → LGG → contrast → saturation → hue → vignette → grain → glow
+        # backend mirrors this so extreme slider combos (hue near ±180°, sat
+        # +100, …) produce identical colours preview ↔ export.
 
-        # Tone curve via FFmpeg 'curves' filter (5 anchor points).
-        # max_shift bumped to 0.30 so the slider produces a visible change at
-        # ±100% (was 0.18 — way too subtle compared to the preview).
-        if v_highlights or v_shadows or v_whites or v_blacks:
-            def _shift(base: float, delta_pct: float, max_shift: float = 0.30) -> float:
-                return max(0.0, min(1.0, base + (delta_pct / 100.0) * max_shift))
-            p_black = _shift(0.00, v_blacks)
-            p_shadow = _shift(0.25, v_shadows)
-            p_mid = 0.50
-            p_high = _shift(0.75, v_highlights)
-            p_white = _shift(1.00, v_whites)
-            filters.append(
-                f"curves=all='0/{p_black:.3f} 0.25/{p_shadow:.3f} 0.5/{p_mid:.3f} 0.75/{p_high:.3f} 1/{p_white:.3f}'"
-            )
-
-        # Temperature + tint: use lutrgb with the exact same multiplicative
-        # coefficients as the Canvas2D preview so the live look and the
-        # exported file land on the same colours.
+        # 1. Temperature + tint (per-channel multiply) — comes FIRST after the LUT.
         if v_temperature or v_tint:
             temp_n = v_temperature / 100.0
             tint_n = v_tint / 100.0
@@ -1301,15 +1280,52 @@ def _process_with_ffmpeg(
                 f"lutrgb=r='clip(val*{r_mul:.4f}, 0, 255)':g='clip(val*{g_mul:.4f}, 0, 255)':b='clip(val*{b_mul:.4f}, 0, 255)'"
             )
 
-        if v_hue:
-            filters.append(f"hue=h={v_hue:.1f}")
+        # 2. Exposure (additive brightness only — contrast/sat moved later).
+        if v_exposure:
+            eq_brightness = v_exposure * 0.25
+            filters.append(f"eq=brightness={eq_brightness:.3f}")
 
-        if v_sharpness:
-            # unsharp: luma_msize_x, luma_msize_y, luma_amount (positive=sharper, negative=blur)
-            amount = v_sharpness / 100.0 * 2.0  # ±2.0 max
-            filters.append(f"unsharp=5:5:{amount:.2f}:5:5:0.0")
+        # 3. Tone curve via FFmpeg 'curves' filter.
+        # max_shift bumped to 0.30 so a ±100% slider produces a visible change.
+        # Slider conventions (mirrors Lightroom + the Canvas2D preview):
+        #   highlights / shadows : + brightens that zone, - darkens it
+        #   whites               : + brightens whites further (we lift p_high
+        #                          since p_white is already at 1.0),
+        #                          - compresses whites toward grey
+        #   blacks               : + crushes blacks (we lower p_shadow),
+        #                          - lifts blacks (raises p_black above 0)
+        if v_highlights or v_shadows or v_whites or v_blacks:
+            p_black = 0.00
+            p_shadow = 0.25
+            p_mid = 0.50
+            p_high = 0.75
+            p_white = 1.00
+            MAX = 0.30
 
-        # DaVinci-style Lift / Gamma / Gain via FFmpeg colorbalance.
+            # Highlights — direct shift of the 0.75 anchor.
+            p_high = max(0.0, min(1.0, p_high + (v_highlights / 100.0) * MAX))
+            # Shadows — direct shift of the 0.25 anchor.
+            p_shadow = max(0.0, min(1.0, p_shadow + (v_shadows / 100.0) * MAX))
+
+            # Whites > 0 boosts p_high too (so true whites stand out more),
+            # whites < 0 compresses p_white downward.
+            if v_whites > 0:
+                p_high = max(0.0, min(1.0, p_high + (v_whites / 100.0) * MAX * 0.5))
+            elif v_whites < 0:
+                p_white = max(0.0, min(1.0, p_white + (v_whites / 100.0) * MAX))
+
+            # Blacks > 0 crushes by lowering p_shadow extra, blacks < 0 lifts
+            # the p_black anchor above 0.
+            if v_blacks > 0:
+                p_shadow = max(0.0, min(1.0, p_shadow - (v_blacks / 100.0) * MAX * 0.5))
+            elif v_blacks < 0:
+                p_black = max(0.0, min(1.0, p_black - (v_blacks / 100.0) * MAX))
+
+            filters.append(
+                f"curves=all='0/{p_black:.3f} 0.25/{p_shadow:.3f} 0.5/{p_mid:.3f} 0.75/{p_high:.3f} 1/{p_white:.3f}'"
+            )
+
+        # 4. DaVinci-style Lift / Gamma / Gain via FFmpeg colorbalance.
         # Each tint comes as a hex colour; we convert it to RGB deltas from neutral grey.
         def _hex_to_balance(hex_str: str) -> tuple[float, float, float]:
             try:
@@ -1347,7 +1363,24 @@ def _process_with_ffmpeg(
         if cb_parts:
             filters.append(f"colorbalance={':'.join(cb_parts)}")
 
-        # Vignette (darken edges).
+        # 5. Contrast + saturation — applied AFTER tone + LGG (matches preview).
+        if v_contrast or v_saturation:
+            eq_contrast = 1.0 + (v_contrast / 100.0)
+            eq_saturation = 1.0 + (v_saturation / 100.0)
+            filters.append(
+                f"eq=contrast={eq_contrast:.3f}:saturation={eq_saturation:.3f}"
+            )
+
+        # 6. Hue rotation — late in chain like the preview.
+        if v_hue:
+            filters.append(f"hue=h={v_hue:.1f}")
+
+        # 7. Sharpness (no preview equivalent, placed near the end).
+        if v_sharpness:
+            amount = v_sharpness / 100.0 * 2.0
+            filters.append(f"unsharp=5:5:{amount:.2f}:5:5:0.0")
+
+        # 8. Vignette.
         v_vignette = max(0.0, min(100.0, _f("video_vignette")))
         if v_vignette > 0:
             angle = (v_vignette / 100.0) * (3.14159265 / 4.0)  # 0..PI/4
