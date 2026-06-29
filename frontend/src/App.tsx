@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { ColorLab, type Grade } from '@/components/ColorLab'
 import { ConfigPanel, VideoColorSampler } from '@/components/ConfigPanel'
 import { FileQueue } from '@/components/FileQueue'
+import { MemeStudio } from '@/components/MemeStudio'
 import { SimpleConverter } from '@/components/SimpleConverter'
 import { TotalProgress } from '@/components/TotalProgress'
 import { IconMenu, IconMoon, IconSun, IconX } from '@/components/icons'
@@ -112,9 +113,6 @@ function App() {
 
   const showProgress = hasStarted && totalCount > 0
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
-  // Close the mobile menu whenever the user changes mode or theme.
-  useEffect(() => { setMobileMenuOpen(false) }, [uiMode, processingMode, theme])
-
   // Color Lab state lifted here so it survives mode switches (Simple ↔ Pro ↔ Color Lab).
   const [colorLabGrades, setColorLabGrades] = useState<Record<string, Grade>>({})
   const [colorLabLutScope, setColorLabLutScope] = useState<'global' | 'per-file'>('global')
@@ -173,6 +171,7 @@ function App() {
               <button type="button" onClick={() => setUiMode('simple')} className={`inline-flex h-8 items-center rounded-md px-3 text-xs font-semibold transition-colors ${uiMode === 'simple' ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground'}`}>Simple</button>
               <button type="button" onClick={() => setUiMode('pro')} className={`inline-flex h-8 items-center rounded-md px-3 text-xs font-semibold transition-colors ${uiMode === 'pro' ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground'}`}>Pro</button>
               <button type="button" onClick={() => setUiMode('color-lab')} className={`inline-flex h-8 items-center rounded-md px-3 text-xs font-semibold transition-colors ${uiMode === 'color-lab' ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground'}`}>Color Lab</button>
+              <button type="button" onClick={() => setUiMode('meme')} className={`inline-flex h-8 items-center rounded-md px-3 text-xs font-semibold transition-colors ${uiMode === 'meme' ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground'}`}>Meme</button>
             </div>
             <button
               type="button"
@@ -203,15 +202,15 @@ function App() {
             <div className="px-4 py-4 space-y-3">
               <div>
                 <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Mode d'affichage</p>
-                <div className="grid grid-cols-3 gap-1 rounded-lg border border-border bg-card p-0.5 shadow-sm">
-                  {(['simple','pro','color-lab'] as const).map((m) => (
+                <div className="grid grid-cols-4 gap-1 rounded-lg border border-border bg-card p-0.5 shadow-sm">
+                  {(['simple','pro','color-lab','meme'] as const).map((m) => (
                     <button
                       key={m}
                       type="button"
-                      onClick={() => setUiMode(m)}
+                      onClick={() => { setUiMode(m); setMobileMenuOpen(false) }}
                       className={`h-9 rounded-md text-xs font-semibold transition-colors ${uiMode === m ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground'}`}
                     >
-                      {m === 'simple' ? 'Simple' : m === 'pro' ? 'Pro' : 'Color Lab'}
+                      {m === 'simple' ? 'Simple' : m === 'pro' ? 'Pro' : m === 'color-lab' ? 'Color' : 'Meme'}
                     </button>
                   ))}
                 </div>
@@ -220,14 +219,14 @@ function App() {
               <div>
                 <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Lieu de conversion</p>
                 <div className="grid grid-cols-2 gap-1 rounded-lg border border-border bg-card p-0.5 shadow-sm">
-                  <button type="button" onClick={() => setProcessingMode('frontend')} className={`h-9 rounded-md text-xs font-semibold transition-colors ${processingMode === 'frontend' ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:text-foreground'}`}>Front (navigateur)</button>
-                  <button type="button" onClick={() => setProcessingMode('backend')} className={`h-9 rounded-md text-xs font-semibold transition-colors ${processingMode === 'backend' ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:text-foreground'}`}>Back (serveur)</button>
+                  <button type="button" onClick={() => { setProcessingMode('frontend'); setMobileMenuOpen(false) }} className={`h-9 rounded-md text-xs font-semibold transition-colors ${processingMode === 'frontend' ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:text-foreground'}`}>Front (navigateur)</button>
+                  <button type="button" onClick={() => { setProcessingMode('backend'); setMobileMenuOpen(false) }} className={`h-9 rounded-md text-xs font-semibold transition-colors ${processingMode === 'backend' ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:text-foreground'}`}>Back (serveur)</button>
                 </div>
               </div>
 
               <button
                 type="button"
-                onClick={() => setTheme((v) => v === 'dark' ? 'light' : 'dark')}
+                onClick={() => { setTheme((v) => v === 'dark' ? 'light' : 'dark'); setMobileMenuOpen(false) }}
                 className="flex w-full items-center justify-between rounded-lg border border-border bg-card px-3 py-2 text-xs font-medium text-foreground shadow-sm"
               >
                 <span>Thème</span>
@@ -241,7 +240,11 @@ function App() {
         )}
       </header>
 
-      {uiMode === 'color-lab' ? (
+      {uiMode === 'meme' ? (
+        <div key="meme" className={`animate-in fade-in duration-300 ease-out fill-mode-both ${showProgress ? 'pb-24' : ''}`}>
+          <MemeStudio />
+        </div>
+      ) : uiMode === 'color-lab' ? (
         <div key="color-lab" className={`animate-in fade-in duration-300 ease-out fill-mode-both ${showProgress ? 'pb-24' : ''}`}>
           <ColorLab
             processingMode={processingMode}

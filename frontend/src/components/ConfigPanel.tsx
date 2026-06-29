@@ -523,6 +523,39 @@ export function ConfigPanel({
         const sign = numeric > 0 ? "+" : "";
         return `${sign}${numeric}${suffix}`;
     };
+    const applyGifPreset = (preset: "hq" | "balanced" | "light" | "sticker") => {
+        const presets: Record<typeof preset, Partial<ConvertSettings>> = {
+            hq: {
+                gifFps: "30",
+                gifResolution: "720",
+                gifColors: "256",
+                gifDither: "sierra2_4a",
+                gifSpeed: "1.0",
+            },
+            balanced: {
+                gifFps: "20",
+                gifResolution: "480",
+                gifColors: "128",
+                gifDither: "sierra2_4a",
+                gifSpeed: "1.0",
+            },
+            light: {
+                gifFps: "12",
+                gifResolution: "360",
+                gifColors: "64",
+                gifDither: "bayer",
+                gifSpeed: "1.0",
+            },
+            sticker: {
+                gifFps: "15",
+                gifResolution: "320",
+                gifColors: "96",
+                gifDither: "atkinson",
+                gifSpeed: "1.0",
+            },
+        };
+        setCv(presets[preset]);
+    };
 
     // ──────────────────────────────────────────────────────────
     // Tabbed options (step 4) — replaces a stack of accordions.
@@ -549,7 +582,9 @@ export function ConfigPanel({
     const [activeTab, setActiveTab] = useState<TabKey>("encode");
     useEffect(() => {
         if (availableTabs.length === 0) return;
-        if (!availableTabs.includes(activeTab)) setActiveTab(availableTabs[0]);
+        if (!availableTabs.includes(activeTab)) {
+            window.queueMicrotask(() => setActiveTab(availableTabs[0]));
+        }
     }, [availableTabs, activeTab]);
 
     const TAB_META: Record<TabKey, { label: string; icon: React.ReactNode }> = {
@@ -950,34 +985,81 @@ export function ConfigPanel({
                                             </div>
                                             {cv.category === "video" && cv.format === "gif" && (
                                                 <div className="space-y-3 rounded-md border border-border bg-muted/30 p-2.5">
-                                                    <p className="text-xs font-semibold text-foreground">Paramètres GIF</p>
+                                                    <div className="flex items-start justify-between gap-3">
+                                                        <div>
+                                                            <p className="text-xs font-semibold text-foreground">Paramètres GIF</p>
+                                                            <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground">
+                                                                Palette optimisée, FPS, taille et boucle pour doser qualité/poids.
+                                                            </p>
+                                                        </div>
+                                                    </div>
+                                                    <div className="grid grid-cols-2 gap-1.5">
+                                                        {[
+                                                            ["hq", "HQ"],
+                                                            ["balanced", "Équilibré"],
+                                                            ["light", "Léger"],
+                                                            ["sticker", "Sticker"],
+                                                        ].map(([preset, label]) => (
+                                                            <button
+                                                                key={preset}
+                                                                type="button"
+                                                                onClick={() => applyGifPreset(preset as "hq" | "balanced" | "light" | "sticker")}
+                                                                className="h-8 rounded-md border border-border bg-card px-2 text-xs font-semibold text-foreground transition-colors hover:border-primary/50 hover:bg-background"
+                                                            >
+                                                                {label}
+                                                            </button>
+                                                        ))}
+                                                    </div>
                                                     <Row label="Vitesse">
                                                         <Select value={cv.gifSpeed} onValueChange={(v) => setCv({ gifSpeed: v })}>
                                                             <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
                                                             <SelectContent>
-                                                                <SelectItem value="1.0">Normal (1×)</SelectItem>
-                                                                <SelectItem value="0.5">2× plus rapide</SelectItem>
-                                                                <SelectItem value="0.25">4× plus rapide</SelectItem>
                                                                 <SelectItem value="0.1">10× plus rapide</SelectItem>
+                                                                <SelectItem value="0.2">5× plus rapide</SelectItem>
+                                                                <SelectItem value="0.25">4× plus rapide</SelectItem>
+                                                                <SelectItem value="0.5">2× plus rapide</SelectItem>
+                                                                <SelectItem value="0.75">1.3× plus rapide</SelectItem>
+                                                                <SelectItem value="1.0">Normal (1×)</SelectItem>
+                                                                <SelectItem value="1.25">1.25× plus lent</SelectItem>
+                                                                <SelectItem value="1.5">1.5× plus lent</SelectItem>
                                                                 <SelectItem value="2.0">2× plus lent</SelectItem>
                                                             </SelectContent>
                                                         </Select>
                                                     </Row>
-                                                    <Row label="FPS GIF">
-                                                        <Select value={cv.gifFps} onValueChange={(v) => setCv({ gifFps: v })}>
-                                                            <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-                                                            <SelectContent>
-                                                                {["5", "10", "15", "20", "24", "30"].map((f) => (
-                                                                    <SelectItem key={f} value={f}>{f} fps</SelectItem>
+                                                    <RangeRow
+                                                        label="FPS GIF"
+                                                        value={cv.gifFps}
+                                                        min={5}
+                                                        max={60}
+                                                        step={1}
+                                                        onChange={(v) => setCv({ gifFps: v })}
+                                                        display={(v) => `${v} fps`}
+                                                    />
+                                                    <Row label="Hauteur">
+                                                        <div className="grid grid-cols-[1fr_auto] gap-1.5">
+                                                            <SmallInput value={cv.gifResolution} onChange={(v) => setCv({ gifResolution: v })} placeholder="480" />
+                                                            <div className="flex overflow-hidden rounded-md border border-border">
+                                                                {["320", "480", "720"].map((res) => (
+                                                                    <button
+                                                                        key={res}
+                                                                        type="button"
+                                                                        onClick={() => setCv({ gifResolution: res })}
+                                                                        className={cn(
+                                                                            "h-8 px-2 text-[11px] font-semibold transition-colors",
+                                                                            cv.gifResolution === res ? "bg-primary text-primary-foreground" : "bg-card text-muted-foreground hover:text-foreground",
+                                                                        )}
+                                                                    >
+                                                                        {res}p
+                                                                    </button>
                                                                 ))}
-                                                            </SelectContent>
-                                                        </Select>
+                                                            </div>
+                                                        </div>
                                                     </Row>
                                                     <Row label="Couleurs">
                                                         <Select value={cv.gifColors} onValueChange={(v) => setCv({ gifColors: v })}>
                                                             <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
                                                             <SelectContent>
-                                                                {["256", "192", "128", "96", "64", "32", "16"].map((c) => (
+                                                                {["256", "224", "192", "160", "128", "96", "64", "48", "32", "16", "8"].map((c) => (
                                                                     <SelectItem key={c} value={c}>{c} couleurs</SelectItem>
                                                                 ))}
                                                             </SelectContent>
@@ -989,6 +1071,10 @@ export function ConfigPanel({
                                                             <SelectContent>
                                                                 <SelectItem value="sierra2_4a">Sierra2_4a (recommandé)</SelectItem>
                                                                 <SelectItem value="floyd_steinberg">Floyd-Steinberg</SelectItem>
+                                                                <SelectItem value="sierra3">Sierra3</SelectItem>
+                                                                <SelectItem value="sierra2">Sierra2</SelectItem>
+                                                                <SelectItem value="burkes">Burkes</SelectItem>
+                                                                <SelectItem value="atkinson">Atkinson</SelectItem>
                                                                 <SelectItem value="bayer">Bayer</SelectItem>
                                                                 <SelectItem value="none">Aucun</SelectItem>
                                                             </SelectContent>
@@ -1007,6 +1093,9 @@ export function ConfigPanel({
                                                             </SelectContent>
                                                         </Select>
                                                     </Row>
+                                                    <p className="text-[11px] leading-snug text-muted-foreground">
+                                                        HQ = 720p/30fps/256 couleurs. Pour un fichier léger, baisse le FPS, la hauteur et le nombre de couleurs.
+                                                    </p>
                                                 </div>
                                             )}
                                         </>

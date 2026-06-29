@@ -100,9 +100,9 @@ export function useConverter() {
     const raw = localStorage.getItem(LS_EXPORT_MODE);
     return raw === "files" ? "files" : "zip";
   });
-  const [uiMode, setUiModeState] = useState<"simple" | "pro" | "color-lab">(() => {
+  const [uiMode, setUiModeState] = useState<"simple" | "pro" | "color-lab" | "meme">(() => {
     const raw = localStorage.getItem(LS_UI_MODE);
-    if (raw === "pro" || raw === "color-lab") return raw;
+    if (raw === "pro" || raw === "color-lab" || raw === "meme") return raw;
     return "simple";
   });
   const pollingRef = useRef<number | null>(null);
@@ -129,7 +129,7 @@ export function useConverter() {
     setExportModeState(val);
   }, []);
 
-  const setUiMode = useCallback((val: "simple" | "pro" | "color-lab") => {
+  const setUiMode = useCallback((val: "simple" | "pro" | "color-lab" | "meme") => {
     localStorage.setItem(LS_UI_MODE, val);
     setUiModeState(val);
   }, []);
@@ -533,7 +533,6 @@ export function useConverter() {
           (isConvertLike || isCompressLike);
 
         // Verbose log so the user can verify in DevTools console what happens.
-        // eslint-disable-next-line no-console
         console.info("[convert]", {
           name: item.file?.name,
           procMode,

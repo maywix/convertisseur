@@ -3,6 +3,8 @@ node_modules/
 
 # dist
 dist/
+test-results/
+playwright-report/
 
 # macOS
 .DS_Store
