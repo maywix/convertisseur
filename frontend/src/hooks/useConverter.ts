@@ -166,6 +166,23 @@ export function useConverter() {
       return;
     }
 
+    // ZIP: if any item was processed client-side (blob URL, jobId "local-*"),
+    // the backend has no record of it — build the zip in the browser instead.
+    const hasClientSide = doneItems.some(
+      (it) => typeof it.jobId === "string" && it.jobId.startsWith("local-"),
+    );
+    if (hasClientSide) {
+      import("@/lib/zipClient").then(({ downloadZipFromItems }) =>
+        downloadZipFromItems(
+          doneItems.map((it, idx) => ({
+            url: it.downloadUrl as string,
+            name: it.outputFilename || `file_${idx + 1}`,
+          })),
+        ),
+      );
+      return;
+    }
+
     triggerBrowserDownload("/download-all?mode=zip", "converted_files.zip");
   }, [exportMode, queue, triggerBrowserDownload]);
 
@@ -1465,6 +1482,21 @@ export function useConverter() {
       for (const item of doneItems) {
         triggerBrowserDownload(item.downloadUrl as string, item.outputFilename || undefined);
       }
+      return;
+    }
+
+    const hasClientSide = doneItems.some(
+      (it) => typeof it.jobId === "string" && it.jobId.startsWith("local-"),
+    );
+    if (hasClientSide) {
+      import("@/lib/zipClient").then(({ downloadZipFromItems }) =>
+        downloadZipFromItems(
+          doneItems.map((it, idx) => ({
+            url: it.downloadUrl as string,
+            name: it.outputFilename || `file_${idx + 1}`,
+          })),
+        ),
+      );
       return;
     }
 
