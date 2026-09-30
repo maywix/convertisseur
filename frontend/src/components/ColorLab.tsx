@@ -8,7 +8,7 @@ import {
     IconAlert, IconChevronLeft, IconChevronRight, IconCompare, IconCopy, IconDownload, IconPause, IconPlay,
     IconRefresh, IconWand, IconX,
 } from '@/components/icons'
-import { Button, Field, ProgressBar, Section, Segmented, Select, Slider, Spinner, TextInput, Toggle } from '@/components/ui'
+import { Button, Field, ProgressBar, Section, Select, Slider, Spinner, TextInput, Toggle } from '@/components/ui'
 import type { JobPlan, QueueApi } from '@/hooks/useQueue'
 import { BROWSER_DECODABLE, BROWSER_ENCODABLE, decodeImage, processImageInBrowser } from '@/lib/clientProcessor'
 import { parseCubeLut, type Lut3D } from '@/lib/cubeLut'
@@ -334,13 +334,14 @@ export function ColorLab({
                                     <IconWand size={15} /> Charger un LUT (.cube)
                                 </Button>
                             )}
-                            <Segmented
-                                size="sm"
+                            <Select
+                                className="w-full"
+                                ariaLabel="Portée du LUT"
                                 value={lab.lutScope}
-                                onChange={(v) => setLab((prev) => ({ ...prev, lutScope: v }))}
+                                onChange={(v) => setLab((prev) => ({ ...prev, lutScope: v as LabState['lutScope'] }))}
                                 options={[
-                                    { value: 'global', label: 'Même LUT partout' },
-                                    { value: 'per-file', label: 'Un LUT par fichier' },
+                                    { value: 'global', label: 'Même LUT pour tous les fichiers' },
+                                    { value: 'per-file', label: 'Un LUT différent par fichier' },
                                 ]}
                             />
                         </div>
@@ -395,14 +396,14 @@ export function ColorLab({
                         </Section>
 
                         <Section title="Export">
-                            <Field label="Vidéos en">
-                                <Segmented size="sm" wrap value={lab.videoFormat} options={VIDEO_OUT.map((o) => ({ value: o.value, label: o.label.split(' ')[0], title: o.label }))}
-                                    onChange={(v) => setLab((p) => ({ ...p, videoFormat: v }))} />
-                            </Field>
-                            <Field label="Images en">
-                                <Segmented size="sm" wrap value={lab.imageFormat} options={IMAGE_OUT}
-                                    onChange={(v) => setLab((p) => ({ ...p, imageFormat: v }))} />
-                            </Field>
+                            <div className="grid grid-cols-2 gap-2">
+                                <Field label="Vidéos en">
+                                    <Select value={lab.videoFormat} options={VIDEO_OUT} onChange={(v) => setLab((p) => ({ ...p, videoFormat: v }))} className="w-full" ariaLabel="Format des vidéos" />
+                                </Field>
+                                <Field label="Images en">
+                                    <Select value={lab.imageFormat} options={IMAGE_OUT} onChange={(v) => setLab((p) => ({ ...p, imageFormat: v }))} className="w-full" ariaLabel="Format des images" />
+                                </Field>
+                            </div>
                             {isVideo && (
                                 <>
                                     <Field label="Images / s">

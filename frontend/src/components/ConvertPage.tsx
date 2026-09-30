@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { ConvertOptionsPanel, FormatTabs, type PanelStats } from '@/components/ConvertOptionsPanel'
+import { Block, ConvertOptionsPanel, FormatSelect, Grid, type PanelStats } from '@/components/ConvertOptionsPanel'
 import { DropBar, EmptyDrop } from '@/components/DropZone'
 import { FileRow } from '@/components/FileRow'
 import { JobLogDialog } from '@/components/JobLogDialog'
@@ -253,49 +253,56 @@ export function ConvertPage({
             </Card>
 
             <Card>
-                <div className="flex flex-col gap-6 p-6 sm:p-7">
-                    {editing ? (
-                        <div className="flex flex-wrap items-center gap-2 rounded-[4px] border border-input px-3 py-2.5">
-                            <div className="min-w-0 flex-1">
-                                <Label>Réglages de ce fichier uniquement</Label>
-                                <p className="truncate text-[13px] font-semibold">{editing.name}</p>
-                            </div>
-                            {overrides[editing.id] && (
-                                <Button size="sm" onClick={() => setOverrides((prev) => {
-                                    const next = { ...prev }
-                                    delete next[editing.id]
-                                    return next
-                                })}>Revenir aux réglages communs</Button>
-                            )}
-                            <Button size="sm" variant="primary" onClick={() => setEditingId(null)}>OK</Button>
+                {editing ? (
+                    <div className="flex flex-wrap items-center gap-2 bg-foreground/[0.04] px-5 py-4 sm:px-6">
+                        <div className="min-w-0 flex-1">
+                            <Label>Réglages de ce fichier uniquement</Label>
+                            <p className="mt-0.5 truncate text-[13px] font-bold">{editing.name}</p>
                         </div>
-                    ) : null}
+                        {overrides[editing.id] && (
+                            <Button size="sm" onClick={() => setOverrides((prev) => {
+                                const next = { ...prev }
+                                delete next[editing.id]
+                                return next
+                            })}>Revenir aux réglages communs</Button>
+                        )}
+                        <Button size="sm" variant="primary" onClick={() => setEditingId(null)}>OK</Button>
+                    </div>
+                ) : (
+                    <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 px-5 py-4 sm:px-6">
+                        <h2 className="text-[15px] font-bold">Paramètres de conversion</h2>
+                        <span className="text-[11px] text-faint">Pour tous les fichiers · bouton ⚙ d'une ligne pour un seul</span>
+                    </div>
+                )}
 
-                    {editing ? (
-                        editing.kind !== 'unknown' && editing.kind !== 'sequence' && (
-                            <FormatTabs kind={editing.kind} value={editing.targetFormat} onChange={(v) => onFormat(editing.id, v)} label="Format" />
-                        )
-                    ) : (
-                        stats.panel.kinds.map((kind) => (
-                            <FormatTabs key={kind} kind={kind} value={queue.kindFormats[kind]} onChange={(v) => queue.setFormatForKind(kind, v)}
-                                label={`${KIND_LABEL[kind]} → format`} />
-                        ))
-                    )}
+                {(editing ? editing.kind !== 'unknown' && editing.kind !== 'sequence' : stats.panel.kinds.length > 0) && (
+                    <Block title="Format de sortie">
+                        <Grid>
+                            {editing ? (
+                                <FormatSelect kind={editing.kind as MediaKind} value={editing.targetFormat} onChange={(v) => onFormat(editing.id, v)} label="Convertir en" />
+                            ) : (
+                                stats.panel.kinds.map((kind) => (
+                                    <FormatSelect key={kind} kind={kind} value={queue.kindFormats[kind]} onChange={(v) => queue.setFormatForKind(kind, v)}
+                                        label={`${KIND_LABEL[kind]} en`} />
+                                ))
+                            )}
+                        </Grid>
+                    </Block>
+                )}
 
-                    <ConvertOptionsPanel o={shownOptions} set={setEditedOptions} stats={shownStats} />
+                <ConvertOptionsPanel o={shownOptions} set={setEditedOptions} stats={shownStats} />
 
-                    {!editing && (
-                        <>
-                            <label className="flex cursor-pointer items-center gap-2 text-[13px] text-muted-foreground select-none">
-                                <input type="checkbox" checked={autoDownload} onChange={(e) => onAutoDownload(e.target.checked)} className="h-[15px] w-[15px] accent-primary" />
-                                Télécharger automatiquement à la fin
-                            </label>
-                            <Button variant="primary" size="lg" className="w-full" disabled={convertCount === 0} onClick={start} title="Ctrl + Entrée">
-                                {convertCount > 0 ? `Convertir ${convertCount > 1 ? `${convertCount} fichiers` : 'le fichier'}` : allFinished ? 'Tout est converti' : 'Conversion en cours…'}
-                            </Button>
-                        </>
-                    )}
-                </div>
+                {!editing && (
+                    <div className="flex flex-col gap-4 border-t border-border px-5 py-5 sm:px-6">
+                        <label className="flex cursor-pointer items-center gap-2 text-[13px] text-muted-foreground select-none">
+                            <input type="checkbox" checked={autoDownload} onChange={(e) => onAutoDownload(e.target.checked)} className="h-[15px] w-[15px] accent-primary" />
+                            Télécharger automatiquement à la fin
+                        </label>
+                        <Button variant="primary" size="lg" className="w-full" disabled={convertCount === 0} onClick={start} title="Ctrl + Entrée">
+                            {convertCount > 0 ? `Convertir ${convertCount > 1 ? `${convertCount} fichiers` : 'le fichier'}` : allFinished ? 'Tout est converti' : 'Conversion en cours…'}
+                        </Button>
+                    </div>
+                )}
             </Card>
 
             <p className="text-center text-[11px] text-faint">

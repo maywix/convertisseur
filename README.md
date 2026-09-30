@@ -30,27 +30,19 @@ Même style que Eclypse Downloader : fond noir, une colonne, onglets en haut, ba
 | **Convertir** | Déposer des fichiers (ou des dossiers entiers, ou Ctrl+V), choisir le format par type ou fichier par fichier, régler les options, cliquer sur **Convertir**. |
 | **Color Lab** | Étalonner vidéos et photos : LUT, lumière, couleur, roues chromatiques, effets, détourage, découpe, texte. Aperçu en direct, export fichier par fichier ou en lot. |
 
-On peut glisser des fichiers n'importe où sur la page. Les options affichées dépendent des fichiers présents : les réglages vidéo n'apparaissent que s'il y a des vidéos, etc.
-
-**Options de conversion** :
-
-- **Vidéo** : qualité (haute / équilibrée / légère), **taille cible en Mo** (pratique pour Discord) ou **réduction en %**, résolution max (sans jamais agrandir), images/s, H.264 ou H.265, rotation, suppression du son. Les vidéos HDR (iPhone…) sont automatiquement ramenées en SDR pour ne pas sortir grises.
-- **GIF** : largeur, images/s, vitesse, nombre de couleurs.
-- **Son** : débit, normalisation du volume. On peut aussi extraire le son d'une vidéo (MP3, M4A, WAV…).
-- **Images** : qualité, taille max, agrandissement ×2 à ×4, et **diaporama** (plusieurs images → une vidéo ou un GIF).
-- **Couper** : début / fin pour vidéos, GIF et sons.
+On peut glisser des fichiers n'importe où sur la page. Chaque fichier a son menu **« en [format] »** sur sa ligne. En dessous, la carte **Paramètres de conversion** est organisée comme un convertisseur classique : une section par type (Format de sortie, Vidéo, GIF, Images, Son, Découper), chaque réglage étant un **menu déroulant**. Seules les sections utiles aux fichiers présents s'affichent.
 
 **Réglages d'un seul fichier** : le bouton ⚙ d'une ligne ouvre ses propres réglages (format, qualité, résolution…). Le fichier est marqué « Réglages perso » ; « Revenir aux réglages communs » annule.
 
-**Réglages avancés** (bloc repliable en bas des options, avec le nombre de réglages actifs) : tous les paramètres du serveur.
+Tous les paramètres du serveur sont accessibles dans ces menus :
 
-- **Vidéo** : codec (H.264, H.265, VP9, AV1), contrôle de la qualité (préréglage, CRF, débit fixe avec 2 passes, taille cible), preset, tune, profil, format de pixels, taille exacte ou hauteur max, images/s libres, rotation / miroir, recadrage, débruitage, désentrelacement, HDR → SDR, texte incrusté avec position.
-- **Son** : copie de la piste d'origine sans réencodage, débit, fréquence, mono / stéréo, volume en dB, normalisation.
-- **GIF** : 2 à 256 couleurs, tramage, lecture en boucle / une fois / N fois.
-- **Images** : redimensionnement en pourcentage, poids cible en Mo, WebP sans perte, taille des icônes ICO.
-- Un bouton **Journal** sur chaque fichier affiche la commande FFmpeg exécutée et ses messages.
-
-Un bouton **Réinitialiser** remet les réglages avancés à zéro. Une barre de progression globale suit le lot en cours.
+- **Vidéo** : qualité (préréglage, poids cible, réduction en %, CRF, débit fixe en 1 ou 2 passes), résolution max ou taille exacte, codec (H.264, H.265, VP9, AV1), images/s, rotation / miroir, piste son (garder, copier sans réencoder, supprimer). Les vidéos HDR (iPhone…) sont ramenées en SDR automatiquement pour ne pas sortir grises. On peut aussi extraire le son d'une vidéo (MP3, M4A, WAV…).
+- **Plus d'options vidéo** (bloc repliable, avec le nombre de réglages actifs et un bouton pour tout remettre par défaut) : preset, tune, profil, format de pixels, débruitage, HDR → SDR, désentrelacement, rognage, texte incrusté avec position.
+- **Son** : débit, fréquence, mono / stéréo, volume en dB ou normalisation.
+- **GIF** : largeur, images/s, vitesse, 8 à 256 couleurs, tramage, lecture en boucle / une fois / N fois.
+- **Images** : qualité, taille max en px ou en %, agrandissement, poids cible en Mo, WebP sans perte, taille des icônes ICO, diaporama.
+- **Découper** : début / fin pour vidéos, GIF et sons.
+- Un bouton **Journal** sur chaque fichier affiche la commande FFmpeg exécutée et ses messages. Une barre de progression globale suit le lot en cours.
 
 **Téléchargements** : bouton vert **Sauvegarder** par fichier, et **Tout sauvegarder** pour le lot, au choix en **un ZIP** ou en **fichiers séparés** (Réglages). Quand on dépose un dossier, le ZIP **garde l'arborescence** (dossiers et sous-dossiers), que la conversion se soit faite sur le serveur ou dans le navigateur. Option « Télécharger automatiquement à la fin ».
 

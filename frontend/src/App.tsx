@@ -2,7 +2,7 @@ import { Suspense, lazy, useEffect, useMemo, useState, type ReactNode } from 're
 import { ConvertPage } from '@/components/ConvertPage'
 import { DropOverlay } from '@/components/DropZone'
 import { IconSettings } from '@/components/icons'
-import { Popover, RoundButton, Segmented, Select, Toggle } from '@/components/ui'
+import { Popover, RoundButton, Select, Toggle } from '@/components/ui'
 import { useQueue } from '@/hooks/useQueue'
 import { useWindowDrop } from '@/hooks/useWindowDrop'
 import { FALLBACK_CONFIG, fetchConfig, type ServerConfig } from '@/lib/api'
@@ -225,14 +225,15 @@ function SettingsMenu({ settings, update, config }: { settings: Settings; update
             )}
         >
             <MenuGroup title="Où convertir">
-                <Segmented<ProcessingPreference>
-                    size="sm"
+                <Select
+                    className="w-full"
+                    ariaLabel="Où convertir"
                     value={settings.processing}
-                    onChange={(v) => update({ processing: v })}
+                    onChange={(v) => update({ processing: v as ProcessingPreference })}
                     options={[
-                        { value: 'auto', label: 'Auto' },
-                        { value: 'server', label: 'Serveur' },
-                        { value: 'browser', label: 'Navigateur' },
+                        { value: 'auto', label: 'Auto (images dans le navigateur)' },
+                        { value: 'server', label: 'Tout sur le serveur' },
+                        { value: 'browser', label: 'Navigateur si possible' },
                     ]}
                 />
                 <p className="text-[11px] leading-relaxed text-faint">{PROCESSING_HELP[settings.processing]}</p>
@@ -247,12 +248,13 @@ function SettingsMenu({ settings, update, config }: { settings: Settings; update
                 />
                 <div className="space-y-1.5 pt-1">
                     <span className="text-[13px]">Plusieurs fichiers</span>
-                    <Segmented<'zip' | 'files'>
-                        size="sm"
+                    <Select
+                        className="w-full"
+                        ariaLabel="Plusieurs fichiers"
                         value={settings.exportMode}
-                        onChange={(v) => update({ exportMode: v })}
+                        onChange={(v) => update({ exportMode: v as Settings['exportMode'] })}
                         options={[
-                            { value: 'zip', label: 'Un ZIP' },
+                            { value: 'zip', label: 'Un seul ZIP' },
                             { value: 'files', label: 'Fichiers séparés' },
                         ]}
                     />
@@ -299,14 +301,15 @@ function SettingsMenu({ settings, update, config }: { settings: Settings; update
             </MenuGroup>
 
             <MenuGroup title="Thème">
-                <Segmented<ThemePreference>
-                    size="sm"
+                <Select
+                    className="w-full"
+                    ariaLabel="Thème"
                     value={settings.theme}
-                    onChange={(v) => update({ theme: v })}
+                    onChange={(v) => update({ theme: v as ThemePreference })}
                     options={[
                         { value: 'dark', label: 'Sombre' },
                         { value: 'light', label: 'Clair' },
-                        { value: 'system', label: 'Système' },
+                        { value: 'system', label: 'Comme le système' },
                     ]}
                 />
             </MenuGroup>

@@ -2,9 +2,9 @@
 // "Convertir" page: options model and the per-file job plan (where to run it
 // and which parameters the server gets).
 //
-// The main card shows the common choices; "Réglages avancés" exposes every
-// parameter the backend understands. Everything set applies, whether the
-// advanced block is open or not (advancedCount tells how many are active).
+// The options card shows every parameter the backend understands as
+// dropdowns, grouped by media type; the rarely used video ones sit in a
+// collapsed block (advancedCount tells how many of those are active).
 // ──────────────────────────────────────────────────────────
 import type { JobPlan } from '@/hooks/useQueue'
 import { BROWSER_DECODABLE, BROWSER_ENCODABLE, processImageInBrowser } from '@/lib/clientProcessor'
@@ -136,54 +136,24 @@ export const DEFAULT_CONVERT_OPTIONS: ConvertOptions = {
     frameFps: '1',
 }
 
-/** Settings that only exist in the advanced block. */
+/** Settings that live in the "Plus d'options vidéo" block. */
 const ADVANCED_ONLY: (keyof ConvertOptions)[] = [
-    'videoCrf', 'videoBitrateK', 'videoPercent', 'twoPass', 'videoPreset', 'videoProfile', 'videoTune', 'pixelFormat',
-    'resizeMode', 'resizeWidth', 'resizeHeight', 'cropTop', 'cropBottom', 'cropLeft', 'cropRight',
+    'videoPreset', 'videoProfile', 'videoTune', 'pixelFormat',
+    'cropTop', 'cropBottom', 'cropLeft', 'cropRight',
     'deinterlace', 'denoise', 'hdr', 'overlayText', 'overlayPosition',
-    'audioCopy', 'audioSampleRate', 'audioChannels', 'audioVolume',
-    'gifDither', 'gifLoop', 'imageLossless', 'imageResizeMode', 'imagePercent', 'imageTargetMb', 'icoSize',
 ]
 
-const SIMPLE_VIDEO_QUALITY: VideoQuality[] = ['high', 'balanced', 'small', 'size']
-export const SIMPLE_VIDEO_FPS = ['', '60', '30', '25', '24']
-export const SIMPLE_AUDIO_BITRATES = ['128k', '192k', '256k', '320k']
-export const SIMPLE_GIF_COLORS = [64, 128, 256]
-
-function differs(o: ConvertOptions, key: keyof ConvertOptions): boolean {
-    return o[key] !== DEFAULT_CONVERT_OPTIONS[key]
-}
-
-/** How many advanced settings currently differ from their default. */
+/** How many of those currently differ from their default. */
 export function advancedCount(o: ConvertOptions): number {
-    let n = 0
-    for (const key of ADVANCED_ONLY) {
-        if (key === 'videoCrf' || key === 'videoBitrateK' || key === 'videoPercent' || key === 'twoPass') continue
-        if (key === 'overlayPosition' || key === 'resizeWidth' || key === 'resizeHeight' || key === 'imagePercent') continue
-        if (differs(o, key)) n++
-    }
-    if (!SIMPLE_VIDEO_QUALITY.includes(o.videoQuality)) n++
-    if (o.videoCodec === 'libvpx-vp9' || o.videoCodec === 'libaom-av1') n++
-    if (o.rotate === 'vflip') n++
-    if (!SIMPLE_VIDEO_FPS.includes(o.videoFps)) n++
-    if (!SIMPLE_AUDIO_BITRATES.includes(o.audioBitrate)) n++
-    if (!SIMPLE_GIF_COLORS.includes(o.gifColors)) n++
-    return n
+    return ADVANCED_ONLY.filter((key) => key !== 'overlayPosition' && o[key] !== DEFAULT_CONVERT_OPTIONS[key]).length
 }
 
-/** Back to defaults for everything that lives in the advanced block. */
+/** Back to defaults for everything in that block. */
 export function resetAdvanced(o: ConvertOptions): ConvertOptions {
     const next = { ...o } as unknown as Record<string, unknown>
     const d = DEFAULT_CONVERT_OPTIONS as unknown as Record<string, unknown>
     for (const key of ADVANCED_ONLY) next[key] = d[key]
-    const e = next as unknown as ConvertOptions
-    if (!SIMPLE_VIDEO_QUALITY.includes(e.videoQuality)) e.videoQuality = 'balanced'
-    if (e.videoCodec !== 'libx264' && e.videoCodec !== 'libx265') e.videoCodec = 'libx264'
-    if (e.rotate === 'vflip') e.rotate = 'none'
-    if (!SIMPLE_VIDEO_FPS.includes(e.videoFps)) e.videoFps = ''
-    if (!SIMPLE_AUDIO_BITRATES.includes(e.audioBitrate)) e.audioBitrate = '192k'
-    if (!SIMPLE_GIF_COLORS.includes(e.gifColors)) e.gifColors = 256
-    return e
+    return next as unknown as ConvertOptions
 }
 
 const CODEC_CONTAINERS: Record<VideoCodec, Set<string>> = {

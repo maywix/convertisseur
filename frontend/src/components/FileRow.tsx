@@ -108,8 +108,26 @@ export const FileRow = memo(function FileRow({
     const canPick = !!item.file && !active && options.length > 1
     const folder = item.relativePath.includes('/') ? item.relativePath.slice(0, item.relativePath.lastIndexOf('/')) : ''
 
+    const format = item.kind !== 'unknown' && (
+        <span className="inline-flex items-center gap-2 text-[11px] text-faint">
+            en
+            {canPick ? (
+                <Select
+                    size="sm"
+                    ariaLabel={`Format de sortie pour ${item.name}`}
+                    value={item.targetFormat}
+                    options={options}
+                    onChange={(v) => onFormat(item.id, v)}
+                    className="w-[124px]"
+                />
+            ) : (
+                <span className="text-[12px] font-semibold text-foreground">{formatLabel(item.kind, item.targetFormat)}</span>
+            )}
+        </span>
+    )
+
     return (
-        <div className={cn('group flex gap-3 px-4 py-3 transition-colors hover:bg-foreground/[0.03]', editing && 'bg-foreground/[0.05]')}>
+        <div className={cn('group flex items-center gap-3 px-4 py-3 transition-colors hover:bg-foreground/[0.03]', editing && 'bg-foreground/[0.05]')}>
             <Thumb item={item} />
             <div className="min-w-0 flex-1">
                 <p className="truncate text-[13px] font-semibold text-foreground" title={item.relativePath || item.name}>
@@ -124,30 +142,15 @@ export const FileRow = memo(function FileRow({
                         </span>
                     )}
                     {item.size > 0 && <span className="tabular-nums">{formatSize(item.size)}</span>}
-                    {item.kind !== 'unknown' && (
-                        <span className="inline-flex items-center gap-1.5">
-                            →
-                            {canPick ? (
-                                <Select
-                                    size="sm"
-                                    ariaLabel={`Format de sortie pour ${item.name}`}
-                                    value={item.targetFormat}
-                                    options={options}
-                                    onChange={(v) => onFormat(item.id, v)}
-                                    className="w-[112px] [&_select]:h-7"
-                                />
-                            ) : (
-                                <span className="font-semibold text-foreground">{formatLabel(item.kind, item.targetFormat)}</span>
-                            )}
-                        </span>
-                    )}
                 </div>
                 {(item.status === 'uploading' || item.status === 'processing') && (
                     <ProgressBar value={item.progress} indeterminate={item.status === 'processing' && item.progress === 0} className="mt-2" />
                 )}
                 <p className="mt-1 min-w-0 truncate text-[11px]"><StatusLine item={item} /></p>
+                {format && <div className="mt-1.5 sm:hidden">{format}</div>}
             </div>
-            <div className="flex shrink-0 items-start gap-1 pt-0.5">
+            {format && <div className="hidden shrink-0 sm:block">{format}</div>}
+            <div className="flex shrink-0 items-center gap-1">
                 {item.status === 'done' && item.downloadUrl && (
                     <button
                         type="button"

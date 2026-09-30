@@ -1,6 +1,6 @@
 // Small, dependency-free UI primitives in the Eclypse Downloader style.
 import { useEffect, useId, useRef, useState, type ButtonHTMLAttributes, type CSSProperties, type ReactNode } from 'react'
-import { IconChevronDown } from '@/components/icons'
+import { IconChevronDown, IconChevronRight } from '@/components/icons'
 import { cn } from '@/lib/utils'
 
 type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger' | 'success'
@@ -61,59 +61,6 @@ export function RoundButton({ className, ...rest }: ButtonHTMLAttributes<HTMLBut
 
 export function Spinner({ className }: { className?: string }) {
     return <span className={cn('inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-current/25 border-t-current', className)} />
-}
-
-/**
- * Row of choice buttons. `fill`: the active one is a white block (format
- * tabs). `outline`: the active one gets a white border (quality buttons).
- */
-export function Segmented<T extends string>({
-    value,
-    options,
-    onChange,
-    className,
-    size = 'md',
-    variant = 'fill',
-    wrap = false,
-}: {
-    value: T
-    options: { value: T; label: ReactNode; title?: string; disabled?: boolean }[]
-    onChange: (v: T) => void
-    className?: string
-    size?: 'sm' | 'md'
-    variant?: 'fill' | 'outline'
-    wrap?: boolean
-}) {
-    return (
-        <div role="radiogroup" className={cn('flex gap-1.5', wrap && 'flex-wrap', className)}>
-            {options.map((o) => {
-                const active = value === o.value
-                return (
-                    <button
-                        key={o.value}
-                        type="button"
-                        role="radio"
-                        aria-checked={active}
-                        title={o.title}
-                        disabled={o.disabled}
-                        onClick={() => onChange(o.value)}
-                        className={cn(
-                            'inline-flex items-center justify-center gap-1.5 rounded-[3px] border font-medium whitespace-nowrap transition-all disabled:pointer-events-none disabled:opacity-25',
-                            !wrap && 'flex-1',
-                            size === 'sm' ? 'h-8 px-2.5 text-xs' : 'h-9 px-4 text-[13px]',
-                            active
-                                ? variant === 'fill'
-                                    ? 'border-primary bg-primary font-semibold text-primary-foreground'
-                                    : 'border-primary text-foreground'
-                                : 'border-input bg-transparent text-muted-foreground hover:border-faint hover:text-foreground',
-                        )}
-                    >
-                        {o.label}
-                    </button>
-                )
-            })}
-        </div>
-    )
 }
 
 export interface SelectOption {
@@ -377,7 +324,7 @@ export function Details({
             className="group rounded-[10px] border border-input bg-foreground/[0.035] transition-colors open:border-faint open:bg-foreground/[0.05]"
         >
             <summary className="flex min-h-11 items-baseline gap-2 rounded-[10px] px-3.5 py-3 text-[13px] font-bold select-none hover:bg-foreground/[0.04]">
-                <span className="text-muted-foreground transition-transform group-open:rotate-90">▸</span>
+                <IconChevronRight size={14} className="shrink-0 self-center text-muted-foreground transition-transform group-open:rotate-90" />
                 {summary}
                 {hint && <span className="text-[11px] font-normal text-faint">{hint}</span>}
             </summary>
