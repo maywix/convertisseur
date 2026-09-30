@@ -5,7 +5,7 @@ import {
 import { DropCard } from '@/components/DropZone'
 import { FileRow } from '@/components/FileRow'
 import { JobLogDialog } from '@/components/JobLogDialog'
-import { IconArrowDown, IconAudio, IconDownload, IconImage, IconPlay, IconPlus, IconTrash, IconVideo, IconWand } from '@/components/icons'
+import { IconArrowDown, IconAudio, IconDownload, IconImage, IconPlus, IconTrash, IconVideo, IconWand } from '@/components/icons'
 import { Button, Label, ProgressBar, Select, Toggle } from '@/components/ui'
 import type { QueueApi } from '@/hooks/useQueue'
 import {
@@ -120,10 +120,7 @@ export function ConvertPage({
     onExportMode,
     background,
     onBackground,
-    mode,
 }: {
-    /** simple: presets and a list. pro: every setting, step by step. */
-    mode: 'simple' | 'pro'
     queue: QueueApi
     processing: ProcessingPreference
     retentionHours: number
@@ -152,6 +149,7 @@ export function ConvertPage({
 
     const [logItem, setLogItem] = useState<QueueItem | null>(null)
     const [preset, setPreset] = useState<PresetId>('auto')
+    const [advancedOpen, setAdvancedOpen] = useState(false)
 
     // Step 2 preselects a type from the files until one is picked.
     const category = options.category ?? inferCategory(items)
@@ -184,7 +182,7 @@ export function ConvertPage({
         }
     }, [items])
 
-    const slideshow = mode === 'pro' && category === 'slideshow' && options.action !== 'compress' && stats.pendingImages > 0
+    const slideshow = category === 'slideshow' && options.action !== 'compress' && stats.pendingImages > 0
 
     const applyFormat = useCallback((cat: Category, fmt: string) => {
         if (cat === 'slideshow') return setOptions({ slideshowFormat: fmt as ConvertOptions['slideshowFormat'] })
@@ -281,14 +279,13 @@ export function ConvertPage({
     const pendingCount = stats.pending.length
     const startCount = slideshow ? pendingCount - stats.pendingImages + 1 : pendingCount
     const allFinished = stats.running.length === 0 && pendingCount === 0
-    const verb = options.action === 'compress' ? 'Démarrer la compression' : 'Démarrer la conversion'
 
     const settings = (
-        <div className="flex flex-col overflow-hidden rounded-[4px] border border-border bg-card lg:max-h-[calc(100vh-32px)]">
+        <div className="fade-up overflow-hidden rounded-[4px] border border-border bg-card">
             <div className="flex items-start justify-between gap-3 border-b border-border px-5 py-4">
                 <div className="min-w-0">
                     <h2 className="text-[15px] font-bold">Réglages</h2>
-                    <p className="mt-0.5 text-[11px] text-faint">Tous les paramètres, étape par étape.</p>
+                    <p className="mt-0.5 text-[11px] text-faint">Tous les paramètres, étape par étape (s'appliquent à la file ci-dessus).</p>
                 </div>
             </div>
 
@@ -309,7 +306,7 @@ export function ConvertPage({
                 </div>
             )}
 
-            <div className="scroll-thin min-h-0 flex-1 space-y-7 overflow-y-auto px-5 py-5">
+            <div className="space-y-7 px-5 py-5 lg:grid lg:grid-cols-2 lg:items-start lg:gap-x-10 lg:gap-y-7 lg:space-y-0">
                 <Step n={step++} title="Action">
                     <ActionPicker value={o.action} onChange={(a) => set({ action: a })} />
                 </Step>
@@ -389,14 +386,6 @@ export function ConvertPage({
                 </div>
                 <Toggle checked={background} onChange={onBackground} label="Traitement en arrière-plan" />
                 <Toggle checked={autoDownload} onChange={onAutoDownload} label="Téléchargement auto" />
-                <Button variant="primary" size="lg" className="mt-3 w-full" disabled={startCount === 0} onClick={start} title="Ctrl + Entrée">
-                    {startCount > 0 ? (
-                        <>
-                            <IconPlay size={13} />
-                            {verb}{startCount > 1 ? ` (${startCount})` : ''}
-                        </>
-                    ) : allFinished && stats.done.length > 0 ? 'Tout est converti' : stats.running.length ? 'Conversion en cours…' : 'Ajoute des fichiers'}
-                </Button>
             </div>
         </div>
     )
@@ -422,7 +411,7 @@ export function ConvertPage({
         </div>
     )
 
-    const pro = mode === 'pro'
+    const pro = true
     const queueCard = (
         <div className="overflow-hidden rounded-[4px] border border-border bg-card">
             <div className="flex items-center gap-1 border-b border-border px-4 py-3">
@@ -497,74 +486,85 @@ export function ConvertPage({
         </p>
     )
 
-    // ── Simple mode ──
-    if (!pro) {
-        const current = PRESETS.find((p) => p.id === preset) ?? PRESETS[0]
-        const doing = options.action === 'compress' ? 'Compresser' : 'Convertir'
-        return (
-            <>
-                <section>
-                    <p className="mb-3 text-[10px] font-bold tracking-[0.1em] text-faint uppercase">Que veux-tu faire ?</p>
-                    <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Que veux-tu faire ?">
-                        {PRESETS.map((p) => (
-                            <Pill key={p.id} active={preset === p.id} onClick={() => applyPreset(p)}>
-                                <span className={preset === p.id ? 'text-foreground' : 'text-faint'}>{p.icon}</span>
-                                {p.label}
+    // ── One page: presets, files, Convertir, then the full settings below ──
+    const current = PRESETS.find((p) => p.id === preset) ?? PRESETS[0]
+    const doing = options.action === 'compress' ? 'Compresser' : 'Convertir'
+    const showAdvanced = advancedOpen || !!editing
+    return (
+        <>
+            <section>
+                <p className="mb-3 text-[10px] font-bold tracking-[0.1em] text-faint uppercase">Que veux-tu faire ?</p>
+                <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Que veux-tu faire ?">
+                    {PRESETS.map((p) => (
+                        <Pill key={p.id} active={preset === p.id} onClick={() => applyPreset(p)}>
+                            <span className={preset === p.id ? 'text-foreground' : 'text-faint'}>{p.icon}</span>
+                            {p.label}
+                        </Pill>
+                    ))}
+                </div>
+                <p className="mt-3 text-[12px] text-muted-foreground">{current.hint}</p>
+                {preset === 'compress' && (
+                    <div className="mt-3 flex flex-wrap items-center gap-2" role="radiogroup" aria-label="Niveau de compression">
+                        <span className="mr-1 text-[12px] text-faint">Niveau</span>
+                        {LEVELS.map(([v, label]) => (
+                            <Pill key={v} active={options.compressMode === 'level' && options.compressLevel === v}
+                                onClick={() => setOptions({ compressMode: 'level', compressLevel: v })}>
+                                {label}
                             </Pill>
                         ))}
                     </div>
-                    <p className="mt-3 text-[12px] text-muted-foreground">{current.hint}</p>
-                    {preset === 'compress' && (
-                        <div className="mt-3 flex flex-wrap items-center gap-2" role="radiogroup" aria-label="Niveau de compression">
-                            <span className="mr-1 text-[12px] text-faint">Niveau</span>
-                            {LEVELS.map(([v, label]) => (
-                                <Pill key={v} active={options.compressMode === 'level' && options.compressLevel === v}
-                                    onClick={() => setOptions({ compressMode: 'level', compressLevel: v })}>
-                                    {label}
-                                </Pill>
-                            ))}
-                        </div>
-                    )}
-                </section>
-
-                <DropCard onFiles={addFiles} compact={items.length > 0} />
-                {doneCard}
-
-                {items.length > 0 && (
-                    <>
-                        {queueCard}
-                        <div className="space-y-3">
-                            <Button variant="primary" size="lg" className="w-full" disabled={startCount === 0} onClick={start} title="Ctrl + Entrée">
-                                {startCount > 0
-                                    ? `${doing} ${startCount > 1 ? `${startCount} fichiers` : 'le fichier'}`
-                                    : allFinished && stats.done.length > 0 ? 'Tout est prêt' : 'Conversion en cours…'}
-                            </Button>
-                            <label className="flex cursor-pointer items-center justify-center gap-2 text-[12px] text-muted-foreground select-none">
-                                <input type="checkbox" checked={autoDownload} onChange={(e) => onAutoDownload(e.target.checked)} className="h-[14px] w-[14px] accent-primary" />
-                                Télécharger automatiquement à la fin
-                            </label>
-                        </div>
-                        {retention}
-                    </>
                 )}
-                {items.length === 0 && <Compat />}
-            </>
-        )
-    }
+            </section>
 
-    // ── Pro mode ──
-    return (
-        <>
-            <div className="grid items-start gap-5 lg:grid-cols-[390px_minmax(0,1fr)] lg:gap-6">
-                <aside className="order-2 min-w-0 lg:sticky lg:top-4 lg:order-1">{settings}</aside>
+            <DropCard onFiles={addFiles} compact={items.length > 0} />
+            {doneCard}
 
-                <div className="order-1 min-w-0 space-y-5 lg:order-2">
-                    <DropCard onFiles={addFiles} compact={items.length > 0} />
-                    {doneCard}
+            {items.length > 0 && (
+                <>
                     {queueCard}
+                    <div className="space-y-3">
+                        <Button variant="primary" size="lg" className="w-full" disabled={startCount === 0} onClick={start} title="Ctrl + Entrée">
+                            {startCount > 0
+                                ? `${doing} ${startCount > 1 ? `${startCount} fichiers` : 'le fichier'}`
+                                : allFinished && stats.done.length > 0 ? 'Tout est prêt' : 'Conversion en cours…'}
+                        </Button>
+                        <div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-2">
+                            <label className="flex cursor-pointer items-center gap-2 text-[12px] text-muted-foreground select-none">
+                                <input type="checkbox" checked={autoDownload} onChange={(e) => onAutoDownload(e.target.checked)} className="h-[14px] w-[14px] accent-primary" />
+                                Télécharger automatiquement
+                            </label>
+                            <label className="flex cursor-pointer items-center gap-2 text-[12px] text-muted-foreground select-none">
+                                <input type="checkbox" checked={background} onChange={(e) => onBackground(e.target.checked)} className="h-[14px] w-[14px] accent-primary" />
+                                Arrière-plan
+                            </label>
+                            <span className="flex items-center gap-2 text-[12px] text-muted-foreground">
+                                Plusieurs fichiers
+                                <Select size="sm" className="w-[140px]" ariaLabel="Export de plusieurs fichiers" value={exportMode}
+                                    onChange={(v) => onExportMode(v as 'zip' | 'files')}
+                                    options={[{ value: 'zip', label: 'Un ZIP' }, { value: 'files', label: 'Fichiers séparés' }]} />
+                            </span>
+                        </div>
+                    </div>
                     {retention}
-                </div>
-            </div>
+                </>
+            )}
+
+            {/* Pro settings, at the bottom of the same page */}
+            <section>
+                <button
+                    type="button"
+                    onClick={() => { setAdvancedOpen((v) => !v); if (editing) setEditingId(null) }}
+                    aria-expanded={showAdvanced}
+                    className="flex w-full items-center justify-between rounded-[4px] border border-border px-5 py-3.5 text-left text-[13px] font-bold transition-colors hover:border-input"
+                >
+                    <span>
+                        Réglages avancés
+                        <span className="ml-2 text-[11px] font-normal text-faint">action, type, format, compression, codecs, rognage, son…</span>
+                    </span>
+                    <span className={cn('text-muted-foreground transition-transform', showAdvanced && 'rotate-180')}>▾</span>
+                </button>
+                {showAdvanced && <div className="mt-3">{settings}</div>}
+            </section>
 
             {items.length === 0 && <Compat />}
             {logItem && <JobLogDialog item={logItem} onClose={() => setLogItem(null)} />}

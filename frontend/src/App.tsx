@@ -13,7 +13,7 @@ import { isActive } from '@/types'
 
 const ColorLab = lazy(() => import('@/components/ColorLab').then((m) => ({ default: m.ColorLab })))
 
-type Tab = 'simple' | 'pro' | 'lab'
+type Tab = 'convert' | 'lab'
 type ServerState = 'checking' | 'ok' | 'error'
 const TAB_KEY = 'convertisseur_tab'
 const MB = 1024 * 1024
@@ -24,10 +24,9 @@ function App() {
     const [serverState, setServerState] = useState<ServerState>('checking')
     const [tab, setTabState] = useState<Tab>(() => {
         try {
-            const saved = localStorage.getItem(TAB_KEY)
-            return saved === 'lab' || saved === 'pro' ? saved : 'simple'
+            return localStorage.getItem(TAB_KEY) === 'lab' ? 'lab' : 'convert'
         } catch {
-            return 'simple'
+            return 'convert'
         }
     })
     const [lab, setLab] = useState<LabState>(INITIAL_LAB_STATE)
@@ -83,7 +82,7 @@ function App() {
 
     return (
         <div className="min-h-screen bg-background text-foreground">
-            <div className={cn('mx-auto px-4 pt-10 pb-28 sm:px-8 sm:pt-[72px]', tab === 'pro' ? 'max-w-[1280px]' : tab === 'lab' && labCount > 0 ? 'max-w-[1440px]' : 'max-w-[860px]')}>
+            <div className={cn('mx-auto px-4 pt-10 pb-28 sm:px-8 sm:pt-[72px]', 'max-w-[1280px]')}>
                 <header className="mb-10 sm:mb-12">
                     <div className="mb-2 flex items-center justify-between gap-4">
                         <h1 className="text-[28px] leading-tight font-bold tracking-[-1px] sm:text-[34px]">
@@ -98,12 +97,8 @@ function App() {
                 </header>
 
                 <nav className="mb-6 flex flex-wrap gap-2" aria-label="Espaces">
-                    <ModeTab active={tab === 'simple'} onClick={() => setTab('simple')}>
-                        Simple
-                        {items.length > 0 && <Count n={items.length} />}
-                    </ModeTab>
-                    <ModeTab active={tab === 'pro'} onClick={() => setTab('pro')}>
-                        Pro
+                    <ModeTab active={tab === 'convert'} onClick={() => setTab('convert')}>
+                        Convertir
                         {items.length > 0 && <Count n={items.length} />}
                     </ModeTab>
                     <ModeTab active={tab === 'lab'} onClick={() => setTab('lab')}>
@@ -113,9 +108,8 @@ function App() {
                 </nav>
 
                 <main className="space-y-7">
-                    {tab !== 'lab' ? (
+                    {tab === 'convert' ? (
                         <ConvertPage
-                            mode={tab}
                             queue={queue}
                             processing={settings.processing}
                             retentionHours={Math.round(config.retention_seconds / 3600)}
