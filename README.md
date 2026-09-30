@@ -40,6 +40,16 @@ On peut glisser des fichiers n'importe où sur la page. Les options affichées d
 - **Images** : qualité, taille max, agrandissement ×2 à ×4, et **diaporama** (plusieurs images → une vidéo ou un GIF).
 - **Couper** : début / fin pour vidéos, GIF et sons.
 
+**Mode Avancé** (bascule en haut du panneau d'options) : tous les paramètres du serveur.
+
+- **Vidéo** : codec (H.264, H.265, VP9, AV1), contrôle de la qualité (préréglage, CRF, débit fixe avec 2 passes, taille cible), preset, tune, profil, format de pixels, taille exacte ou hauteur max, images/s libres, rotation / miroir, recadrage, débruitage, désentrelacement, HDR → SDR, texte incrusté avec position.
+- **Son** : copie de la piste d'origine sans réencodage, débit, fréquence, mono / stéréo, volume en dB, normalisation.
+- **GIF** : 2 à 256 couleurs, tramage, lecture en boucle / une fois / N fois.
+- **Images** : redimensionnement en pourcentage, poids cible en Mo, WebP sans perte, taille des icônes ICO.
+- Un bouton **Journal** sur chaque fichier affiche la commande FFmpeg exécutée et ses messages.
+
+Repasser en Simple garde les réglages avancés de côté sans les appliquer.
+
 Les résultats se téléchargent un par un ou en ZIP (« Tout télécharger »). Un rechargement de page ne fait pas perdre les conversions faites sur le serveur. Les fichiers sont supprimés du serveur automatiquement après 3 h.
 
 Le menu **Réglages** (roue dentée) permet de choisir où convertir, la limite de débit via le tunnel, le téléchargement automatique et le thème (système / clair / sombre).

@@ -277,3 +277,77 @@ def test_unicode_names_survive(client, media):
     assert job["output_filename"] == "été 视频.png"
     r = client.get(job["download_url"])
     assert "filename*=UTF-8''" in r.headers["Content-Disposition"]
+
+
+def run_job(client, path, fields, tmp_path, name):
+    upload_id = chunked_upload(client, path)
+    r = client.post("/jobs", data={**fields, "upload_id": upload_id})
+    assert r.status_code == 202, r.json
+    job = wait_job(client, r.json["job_id"], timeout=120)
+    assert job["status"] == "done", job["error"]
+    return job, download_to(client, job["download_url"], tmp_path, name)
+
+
+def full_probe(path):
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries",
+         "stream=codec_type,codec_name,pix_fmt,profile,width,height,sample_rate,channels,avg_frame_rate",
+         "-of", "json", path],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    return json.loads(out)["streams"]
+
+
+@needs_ffmpeg
+@pytest.mark.parametrize("label,fields,check", [
+    ("crf", {"video_crf": "30", "video_preset": "ultrafast"},
+     lambda v, a: v["codec_name"] == "h264"),
+    ("bitrate_2pass", {"video_quality_mode": "bitrate", "video_bitrate_k": "300", "two_pass": "1"},
+     lambda v, a: v["codec_name"] == "h264"),
+    ("exact_size_crop_vflip", {"video_resize_width": "161", "crop_top": "11", "rotate": "vflip"},
+     lambda v, a: v["width"] == 160 and v["height"] % 2 == 0),  # odd width rounded for 4:2:0
+    ("fps_profile_tune", {"fps": "12", "video_profile": "baseline", "video_tune": "animation"},
+     lambda v, a: v["avg_frame_rate"] == "12/1" and v["profile"].startswith("Constrained Baseline")),
+    ("hevc_10bit", {"video_codec": "libx265", "video_pixel_format": "yuv420p10le"},
+     lambda v, a: v["codec_name"] == "hevc" and v["pix_fmt"] == "yuv420p10le"),
+    ("audio_mono_44k", {"audio_channels": "1", "audio_sample_rate": "44100", "audio_volume": "-3"},
+     lambda v, a: a["channels"] == 1 and a["sample_rate"] == "44100"),
+    ("audio_copy_overlay", {"audio_codec": "copy", "overlay_text": "Test", "overlay_text_x": "text_h", "overlay_text_y": "text_h",
+                            "deinterlace": "1", "denoise": "light"},
+     lambda v, a: a["codec_name"] == "aac"),
+])
+def test_advanced_video_options(client, media, tmp_path, label, fields, check):
+    _, out = run_job(client, media["video"], {"action": "convert", "format": "mp4", **fields}, tmp_path, f"{label}.mp4")
+    streams = full_probe(str(out))
+    video = next(s for s in streams if s["codec_type"] == "video")
+    audio = next((s for s in streams if s["codec_type"] == "audio"), {})
+    assert check(video, audio), streams
+
+
+@needs_ffmpeg
+def test_gif_play_once_and_dither(client, media, tmp_path):
+    _, out = run_job(client, media["video"], {
+        "action": "convert", "format": "gif", "gif_loop": "-1", "gif_dither": "bayer", "gif_colors": "16", "gif_width": "120",
+    }, tmp_path, "once.gif")
+    data = out.read_bytes()
+    assert data[:6] in (b"GIF89a", b"GIF87a")
+    assert b"NETSCAPE2.0" not in data  # no loop extension = plays once
+
+
+def test_advanced_image_options(client, media, tmp_path):
+    from PIL import Image
+    _, out = run_job(client, media["photo"], {
+        "action": "convert", "format": "ico", "ico_size": "32",
+    }, tmp_path, "icon.ico")
+    assert Image.open(out).size == (32, 32)
+    _, out = run_job(client, media["photo"], {
+        "action": "convert", "format": "webp", "lossless": "1", "image_resize_mode": "percent", "image_resize_percent": "200",
+    }, tmp_path, "big.webp")
+    assert Image.open(out).size == (64, 128)
+    big = tmp_path / "noise.png"
+    import numpy as np
+    Image.fromarray((np.random.rand(600, 800, 3) * 255).astype("uint8")).save(big)
+    job, out = run_job(client, big, {
+        "action": "convert_compress", "format": "jpg", "comp_mode": "size", "comp_value": "0.1",
+    }, tmp_path, "small.jpg")
+    assert job["output_size"] <= 0.1 * 1024 * 1024

@@ -226,3 +226,8 @@ export function triggerDownload(href: string, filename?: string): void {
     a.click()
     a.remove()
 }
+
+export async function fetchJobLogs(id: string): Promise<string[]> {
+    const res = await fetch(`/jobs/${id}/logs`, { cache: 'no-store' })
+    return (await json<{ lines: string[] }>(res)).lines
+}

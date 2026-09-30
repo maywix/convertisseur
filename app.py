@@ -328,7 +328,8 @@ def _validate_gif_loop(val: object, default: int) -> int:
         return default
     try:
         n = int(s)
-        if n < 0 or n > 1000:
+        # -1 = play once, 0 = loop forever, N = repeat N times
+        if n < -1 or n > 1000:
             return default
         return n
     except ValueError:
@@ -2263,6 +2264,7 @@ def _encode_animated_gif_bytes(
 
     buffer = io.BytesIO()
     first = quantized[0]
+    extra = {"loop": loop} if loop >= 0 else {}  # no loop extension = play once
     first.save(
         buffer,
         format="GIF",
@@ -2270,8 +2272,8 @@ def _encode_animated_gif_bytes(
         append_images=quantized[1:],
         optimize=True,
         duration=durations,
-        loop=loop,
         disposal=2,
+        **extra,
     )
     return buffer.getvalue()
 
@@ -2586,9 +2588,12 @@ def _process_image(
                         ico_size = 256
 
                 ico_size = max(16, min(ico_size or 256, 256))
-                ico_img = _resize_preserve_aspect(img, ico_size)
-                if ico_img.mode not in ("RGBA", "LA"):
-                    ico_img = ico_img.convert("RGBA")
+                # Icons are square: centre the picture on a transparent square
+                # (Pillow silently drops sizes larger than a non-square image,
+                # which produced empty .ico files).
+                contained = ImageOps.contain(img.convert("RGBA"), (ico_size, ico_size), method=_LANCZOS)
+                ico_img = Image.new("RGBA", (ico_size, ico_size), (0, 0, 0, 0))
+                ico_img.paste(contained, ((ico_size - contained.width) // 2, (ico_size - contained.height) // 2))
                 ico_img.save(output_path, format="ICO", sizes=[(ico_size, ico_size)])
                 return
 

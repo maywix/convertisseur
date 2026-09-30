@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { FilePickers, EmptyDrop } from '@/components/DropZone'
+import { ConvertOptionsPanel, type PanelStats } from '@/components/ConvertOptionsPanel'
 import { FileRow } from '@/components/FileRow'
-import {
-    IconAudio, IconDownload, IconImage, IconPlay, IconSequence, IconSliders, IconVideo,
-} from '@/components/icons'
-import { Button, Field, Section, Segmented, Select, Slider, TextInput, Toggle } from '@/components/ui'
+import { IconAudio, IconDownload, IconImage, IconPlay, IconVideo } from '@/components/icons'
+import { JobLogDialog } from '@/components/JobLogDialog'
+import { Button } from '@/components/ui'
 import type { QueueApi } from '@/hooks/useQueue'
-import { DEFAULT_CONVERT_OPTIONS, planForItem, type ConvertOptions, type VideoQuality } from '@/lib/convertPlan'
+import { DEFAULT_CONVERT_OPTIONS, planForItem, type ConvertOptions } from '@/lib/convertPlan'
 import type { ProcessingPreference } from '@/lib/settings'
-import { AUDIO_FORMATS, FORMATS, KIND_LABEL, isActive, type MediaKind } from '@/types'
+import { AUDIO_FORMATS, isActive, type MediaKind, type QueueItem } from '@/types'
 
 const OPTIONS_KEY = 'convertisseur_convert_options_v2'
 
@@ -46,28 +46,42 @@ export function ConvertPage({
 
     const stats = useMemo(() => {
         const kinds = new Set<MediaKind>()
+        const videoTargets = new Set<string>()
+        const imageTargets = new Set<string>()
         const pending = items.filter((it) => it.status === 'pending' && it.file)
-        let videoFormats = 0, gifs = 0, audioOut = 0, images = 0, pendingImages = 0
+        let gifs = 0, audioOut = 0, images = 0, pendingImages = 0
         for (const it of items) {
             if (it.kind !== 'unknown' && it.kind !== 'sequence') kinds.add(it.kind)
             if (it.kind === 'video') {
                 if (it.targetFormat === 'gif') gifs++
                 else if (AUDIO_FORMATS.has(it.targetFormat)) audioOut++
-                else if (it.targetFormat !== 'zip') videoFormats++
+                else if (it.targetFormat !== 'zip') videoTargets.add(it.targetFormat)
             }
             if (it.kind === 'audio') audioOut++
-            if (it.kind === 'image') images++
+            if (it.kind === 'image') {
+                images++
+                imageTargets.add(it.targetFormat)
+            }
         }
         for (const it of pending) if (it.kind === 'image') pendingImages++
-        return {
+        const panel: PanelStats = {
             kinds: KIND_ORDER.filter((k) => kinds.has(k)),
-            pending,
-            done: items.filter((it) => it.status === 'done'),
-            active: items.filter((it) => isActive(it.status)).length,
-            videoFormats, gifs, audioOut, images, pendingImages,
+            videoTargets: [...videoTargets],
+            gifs, audioOut, images,
+            imageTargets: [...imageTargets],
+            pendingImages,
             zip: items.some((it) => it.kind === 'video' && it.targetFormat === 'zip'),
         }
+        return {
+            panel,
+            pending,
+            pendingImages,
+            done: items.filter((it) => it.status === 'done'),
+            active: items.filter((it) => isActive(it.status)).length,
+        }
     }, [items])
+
+    const [logItem, setLogItem] = useState<QueueItem | null>(null)
 
     const slideshow = options.slideshow && stats.pendingImages >= 2
 
@@ -162,6 +176,7 @@ export function ConvertPage({
                                 onRemove={queue.remove}
                                 onRetry={retry}
                                 onDownload={queue.download}
+                                onShowLog={options.advanced ? setLogItem : undefined}
                             />
                         ))}
                     </div>
@@ -175,46 +190,13 @@ export function ConvertPage({
             <aside className="min-w-0 lg:sticky lg:top-[72px] lg:self-start">
                 <div className="flex flex-col lg:max-h-[calc(100vh-104px)] overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
                     <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">
-                        <Section title="Formats de sortie" icon={<IconSliders size={15} />}>
-                            {stats.kinds.map((kind) => (
-                                <Field key={kind} label={`${KIND_LABEL[kind]} →`}>
-                                    <Select
-                                        value={queue.kindFormats[kind]}
-                                        options={FORMATS[kind]}
-                                        onChange={(v) => queue.setFormatForKind(kind, v)}
-                                        className="w-full"
-                                        ariaLabel={`Format pour ${KIND_LABEL[kind]}`}
-                                    />
-                                </Field>
-                            ))}
-                            <p className="text-xs text-muted-foreground">Tu peux aussi changer le format fichier par fichier dans la liste.</p>
-                        </Section>
-
-                        {stats.videoFormats > 0 && <VideoOptions o={options} set={setOptions} />}
-                        {stats.gifs > 0 && <GifOptions o={options} set={setOptions} />}
-                        {stats.zip && (
-                            <Section title="Vidéo → images" icon={<IconImage size={15} />}>
-                                <Field label="Images extraites par seconde">
-                                    <Segmented value={options.frameFps} onChange={(v) => setOptions({ frameFps: v })} className="w-full"
-                                        options={[{ value: '0.2', label: '1 / 5 s' }, { value: '1', label: '1' }, { value: '5', label: '5' }, { value: '10', label: '10' }]} />
-                                </Field>
-                            </Section>
-                        )}
-                        {(stats.audioOut > 0 || stats.videoFormats > 0) && <AudioOptions o={options} set={setOptions} />}
-                        {stats.images > 0 && <ImageOptions o={options} set={setOptions} canSlideshow={stats.pendingImages >= 2} />}
-                        {(stats.videoFormats > 0 || stats.gifs > 0 || stats.audioOut > 0) && (
-                            <Section title="Couper" defaultOpen={!!(options.trimStart || options.trimEnd)}>
-                                <div className="grid grid-cols-2 gap-2">
-                                    <Field label="Début">
-                                        <TextInput value={options.trimStart} onChange={(v) => setOptions({ trimStart: v })} placeholder="0:05" inputMode="decimal" ariaLabel="Début" />
-                                    </Field>
-                                    <Field label="Fin">
-                                        <TextInput value={options.trimEnd} onChange={(v) => setOptions({ trimEnd: v })} placeholder="1:30" inputMode="decimal" ariaLabel="Fin" />
-                                    </Field>
-                                </div>
-                                <p className="text-xs text-muted-foreground">En secondes ou en h:mm:ss. S'applique aux vidéos, GIF et sons.</p>
-                            </Section>
-                        )}
+                        <ConvertOptionsPanel
+                            o={options}
+                            set={setOptions}
+                            stats={stats.panel}
+                            kindFormats={queue.kindFormats}
+                            setFormatForKind={queue.setFormatForKind}
+                        />
                     </div>
 
                     <div className="hidden space-y-2 border-t border-border p-4 lg:block">
@@ -228,6 +210,8 @@ export function ConvertPage({
                     </div>
                 </div>
             </aside>
+
+            {logItem && <JobLogDialog item={logItem} onClose={() => setLogItem(null)} />}
 
             {/* Mobile action bar */}
             <div className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-card/95 p-3 backdrop-blur lg:hidden">
@@ -295,128 +279,5 @@ function Hint({ icon, title, children }: { icon: ReactNode; title: string; child
             <p className="flex items-center gap-2 font-semibold"><span className="text-primary">{icon}</span>{title}</p>
             <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">{children}</p>
         </div>
-    )
-}
-
-type OptProps = { o: ConvertOptions; set: (p: Partial<ConvertOptions>) => void }
-
-function VideoOptions({ o, set }: OptProps) {
-    return (
-        <Section title="Vidéo" icon={<IconVideo size={15} />}>
-            <Field label="Qualité">
-                <Segmented<VideoQuality>
-                    value={o.videoQuality}
-                    onChange={(v) => set({ videoQuality: v })}
-                    className="w-full"
-                    size="sm"
-                    options={[
-                        { value: 'high', label: 'Haute', title: 'Fichier plus gros' },
-                        { value: 'balanced', label: 'Équilibrée' },
-                        { value: 'small', label: 'Légère', title: 'Fichier plus petit' },
-                        { value: 'size', label: 'Taille cible' },
-                    ]}
-                />
-            </Field>
-            {o.videoQuality === 'size' && (
-                <Field label="Poids visé (Mo)" hint="ex. 10 ou 25 pour Discord">
-                    <TextInput value={o.videoTargetMb} onChange={(v) => set({ videoTargetMb: v.replace(',', '.') })} inputMode="decimal" ariaLabel="Poids visé en Mo" />
-                </Field>
-            )}
-            <div className="grid grid-cols-2 gap-2">
-                <Field label="Résolution max">
-                    <Select value={o.videoMaxHeight} onChange={(v) => set({ videoMaxHeight: v })} className="w-full" ariaLabel="Résolution max"
-                        options={[
-                            { value: '', label: 'Originale' }, { value: '2160', label: '4K (2160p)' }, { value: '1440', label: '1440p' },
-                            { value: '1080', label: '1080p' }, { value: '720', label: '720p' }, { value: '480', label: '480p' }, { value: '360', label: '360p' },
-                        ]} />
-                </Field>
-                <Field label="Images / s">
-                    <Select value={o.videoFps} onChange={(v) => set({ videoFps: v })} className="w-full" ariaLabel="Images par seconde"
-                        options={[{ value: '', label: 'Original' }, { value: '60', label: '60' }, { value: '30', label: '30' }, { value: '25', label: '25' }, { value: '24', label: '24' }]} />
-                </Field>
-                <Field label="Codec">
-                    <Select value={o.videoCodec} onChange={(v) => set({ videoCodec: v as ConvertOptions['videoCodec'] })} className="w-full" ariaLabel="Codec"
-                        options={[{ value: 'libx264', label: 'H.264' }, { value: 'libx265', label: 'H.265 (léger)' }]} />
-                </Field>
-                <Field label="Rotation">
-                    <Select value={o.rotate} onChange={(v) => set({ rotate: v as ConvertOptions['rotate'] })} className="w-full" ariaLabel="Rotation"
-                        options={[{ value: 'none', label: 'Aucune' }, { value: '90', label: '90° →' }, { value: '270', label: '90° ←' }, { value: '180', label: '180°' }, { value: 'hflip', label: 'Miroir' }]} />
-                </Field>
-            </div>
-            <Toggle checked={o.removeAudio} onChange={(v) => set({ removeAudio: v })} label="Supprimer le son" />
-        </Section>
-    )
-}
-
-function GifOptions({ o, set }: OptProps) {
-    return (
-        <Section title="GIF" icon={<IconSequence size={15} />}>
-            <div className="grid grid-cols-2 gap-2">
-                <Field label="Largeur">
-                    <Select value={o.gifWidth} onChange={(v) => set({ gifWidth: v })} className="w-full" ariaLabel="Largeur du GIF"
-                        options={[{ value: '320', label: '320 px' }, { value: '480', label: '480 px' }, { value: '640', label: '640 px' }, { value: '800', label: '800 px' }, { value: '0', label: 'Originale' }]} />
-                </Field>
-                <Field label="Images / s">
-                    <Select value={o.gifFps} onChange={(v) => set({ gifFps: v })} className="w-full" ariaLabel="Images par seconde du GIF"
-                        options={[{ value: '10', label: '10' }, { value: '15', label: '15' }, { value: '20', label: '20' }, { value: '25', label: '25' }]} />
-                </Field>
-                <Field label="Vitesse">
-                    <Select value={o.gifSpeed} onChange={(v) => set({ gifSpeed: v })} className="w-full" ariaLabel="Vitesse du GIF"
-                        options={[{ value: '0.5', label: '× 0,5' }, { value: '1', label: '× 1' }, { value: '1.5', label: '× 1,5' }, { value: '2', label: '× 2' }]} />
-                </Field>
-                <Field label="Couleurs">
-                    <Select value={o.gifColors} onChange={(v) => set({ gifColors: v })} className="w-full" ariaLabel="Couleurs du GIF"
-                        options={[{ value: '64', label: '64 · léger' }, { value: '128', label: '128' }, { value: '256', label: '256 · fidèle' }]} />
-                </Field>
-            </div>
-        </Section>
-    )
-}
-
-function AudioOptions({ o, set }: OptProps) {
-    return (
-        <Section title="Son" icon={<IconAudio size={15} />} defaultOpen={false}>
-            <Field label="Débit (formats compressés)">
-                <Segmented value={o.audioBitrate} onChange={(v) => set({ audioBitrate: v })} className="w-full" size="sm"
-                    options={[{ value: '128k', label: '128k' }, { value: '192k', label: '192k' }, { value: '256k', label: '256k' }, { value: '320k', label: '320k' }]} />
-            </Field>
-            <Toggle checked={o.audioNormalize} onChange={(v) => set({ audioNormalize: v })} label="Normaliser le volume" description="Niveau sonore homogène (EBU R128)" />
-        </Section>
-    )
-}
-
-function ImageOptions({ o, set, canSlideshow }: OptProps & { canSlideshow: boolean }) {
-    return (
-        <Section title="Images" icon={<IconImage size={15} />}>
-            <Slider label="Qualité (JPG, WebP, AVIF)" value={o.imageQuality} min={40} max={100} step={1} neutral={90}
-                onChange={(v) => set({ imageQuality: v })} format={(v) => `${v} %`} />
-            <div className="grid grid-cols-2 gap-2">
-                <Field label="Taille max">
-                    <Select value={o.imageMaxSize} onChange={(v) => set({ imageMaxSize: v })} className="w-full" ariaLabel="Taille maximale"
-                        options={[{ value: '', label: 'Originale' }, { value: '3840', label: '3840 px' }, { value: '2560', label: '2560 px' }, { value: '1920', label: '1920 px' }, { value: '1280', label: '1280 px' }, { value: '800', label: '800 px' }, { value: '512', label: '512 px' }]} />
-                </Field>
-                <Field label="Agrandir">
-                    <Select value={o.imageUpscale} onChange={(v) => set({ imageUpscale: v })} className="w-full" ariaLabel="Agrandir"
-                        options={[{ value: '1', label: 'Non' }, { value: '2', label: '× 2' }, { value: '3', label: '× 3' }, { value: '4', label: '× 4' }]} />
-                </Field>
-            </div>
-            {canSlideshow && (
-                <div className="rounded-xl border border-border bg-muted/40 p-3">
-                    <Toggle checked={o.slideshow} onChange={(v) => set({ slideshow: v })} label="Assembler en une vidéo" description="Les images en attente deviennent un diaporama (ordre alphabétique)." />
-                    {o.slideshow && (
-                        <div className="mt-3 grid grid-cols-2 gap-2">
-                            <Field label="Format">
-                                <Select value={o.slideshowFormat} onChange={(v) => set({ slideshowFormat: v as ConvertOptions['slideshowFormat'] })} className="w-full" ariaLabel="Format du diaporama"
-                                    options={[{ value: 'mp4', label: 'MP4' }, { value: 'webm', label: 'WebM' }, { value: 'gif', label: 'GIF' }]} />
-                            </Field>
-                            <Field label="Images / s">
-                                <Select value={o.slideshowFps} onChange={(v) => set({ slideshowFps: v })} className="w-full" ariaLabel="Images par seconde du diaporama"
-                                    options={[{ value: '0.5', label: '1 / 2 s' }, { value: '1', label: '1' }, { value: '2', label: '2' }, { value: '5', label: '5' }, { value: '12', label: '12' }, { value: '24', label: '24' }]} />
-                            </Field>
-                        </div>
-                    )}
-                </div>
-            )}
-        </Section>
     )
 }

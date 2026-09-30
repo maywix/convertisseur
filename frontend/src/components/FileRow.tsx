@@ -1,7 +1,7 @@
 import { memo, useState } from 'react'
 import {
     IconAlert, IconArrowRight, IconAudio, IconCube, IconDocument, IconDownload, IconImage,
-    IconRefresh, IconSequence, IconVideo, IconX,
+    IconRefresh, IconSequence, IconTerminal, IconVideo, IconX,
 } from '@/components/icons'
 import { Button, ProgressBar, Select } from '@/components/ui'
 import { objectUrlFor } from '@/lib/objectUrl'
@@ -71,12 +71,15 @@ export const FileRow = memo(function FileRow({
     onRemove,
     onRetry,
     onDownload,
+    onShowLog,
 }: {
     item: QueueItem
     onFormat: (id: string, format: string) => void
     onRemove: (id: string) => void
     onRetry: (id: string) => void
     onDownload: (item: QueueItem) => void
+    /** Advanced mode: open the FFmpeg log of server jobs. */
+    onShowLog?: (item: QueueItem) => void
 }) {
     const active = isActive(item.status)
     const options = item.kind === 'sequence' ? FORMATS.video.filter((f) => ['mp4', 'webm', 'gif'].includes(f.value))
@@ -118,6 +121,11 @@ export const FileRow = memo(function FileRow({
                 )}
             </div>
             <div className="flex shrink-0 items-center gap-1">
+                {onShowLog && item.jobId && !item.local && (item.status === 'done' || item.status === 'error' || item.status === 'processing') && (
+                    <Button variant="ghost" size="icon" onClick={() => onShowLog(item)} title="Journal FFmpeg" aria-label={`Journal de ${item.name}`}>
+                        <IconTerminal size={15} />
+                    </Button>
+                )}
                 {item.status === 'done' && item.downloadUrl && (
                     <Button variant="success" size="sm" onClick={() => onDownload(item)}>
                         <IconDownload size={14} />
