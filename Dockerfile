@@ -33,6 +33,10 @@ ENV PATH="/opt/venv/bin:$PATH" \
     TUNNEL_MODE=auto \
     TUNNEL_RATE_LIMIT_MBPS=5
 
+# Commit being deployed (shown in /health and in the app's settings menu).
+ARG APP_VERSION=dev
+ENV APP_VERSION=${APP_VERSION}
+
 # Includes frontend/dist, built on the host by scripts/manage.sh.
 COPY . .
 

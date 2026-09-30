@@ -71,6 +71,7 @@ IMAGE_PROC_TIMEOUT = int(os.environ.get("IMAGE_PROC_TIMEOUT", "300"))   # dcraw 
 OFFICE_PROC_TIMEOUT = int(os.environ.get("OFFICE_PROC_TIMEOUT", "300")) # libreoffice
 
 # Cloudflare Tunnel: "auto" detects it from the CF-* headers cloudflared adds.
+APP_VERSION = os.environ.get("APP_VERSION", "dev")
 TUNNEL_MODE = os.environ.get("TUNNEL_MODE", "auto").strip().lower()
 # Default upload/download ceiling suggested to browsers coming through the tunnel.
 TUNNEL_RATE_LIMIT_MBPS = float(os.environ.get("TUNNEL_RATE_LIMIT_MBPS", "5"))
@@ -2917,6 +2918,7 @@ def health():
     return jsonify(
         {
             "ok": True,
+            "version": APP_VERSION,
             "cpu_threads": CPU_THREADS,
             "workers": {
                 "video": VIDEO_WORKERS,
@@ -2947,6 +2949,7 @@ def api_config():
     tunnel = _via_tunnel()
     return jsonify(
         {
+            "version": APP_VERSION,
             "tunnel": tunnel,
             # Cloudflare rejects request bodies over 100 MB: stay well below.
             "chunk_size": UPLOAD_CHUNK_BYTES_TUNNEL if tunnel else UPLOAD_CHUNK_BYTES_LOCAL,

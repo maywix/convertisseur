@@ -65,14 +65,45 @@ build_frontend() {
     fi
 }
 
+app_version() {
+    local v
+    v="$(git -C "${PROJECT_DIR}" rev-parse --short HEAD 2>/dev/null || echo dev)"
+    if [[ -n "$(git -C "${PROJECT_DIR}" status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
+        v="${v}+modifs"
+    fi
+    echo "$v"
+}
+
+# Say which code is about to be deployed, and warn when local edits differ
+# from the checked-out commit (a refused `git checkout` goes unnoticed otherwise).
+show_source() {
+    local branch
+    branch="$(git -C "${PROJECT_DIR}" branch --show-current 2>/dev/null || echo '?')"
+    log "Code déployé : branche ${branch}, version $(app_version)"
+    if [[ -n "$(git -C "${PROJECT_DIR}" status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
+        log "ATTENTION : modifications locales non commitées (git status) — elles seront déployées telles quelles."
+    fi
+}
+
 build_image() {
     local no_cache="${1:-0}"
     log "Docker build (no_cache=${no_cache})…"
     cd "${PROJECT_DIR}"
+    local args=(--build-arg "APP_VERSION=$(app_version)" -t "${IMAGE}" .)
     if [[ "$no_cache" == "1" ]]; then
-        docker build --no-cache -t "${IMAGE}" .
+        docker build --no-cache "${args[@]}"
     else
-        docker build -t "${IMAGE}" .
+        docker build "${args[@]}"
+    fi
+}
+
+# Another container (e.g. started with docker compose) holding the port would
+# make `docker run` fail and leave the old version online.
+check_port_free() {
+    local holders
+    holders="$(docker ps --filter "publish=${HOST_PORT}" --format '{{.Names}}' | grep -vx "${CONTAINER}" || true)"
+    if [[ -n "$holders" ]]; then
+        die "Le port ${HOST_PORT} est déjà pris par : ${holders}. Arrête-le (docker stop ${holders} ou docker compose down) puis relance."
     fi
 }
 
@@ -82,6 +113,7 @@ stop_container() {
 }
 
 start_container() {
+    check_port_free
     log "Starting ${CONTAINER} on port ${HOST_PORT}…"
     docker run -d --name "${CONTAINER}" \
         -p "${HOST_PORT}:5000" \
@@ -159,18 +191,20 @@ cmd_download() {
 cmd_up() {
     require_docker
     log "===== UP (fast rebuild) ====="
+    show_source
     build_frontend
     build_image 0
     stop_container
     start_container
     sleep 3
     health_check || die "Service unhealthy after start"
-    log "UP complete ✓"
+    log "UP complete ✓ — version $(app_version) en ligne sur http://localhost:${HOST_PORT}"
 }
 
 cmd_full() {
     require_docker
     log "===== FULL (download + rebuild) ====="
+    show_source
     download_deps
     FORCE_FRONTEND=1 build_frontend
     prune_docker
@@ -180,12 +214,13 @@ cmd_full() {
     start_container
     sleep 3
     health_check || die "Service unhealthy after start"
-    log "FULL complete ✓"
+    log "FULL complete ✓ — version $(app_version) en ligne sur http://localhost:${HOST_PORT}"
 }
 
 cmd_rebuild() {
     require_docker
     log "===== REBUILD (no download) ====="
+    show_source
     FORCE_FRONTEND=1 build_frontend
     prune_docker
     clear_caches
@@ -194,7 +229,7 @@ cmd_rebuild() {
     start_container
     sleep 3
     health_check || die "Service unhealthy after start"
-    log "REBUILD complete ✓"
+    log "REBUILD complete ✓ — version $(app_version) en ligne sur http://localhost:${HOST_PORT}"
 }
 
 cmd_restart() {

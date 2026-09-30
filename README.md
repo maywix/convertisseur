@@ -149,6 +149,19 @@ L'application est ensuite disponible sur **http://localhost:6060**. Pour y accé
 
 Reconstruit seulement ce qui a changé et redémarre.
 
+### Mettre à jour
+
+```bash
+git pull            # ou : git fetch && git checkout <branche>
+./scripts/manage.sh up
+```
+
+Le script affiche la branche et la version (commit) déployées, et la même version apparaît en bas du menu **Réglages** de l'app. Si l'app n'a pas changé après une mise à jour :
+
+- `git status` : des modifications locales peuvent empêcher `git checkout` / `git pull` de changer de version. Mets-les de côté avec `git stash -u`, puis recommence.
+- Le script s'arrête avec un message si le port 6060 est déjà pris par un autre conteneur (par exemple un ancien lancé avec `docker compose`) : arrête-le, puis relance.
+- En cas d'erreur de build, l'ancienne version reste en ligne : regarde la fin de `scripts/manage.log`.
+
 ---
 
 ## Commandes de gestion

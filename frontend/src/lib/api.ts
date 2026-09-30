@@ -3,6 +3,8 @@
 // ──────────────────────────────────────────────────────────
 
 export interface ServerConfig {
+    /** Deployed commit (set by scripts/manage.sh). */
+    version: string
     /** The page is served through a Cloudflare Tunnel. */
     tunnel: boolean
     chunk_size: number
@@ -12,6 +14,7 @@ export interface ServerConfig {
 }
 
 export const FALLBACK_CONFIG: ServerConfig = {
+    version: '',
     tunnel: false,
     chunk_size: 8 * 1024 * 1024,
     tunnel_rate_limit_mbps: 5,

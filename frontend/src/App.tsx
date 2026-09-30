@@ -229,6 +229,10 @@ function SettingsMenu({ settings, update, config }: { settings: Settings; update
                         ]}
                     />
                 </div>
+
+                <p className="border-t border-border pt-3 text-[11px] text-muted-foreground">
+                    Version du serveur : <span className="font-mono">{config.version || 'inconnue'}</span>
+                </p>
             </div>
         </Popover>
     )
