@@ -8,7 +8,7 @@ import {
     IconAlert, IconChevronLeft, IconChevronRight, IconCompare, IconCopy, IconDownload, IconPause, IconPlay,
     IconRefresh, IconWand, IconX,
 } from '@/components/icons'
-import { Button, Field, ProgressBar, Section, Segmented, Select, Slider, TextInput, Toggle } from '@/components/ui'
+import { Button, Field, ProgressBar, Section, Segmented, Select, Slider, Spinner, TextInput, Toggle } from '@/components/ui'
 import type { JobPlan, QueueApi } from '@/hooks/useQueue'
 import { BROWSER_DECODABLE, BROWSER_ENCODABLE, decodeImage, processImageInBrowser } from '@/lib/clientProcessor'
 import { parseCubeLut, type Lut3D } from '@/lib/cubeLut'
@@ -47,6 +47,27 @@ function useParsedLut(file: File | null): { lut: Lut3D | null; error: string | n
     }, [file, cache])
     const value = file ? cache.get(file) : undefined
     return { lut: value && typeof value !== 'string' ? value : null, error: typeof value === 'string' ? value : null }
+}
+
+function fileKey(f: File | null): string {
+    return f ? `${f.name}:${f.size}:${f.lastModified}` : ''
+}
+
+/**
+ * Everything that changes an item's export. When it still matches the last
+ * export, the result is up to date: the button downloads it instead of
+ * rendering it again.
+ */
+function exportSignature(it: QueueItem, lab: LabState, processing: ProcessingPreference): string {
+    const { lutFile, ...rest } = lab.grades[it.id] || DEFAULT_GRADE
+    const lut = lab.lutScope === 'global' ? lab.globalLut : lutFile
+    const format = it.kind === 'video' ? lab.videoFormat : lab.imageFormat
+    return JSON.stringify([rest, fileKey(lut), format, processing])
+}
+
+function formatName(it: QueueItem, lab: LabState): string {
+    const f = it.kind === 'video' ? lab.videoFormat : lab.imageFormat
+    return (it.kind === 'video' ? VIDEO_OUT : IMAGE_OUT).find((o) => o.value === f)?.label.split(' ')[0] ?? f.toUpperCase()
 }
 
 function fmtTime(s: number): string {
@@ -157,13 +178,21 @@ export function ColorLab({
         return { plan, format }
     }, [lab, processing])
 
+    const isUpToDate = (it: QueueItem) => it.status === 'done' && !!it.downloadUrl && lab.exported[it.id] === exportSignature(it, lab, processing)
+
+    // Render, then download on its own as soon as it's ready (a ZIP or
+    // separate files for several, per the settings).
     const exportItems = (list: QueueItem[]) => {
+        if (list.length === 0) return
+        const signatures: Record<string, string> = {}
         const entries = list.map((it) => {
             const { plan, format } = planFor(it)
             queue.setFormat(it.id, format)
+            signatures[it.id] = exportSignature(it, lab, processing)
             return { id: it.id, plan }
         })
-        queue.run(entries)
+        setLab((prev) => ({ ...prev, exported: { ...prev.exported, ...signatures } }))
+        queue.run(entries, { autoDownload: true })
     }
 
     const addFiles = (files: File[]) => {
@@ -173,25 +202,26 @@ export function ColorLab({
 
     if (!active) {
         return (
-            <div className="mx-auto w-full max-w-3xl px-4 py-10 sm:py-16">
-                <EmptyDrop
-                    title="Étalonne tes vidéos et photos"
-                    subtitle="Applique un LUT .cube (Resolve, Premiere, Lightroom…), règle la lumière et les couleurs avec un aperçu en direct, puis exporte tout en une fois."
-                    onFiles={addFiles}
-                    accept="image/*,video/*,.heic,.heif,.dng,.cr2,.nef,.arw,.mkv,.mov"
-                />
-            </div>
+            <EmptyDrop
+                title="Étalonne tes vidéos et photos"
+                subtitle="Applique un LUT .cube (Resolve, Premiere, Lightroom…), règle la lumière et les couleurs avec un aperçu en direct, puis exporte tout en une fois."
+                onFiles={addFiles}
+                accept="image/*,video/*,.heic,.heif,.dng,.cr2,.nef,.arw,.mkv,.mov"
+            />
         )
     }
 
-    const exportable = labItems.filter((it) => !isActive(it.status))
-    const doneItems = labItems.filter((it) => it.status === 'done')
+    const running = labItems.filter((it) => isActive(it.status))
+    const stale = labItems.filter((it) => !isActive(it.status) && !isUpToDate(it))
+    const ready = labItems.filter(isUpToDate)
+    const activeReady = isUpToDate(active)
+    const activeRunning = isActive(active.status)
 
     return (
-        <div className="mx-auto grid w-full max-w-[1600px] gap-4 px-4 py-4 pb-10 lg:grid-cols-[minmax(0,1fr)_380px] lg:px-6">
+        <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
             {/* ── Stage ── */}
             <div className="min-w-0 space-y-3">
-                <div className="checker relative overflow-hidden rounded-2xl border border-border shadow-sm">
+                <div className="checker relative overflow-hidden rounded-[4px] border border-border">
                     <div className="relative flex aspect-video max-h-[72vh] w-full items-center justify-center bg-stage/90">
                         {isVideo ? (
                             <VideoPreview key={active.id} file={active.file!} lut={lut} filter={filter} comparing={comparing} videoRef={videoRef} />
@@ -200,11 +230,11 @@ export function ColorLab({
                         )}
 
                         <div className="absolute top-3 left-3 flex max-w-[70%] items-center gap-2">
-                            <span className="truncate rounded-md bg-black/60 px-2 py-1 text-xs font-medium text-white backdrop-blur" title={active.name}>
+                            <span className="truncate rounded-[3px] bg-black/70 px-2 py-1 text-xs font-medium text-white backdrop-blur" title={active.relativePath || active.name}>
                                 {active.name}
                             </span>
                             {lutFile && (
-                                <span className={cn('shrink-0 rounded-md px-2 py-1 text-[11px] font-semibold backdrop-blur', lutError ? 'bg-red-500/80 text-white' : 'bg-emerald-500/85 text-white')}>
+                                <span className={cn('shrink-0 rounded-[3px] px-2 py-1 text-[10px] font-bold tracking-[0.06em] text-black uppercase', lutError ? 'bg-destructive' : 'bg-success')}>
                                     {lutError ? 'LUT invalide' : 'LUT'}
                                 </span>
                             )}
@@ -218,8 +248,8 @@ export function ColorLab({
                             onPointerCancel={() => setComparing(false)}
                             onContextMenu={(e) => e.preventDefault()}
                             className={cn(
-                                'absolute top-3 right-3 inline-flex select-none items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold backdrop-blur transition-colors',
-                                comparing ? 'bg-white text-black' : 'bg-black/60 text-white hover:bg-black/75',
+                                'absolute top-3 right-3 inline-flex select-none items-center gap-1.5 rounded-[3px] px-3 py-1.5 text-xs font-semibold backdrop-blur transition-colors',
+                                comparing ? 'bg-white text-black' : 'bg-black/70 text-white hover:bg-black/85',
                             )}
                             title="Maintenir pour voir l'original"
                         >
@@ -241,6 +271,7 @@ export function ColorLab({
                                 item={it}
                                 active={it.id === active.id}
                                 graded={!isNeutral(lab.grades[it.id] || DEFAULT_GRADE)}
+                                upToDate={isUpToDate(it)}
                                 onSelect={() => setActiveId(it.id)}
                                 onRemove={() => queue.remove(it.id)}
                             />
@@ -250,31 +281,31 @@ export function ColorLab({
                         <IconChevronRight size={16} />
                     </Button>
                 </div>
-                <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                <div className="flex flex-wrap items-center gap-2 text-[11px] text-faint">
                     <span>Fichier {activeIndex + 1} / {labItems.length} · ← → pour naviguer</span>
-                    <span className="ml-auto flex gap-1">
+                    <span className="ml-auto flex gap-2">
                         <FilePickers onFiles={addFiles} accept="image/*,video/*,.heic,.heif,.dng,.cr2,.nef,.arw" folder={false} compact />
                     </span>
                 </div>
             </div>
 
             {/* ── Controls ── */}
-            <aside className="min-w-0 lg:sticky lg:top-[72px] lg:self-start">
-                <div className="flex flex-col lg:max-h-[calc(100vh-104px)] overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
-                    <div className="flex items-center gap-1 border-b border-border px-4 py-2.5">
-                        <h2 className="mr-auto text-sm font-semibold">Étalonnage</h2>
+            <aside className="min-w-0 lg:sticky lg:top-6 lg:self-start">
+                <div className="flex flex-col overflow-hidden rounded-[4px] border border-border bg-card lg:max-h-[calc(100vh-48px)]">
+                    <div className="flex items-center gap-1 border-b border-border px-5 py-3">
+                        <h2 className="mr-auto text-[13px] font-bold">Étalonnage</h2>
                         {labItems.length > 1 && (
                             <Button variant="ghost" size="sm" onClick={copyLookToAll} title="Appliquer ces réglages à tous les fichiers">
-                                <IconCopy size={14} /> Sur tous
+                                <IconCopy size={13} /> Sur tous
                             </Button>
                         )}
                         <Button variant="ghost" size="sm" onClick={() => updateGrade({ ...lookOf(DEFAULT_GRADE) })} disabled={isNeutral(grade)}>
-                            <IconRefresh size={14} /> Reset
+                            <IconRefresh size={13} /> Reset
                         </Button>
                     </div>
 
                     <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">
-                        <div className="space-y-3 border-b border-border p-4">
+                        <div className="space-y-3 border-b border-border px-5 py-4">
                             <input
                                 ref={lutInput}
                                 type="file"
@@ -287,11 +318,11 @@ export function ColorLab({
                                 }}
                             />
                             {lutFile ? (
-                                <div className={cn('flex items-center gap-2 rounded-xl border px-3 py-2', lutError ? 'border-destructive/40 bg-destructive/5' : 'border-border bg-muted/50')}>
-                                    <IconWand size={16} className={lutError ? 'text-destructive' : 'text-primary'} />
+                                <div className={cn('flex items-center gap-2 rounded-[4px] border px-3 py-2', lutError ? 'border-destructive/50' : 'border-input')}>
+                                    <IconWand size={15} className={lutError ? 'text-destructive' : 'text-success'} />
                                     <div className="min-w-0 flex-1">
-                                        <p className="truncate text-sm font-medium" title={lutFile.name}>{lutFile.name}</p>
-                                        <p className={cn('text-xs', lutError ? 'text-destructive' : 'text-muted-foreground')}>
+                                        <p className="truncate text-[13px] font-semibold" title={lutFile.name}>{lutFile.name}</p>
+                                        <p className={cn('text-[11px]', lutError ? 'text-destructive' : 'text-faint')}>
                                             {lutError ?? (lut ? `LUT 3D ${lut.size}³ · appliqué en premier` : 'Lecture…')}
                                         </p>
                                     </div>
@@ -305,11 +336,10 @@ export function ColorLab({
                             )}
                             <Segmented
                                 size="sm"
-                                className="w-full"
                                 value={lab.lutScope}
                                 onChange={(v) => setLab((prev) => ({ ...prev, lutScope: v }))}
                                 options={[
-                                    { value: 'global', label: 'LUT pour tous les fichiers' },
+                                    { value: 'global', label: 'Même LUT partout' },
                                     { value: 'per-file', label: 'Un LUT par fichier' },
                                 ]}
                             />
@@ -356,7 +386,7 @@ export function ColorLab({
                                 <>
                                     <div className="flex items-center gap-2">
                                         <input type="color" value={grade.removeColor} onChange={(e) => updateGrade({ removeColor: e.target.value })}
-                                            className="h-9 w-12 shrink-0 cursor-pointer rounded-lg border border-input bg-card p-1" aria-label="Couleur à retirer" />
+                                            className="h-9 w-12 shrink-0 cursor-pointer rounded-[4px] border border-input bg-card p-1" aria-label="Couleur à retirer" />
                                         <TextInput value={grade.removeColor} onChange={(v) => updateGrade({ removeColor: v })} ariaLabel="Couleur à retirer (hex)" />
                                     </div>
                                     <Slider label="Tolérance" value={grade.removeTolerance} min={1} max={100} neutral={20} onChange={(v) => updateGrade({ removeTolerance: v })} format={(v) => `${v} %`} />
@@ -365,14 +395,14 @@ export function ColorLab({
                         </Section>
 
                         <Section title="Export">
-                            <div className="grid grid-cols-2 gap-2">
-                                <Field label="Vidéos en">
-                                    <Select value={lab.videoFormat} options={VIDEO_OUT} onChange={(v) => setLab((p) => ({ ...p, videoFormat: v }))} className="w-full" ariaLabel="Format des vidéos" />
-                                </Field>
-                                <Field label="Images en">
-                                    <Select value={lab.imageFormat} options={IMAGE_OUT} onChange={(v) => setLab((p) => ({ ...p, imageFormat: v }))} className="w-full" ariaLabel="Format des images" />
-                                </Field>
-                            </div>
+                            <Field label="Vidéos en">
+                                <Segmented size="sm" wrap value={lab.videoFormat} options={VIDEO_OUT.map((o) => ({ value: o.value, label: o.label.split(' ')[0], title: o.label }))}
+                                    onChange={(v) => setLab((p) => ({ ...p, videoFormat: v }))} />
+                            </Field>
+                            <Field label="Images en">
+                                <Segmented size="sm" wrap value={lab.imageFormat} options={IMAGE_OUT}
+                                    onChange={(v) => setLab((p) => ({ ...p, imageFormat: v }))} />
+                            </Field>
                             {isVideo && (
                                 <>
                                     <Field label="Images / s">
@@ -400,23 +430,38 @@ export function ColorLab({
                         </Section>
                     </div>
 
-                    <div className="space-y-2 border-t border-border p-4">
-                        <ActiveStatus item={active} onDownload={queue.download} />
-                        <div className="flex gap-2">
-                            <Button variant="primary" size="lg" className="flex-1" disabled={isActive(active.status)} onClick={() => exportItems([active])}>
-                                <IconWand size={15} /> Exporter
+                    <div className="space-y-2.5 border-t border-border px-5 py-4">
+                        <ActiveStatus item={active} upToDate={activeReady} onDownload={queue.download} />
+                        {activeRunning ? (
+                            <Button variant="primary" size="lg" className="w-full" disabled>
+                                <Spinner /> Rendu en cours…
                             </Button>
-                            {labItems.length > 1 && (
-                                <Button variant="secondary" size="lg" disabled={exportable.length === 0} onClick={() => exportItems(exportable)}>
-                                    Tout ({exportable.length})
+                        ) : activeReady ? (
+                            <div className="flex gap-2">
+                                <Button variant="success" size="lg" className="min-w-0 flex-1" onClick={() => queue.download(active)}>
+                                    <IconDownload size={15} /> Télécharger
                                 </Button>
-                            )}
-                        </div>
-                        {doneItems.length > 1 && (
-                            <Button variant="success" className="w-full" onClick={() => void queue.downloadMany(doneItems)}>
-                                <IconDownload size={15} /> Télécharger les {doneItems.length} exports
+                                <Button variant="secondary" size="lg" onClick={() => exportItems([active])} title="Refaire le rendu">
+                                    <IconRefresh size={14} /> Refaire
+                                </Button>
+                            </div>
+                        ) : (
+                            <Button variant="primary" size="lg" className="w-full" onClick={() => exportItems([active])}>
+                                <IconWand size={15} /> {active.status === 'error' ? 'Réessayer' : 'Exporter'} en {formatName(active, lab)}
                             </Button>
                         )}
+                        {labItems.length > 1 && (
+                            stale.length > 0 ? (
+                                <Button variant="secondary" className="w-full" onClick={() => exportItems(stale)}>
+                                    {stale.length === labItems.length ? `Tout exporter (${stale.length})` : stale.length === 1 ? 'Exporter le fichier restant' : `Exporter les ${stale.length} fichiers restants`}
+                                </Button>
+                            ) : ready.length > 1 && running.length === 0 ? (
+                                <Button variant="success" className="w-full" onClick={() => void queue.downloadMany(ready)}>
+                                    <IconDownload size={15} /> Tout télécharger ({ready.length})
+                                </Button>
+                            ) : null
+                        )}
+                        <p className="text-[11px] leading-relaxed text-faint">Le téléchargement démarre tout seul à la fin du rendu.</p>
                     </div>
                 </div>
             </aside>
@@ -424,21 +469,34 @@ export function ColorLab({
     )
 }
 
-function ActiveStatus({ item, onDownload }: { item: QueueItem; onDownload: (it: QueueItem) => void }) {
+function ActiveStatus({ item, upToDate, onDownload }: { item: QueueItem; upToDate: boolean; onDownload: (it: QueueItem) => void }) {
     if (item.status === 'uploading' || item.status === 'processing' || item.status === 'queued') {
-        const label = item.status === 'uploading' ? 'Envoi' : item.status === 'queued' ? 'En attente' : 'Rendu'
+        const label = item.status === 'uploading' ? 'Envoi au serveur' : item.status === 'queued' ? 'En attente' : item.local ? 'Rendu dans le navigateur' : 'Rendu sur le serveur'
         return (
             <div className="space-y-1.5">
-                <p className="text-xs text-primary">{label}{item.progress ? ` · ${item.progress} %` : '…'}</p>
+                <p className="flex justify-between text-xs text-foreground">
+                    <span>{label}{item.progress ? '' : '…'}</span>
+                    {item.progress > 0 && <span className="tabular-nums">{item.progress} %</span>}
+                </p>
                 <ProgressBar value={item.progress} indeterminate={item.status !== 'uploading' && item.progress === 0} />
             </div>
         )
     }
     if (item.status === 'done' && item.downloadUrl) {
+        if (upToDate) {
+            return (
+                <p className="truncate text-xs text-success" title={item.outputName ?? undefined}>
+                    ✓ Exporté · {item.outputName}{item.outputSize ? ` · ${formatSize(item.outputSize)}` : ''}
+                </p>
+            )
+        }
         return (
-            <Button variant="success" className="w-full" onClick={() => onDownload(item)}>
-                <IconDownload size={15} /> Télécharger {item.outputName ?? ''}{item.outputSize ? ` · ${formatSize(item.outputSize)}` : ''}
-            </Button>
+            <p className="text-xs text-faint">
+                Réglages modifiés depuis le dernier export.{' '}
+                <button type="button" className="text-muted-foreground underline hover:text-foreground" onClick={() => onDownload(item)}>
+                    Télécharger l'ancien
+                </button>
+            </p>
         )
     }
     if (item.status === 'error') {
@@ -450,29 +508,30 @@ function ActiveStatus({ item, onDownload }: { item: QueueItem; onDownload: (it: 
 }
 
 function FilmThumb({
-    item, active, graded, onSelect, onRemove,
+    item, active, graded, upToDate, onSelect, onRemove,
 }: {
     item: QueueItem
     active: boolean
     graded: boolean
+    upToDate: boolean
     onSelect: () => void
     onRemove: () => void
 }) {
     const [failed, setFailed] = useState(false)
     const url = item.kind === 'image' && item.file && !failed ? objectUrlFor(item.file) : null
     return (
-        <div className={cn('group relative w-28 shrink-0 overflow-hidden rounded-xl border bg-card transition-all', active ? 'border-primary ring-2 ring-primary/25' : 'border-border hover:border-muted-foreground/50')}>
+        <div className={cn('group relative w-28 shrink-0 overflow-hidden rounded-[4px] border bg-card transition-colors', active ? 'border-foreground' : 'border-border hover:border-input')}>
             <button type="button" onClick={onSelect} className="block w-full text-left" aria-current={active}>
-                <div className="flex h-16 items-center justify-center bg-muted text-muted-foreground">
+                <div className="flex h-16 items-center justify-center bg-muted text-faint">
                     {url ? <img src={url} alt="" loading="lazy" className="h-full w-full object-cover" onError={() => setFailed(true)} /> : <KindIcon kind={item.kind} size={20} />}
                 </div>
                 <div className="px-2 py-1.5">
-                    <p className="truncate text-[11px] font-medium">{item.name}</p>
-                    <p className="flex items-center gap-1 text-[10px] text-muted-foreground">
-                        {item.status === 'done' ? <span className="text-success">Terminé</span>
+                    <p className="truncate text-[11px] font-semibold">{item.name}</p>
+                    <p className="flex items-center gap-1 text-[10px] text-faint">
+                        {isActive(item.status) ? <span className="text-foreground tabular-nums">{item.progress} %</span>
                             : item.status === 'error' ? <span className="text-destructive">Erreur</span>
-                                : isActive(item.status) ? <span className="text-primary">{item.progress} %</span>
-                                    : graded ? <span className="text-primary">Modifié</span> : formatSize(item.size)}
+                                : upToDate ? <span className="text-success">✓ Exporté</span>
+                                    : graded ? <span className="text-muted-foreground">Modifié</span> : formatSize(item.size)}
                     </p>
                 </div>
             </button>
@@ -481,7 +540,7 @@ function FilmThumb({
                 type="button"
                 onClick={onRemove}
                 aria-label={`Retirer ${item.name}`}
-                className="absolute top-1 right-1 hidden h-6 w-6 items-center justify-center rounded-md bg-black/60 text-white group-hover:flex"
+                className="absolute top-1 right-1 hidden h-6 w-6 items-center justify-center rounded-[3px] bg-black/70 text-white group-hover:flex"
             >
                 <IconX size={12} />
             </button>
@@ -508,7 +567,7 @@ function Wheel({ label, color, amount, onChange }: { label: string; color: strin
 
 function TimeGrab({ videoRef, onGrab }: { videoRef: RefObject<HTMLVideoElement | null>; onGrab: (t: string) => void }) {
     return (
-        <button type="button" className="text-[11px] text-primary hover:underline" onClick={() => {
+        <button type="button" className="text-[11px] text-muted-foreground underline hover:text-foreground" onClick={() => {
             const v = videoRef.current
             if (v) onGrab(v.currentTime.toFixed(2))
         }}>
@@ -520,7 +579,7 @@ function TimeGrab({ videoRef, onGrab }: { videoRef: RefObject<HTMLVideoElement |
 function PreviewMessage({ children }: { children: ReactNode }) {
     return (
         <div className="absolute inset-0 flex items-center justify-center p-6">
-            <p className="max-w-sm rounded-xl bg-black/70 px-4 py-3 text-center text-sm text-white/90 backdrop-blur">{children}</p>
+            <p className="max-w-sm rounded-[4px] bg-black/75 px-4 py-3 text-center text-[13px] text-white/90 backdrop-blur">{children}</p>
         </div>
     )
 }
@@ -658,8 +717,8 @@ function VideoControls({ videoRef }: { videoRef: RefObject<HTMLVideoElement | nu
     }
 
     return (
-        <div className="absolute inset-x-3 bottom-3 flex items-center gap-3 rounded-xl bg-black/65 px-3 py-2 text-white backdrop-blur">
-            <button type="button" onClick={toggle} aria-label={playing ? 'Pause' : 'Lecture'} className="flex h-7 w-7 items-center justify-center rounded-md hover:bg-white/15">
+        <div className="absolute inset-x-3 bottom-3 flex items-center gap-3 rounded-[4px] bg-black/70 px-3 py-2 text-white backdrop-blur">
+            <button type="button" onClick={toggle} aria-label={playing ? 'Pause' : 'Lecture'} className="flex h-7 w-7 items-center justify-center rounded-[3px] hover:bg-white/15">
                 {playing ? <IconPause size={16} /> : <IconPlay size={14} />}
             </button>
             <input

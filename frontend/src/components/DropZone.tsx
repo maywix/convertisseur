@@ -7,10 +7,11 @@ import { ACCEPT_ATTR } from '@/types'
 export function DropOverlay({ visible, label }: { visible: boolean; label: string }) {
     if (!visible) return null
     return (
-        <div className="pointer-events-none fixed inset-0 z-[80] flex items-center justify-center bg-background/70 p-6 backdrop-blur-sm animate-in fade-in duration-100">
-            <div className="flex flex-col items-center gap-3 rounded-2xl border-2 border-dashed border-primary bg-card/90 px-10 py-12 text-center shadow-2xl">
-                <IconUpload size={32} className="text-primary" />
+        <div className="pointer-events-none fixed inset-0 z-[80] flex items-center justify-center bg-background/80 p-6 backdrop-blur-sm animate-in fade-in duration-100">
+            <div className="flex flex-col items-center gap-3 rounded-[6px] border border-dashed border-foreground px-12 py-14 text-center">
+                <IconUpload size={30} />
                 <p className="text-base font-semibold">{label}</p>
+                <p className="text-xs text-faint">Fichiers ou dossiers entiers (l'arborescence est gardée)</p>
             </div>
         </div>
     )
@@ -47,17 +48,27 @@ export function FilePickers({
                     {...({ webkitdirectory: '', directory: '' } as Record<string, string>)}
                 />
             )}
-            <Button variant={compact ? 'secondary' : 'primary'} size={compact ? 'sm' : 'lg'} onClick={() => fileRef.current?.click()}>
-                <IconPlus size={compact ? 14 : 16} />
-                {compact ? 'Ajouter' : 'Choisir des fichiers'}
+            <Button variant="primary" size={compact ? 'md' : 'lg'} onClick={() => fileRef.current?.click()}>
+                <IconPlus size={15} />
+                {compact ? 'Ajouter des fichiers' : 'Choisir des fichiers'}
             </Button>
             {folder && (
-                <Button variant={compact ? 'ghost' : 'secondary'} size={compact ? 'sm' : 'lg'} onClick={() => dirRef.current?.click()}>
-                    <IconFolder size={compact ? 14 : 16} />
+                <Button variant="secondary" size={compact ? 'md' : 'lg'} onClick={() => dirRef.current?.click()}>
+                    <IconFolder size={15} />
                     Dossier
                 </Button>
             )}
         </>
+    )
+}
+
+/** Compact "add more" row shown above the list (like the downloader's input row). */
+export function DropBar({ onFiles, accept, folder = true }: { onFiles: (files: File[]) => void; accept?: string; folder?: boolean }) {
+    return (
+        <div className="flex flex-wrap items-center gap-2 rounded-[4px] border border-dashed border-input px-3 py-2.5">
+            <FilePickers onFiles={onFiles} accept={accept} folder={folder} compact />
+            <span className="ml-1 text-[13px] text-faint">ou glisse des fichiers et dossiers n'importe où · Ctrl+V</span>
+        </div>
     )
 }
 
@@ -77,16 +88,14 @@ export function EmptyDrop({
     className?: string
 }) {
     return (
-        <div className={cn('flex flex-col items-center justify-center rounded-2xl border-2 border-dashed border-border bg-card/60 px-6 py-14 text-center sm:py-20', className)}>
-            <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-accent text-accent-foreground">
-                <IconUpload size={26} />
-            </div>
-            <h2 className="mt-5 text-xl font-semibold tracking-tight sm:text-2xl">{title}</h2>
-            <p className="mt-2 max-w-md text-sm text-muted-foreground">{subtitle}</p>
-            <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
+        <div className={cn('fade-up flex flex-col items-center justify-center rounded-[4px] border border-dashed border-input bg-card px-6 py-16 text-center sm:py-20', className)}>
+            <IconUpload size={28} className="text-muted-foreground" />
+            <h2 className="mt-5 text-[17px] font-semibold">{title}</h2>
+            <p className="mt-1.5 max-w-md text-[13px] text-muted-foreground">{subtitle}</p>
+            <div className="mt-7 flex flex-wrap items-center justify-center gap-2">
                 <FilePickers onFiles={onFiles} accept={accept} folder={folder} />
             </div>
-            <p className="mt-4 text-xs text-muted-foreground">ou glisse-les n'importe où sur la page · Ctrl+V pour coller</p>
+            <p className="mt-5 text-[11px] text-faint">ou glisse-les n'importe où sur la page · Ctrl+V pour coller</p>
         </div>
     )
 }

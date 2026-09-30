@@ -13,6 +13,10 @@ export interface Settings {
     /** MB/s through the Cloudflare Tunnel. null = server default, 0 = unlimited. */
     tunnelLimitMbps: number | null
     autoDownload: boolean
+    /** "Tout télécharger" with several results: one ZIP or separate files. */
+    exportMode: 'zip' | 'files'
+    /** Server conversions keep going when the page is closed, and come back on reload. */
+    background: boolean
     theme: ThemePreference
 }
 
@@ -22,7 +26,9 @@ const DEFAULTS: Settings = {
     processing: 'auto',
     tunnelLimitMbps: null,
     autoDownload: false,
-    theme: 'system',
+    exportMode: 'zip',
+    background: true,
+    theme: 'dark',
 }
 
 function load(): Settings {

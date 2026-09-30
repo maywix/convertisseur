@@ -7,6 +7,8 @@ export interface LabState {
     globalLut: File | null
     videoFormat: string
     imageFormat: string
+    /** Settings signature of each item's last export (see ColorLab). */
+    exported: Record<string, string>
 }
 
 export const INITIAL_LAB_STATE: LabState = {
@@ -15,4 +17,5 @@ export const INITIAL_LAB_STATE: LabState = {
     globalLut: null,
     videoFormat: 'mp4',
     imageFormat: 'jpg',
+    exported: {},
 }

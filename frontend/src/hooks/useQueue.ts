@@ -79,7 +79,31 @@ function releaseItem(it: QueueItem) {
     releaseObjectUrl(it.file)
 }
 
-export function useQueue(config: ServerConfig, rateLimit: number, autoDownload: boolean) {
+export interface QueueOptions {
+    rateLimit: number
+    /** Download every batch when it finishes. */
+    autoDownload: boolean
+    /** Several results: one ZIP, or one download per file. */
+    exportMode: 'zip' | 'files'
+    /** Keep server jobs across reloads / closing the tab. */
+    background: boolean
+}
+
+interface Batch {
+    ids: Set<string>
+    autoDownload: boolean
+}
+
+/** Output path inside a ZIP: keeps the folder the source came from. */
+export function archivePath(it: QueueItem): string {
+    const name = it.outputName || it.name
+    const rel = it.relativePath
+    const slash = rel.lastIndexOf('/')
+    return slash > 0 ? `${rel.slice(0, slash)}/${name}` : name
+}
+
+export function useQueue(config: ServerConfig, queueOptions: QueueOptions) {
+    const { rateLimit, autoDownload, exportMode, background } = queueOptions
     const [items, setItems] = useState<QueueItem[]>([])
     const itemsRef = useLatest(items)
 
@@ -91,8 +115,9 @@ export function useQueue(config: ServerConfig, rateLimit: number, autoDownload: 
     const tasksRef = useRef<{ id: string; plan: JobPlan }[]>([])
     const pumpingRef = useRef(false)
     const controllersRef = useRef(new Map<string, AbortController>())
-    const batchRef = useRef<Set<string> | null>(null)
+    const batchesRef = useRef<Batch[]>([])
     const autoDownloadRef = useLatest(autoDownload)
+    const exportModeRef = useLatest(exportMode)
 
     const patch = useCallback((id: string, update: Partial<QueueItem>) => {
         setItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...update } : it)))
@@ -163,7 +188,7 @@ export function useQueue(config: ServerConfig, rateLimit: number, autoDownload: 
         for (const c of controllersRef.current.values()) c.abort()
         itemsRef.current.forEach(releaseItem)
         setItems([])
-        batchRef.current = null
+        batchesRef.current = []
         await clearAllJobs()
     }, [itemsRef])
 
@@ -255,7 +280,7 @@ export function useQueue(config: ServerConfig, rateLimit: number, autoDownload: 
     }, [execute, patch, itemsRef])
 
     /** Queue items for processing. Re-running a finished item replaces its result. */
-    const run = useCallback((entries: { id: string; plan: JobPlan }[]) => {
+    const run = useCallback((entries: { id: string; plan: JobPlan }[], opts: { autoDownload?: boolean } = {}) => {
         if (entries.length === 0) return
         const ids = new Set(entries.map((e) => e.id))
         for (const it of itemsRef.current) {
@@ -267,7 +292,10 @@ export function useQueue(config: ServerConfig, rateLimit: number, autoDownload: 
             ? { ...it, status: 'queued', progress: 0, error: null, jobId: null, downloadUrl: null, outputName: null, outputSize: null, local: false }
             : it)))
         tasksRef.current = tasksRef.current.filter((t) => !ids.has(t.id)).concat(entries)
-        batchRef.current = new Set([...(batchRef.current ?? []), ...ids])
+        // A re-run item leaves any earlier batch it was part of.
+        for (const b of batchesRef.current) for (const id of ids) b.ids.delete(id)
+        batchesRef.current = batchesRef.current.filter((b) => b.ids.size > 0)
+        batchesRef.current.push({ ids, autoDownload: !!opts.autoDownload })
         // Let React commit the "queued" state before the engine reads items.
         window.setTimeout(() => { void pump() }, 0)
     }, [pump, itemsRef])
@@ -328,18 +356,23 @@ export function useQueue(config: ServerConfig, rateLimit: number, autoDownload: 
             return []
         }
     })
-    const [restoring, setRestoring] = useState(savedJobs.length > 0)
+    const [restoring, setRestoring] = useState(savedJobs.length > 0 && background)
 
     useEffect(() => {
         if (restoring) return
+        if (!background) {
+            try { localStorage.removeItem(STORAGE_KEY) } catch { /* ignore */ }
+            return
+        }
         const stored: StoredJob[] = items
             .filter((it) => it.jobId && !it.local && it.status !== 'error')
             .map((it) => ({ jobId: it.jobId!, name: it.name, size: it.size, kind: it.kind, targetFormat: it.targetFormat }))
         try { localStorage.setItem(STORAGE_KEY, JSON.stringify(stored)) } catch { /* ignore */ }
-    }, [items, restoring])
+    }, [items, restoring, background])
 
+    const backgroundAtStart = useRef(background)
     useEffect(() => {
-        if (savedJobs.length === 0) return
+        if (savedJobs.length === 0 || !backgroundAtStart.current) return
         fetchJobs(savedJobs.map((s) => s.jobId)).then((jobs) => {
             const byId = new Map(jobs.map((j) => [j.id, j]))
             const restored: QueueItem[] = []
@@ -373,23 +406,33 @@ export function useQueue(config: ServerConfig, rateLimit: number, autoDownload: 
         const done = list.filter((it) => it.status === 'done' && it.downloadUrl)
         if (done.length === 0) return
         if (done.length === 1) return download(done[0])
+        if (exportModeRef.current === 'files') {
+            // Browsers ask once to allow several downloads; space them out a bit.
+            for (const [i, it] of done.entries()) window.setTimeout(() => download(it), i * 350)
+            return
+        }
         if (done.every((it) => !it.local)) {
             const ids = done.map((it) => it.jobId).join(',')
             triggerDownload(withRate(`/download-all?ids=${ids}`, transferRef.current.rateLimit), 'fichiers_convertis.zip')
             return
         }
         const { downloadZipFromItems } = await import('@/lib/zipClient')
-        await downloadZipFromItems(done.map((it) => ({ url: hrefFor(it), name: it.outputName || it.name })))
-    }, [download, hrefFor, transferRef])
+        await downloadZipFromItems(done.map((it) => ({ url: hrefFor(it), name: archivePath(it) })))
+    }, [download, hrefFor, transferRef, exportModeRef])
 
-    // Auto-download when everything started together has finished.
+    // Download a batch once all its items have finished (setting, or an
+    // explicit export such as the Color Lab's).
     useEffect(() => {
-        const batch = batchRef.current
-        if (!batch) return
-        const members = items.filter((it) => batch.has(it.id))
-        if (members.some((it) => isActive(it.status))) return
-        batchRef.current = null
-        if (autoDownloadRef.current) void downloadMany(members)
+        const finished = batchesRef.current.filter((b) => {
+            const members = items.filter((it) => b.ids.has(it.id))
+            return !members.some((it) => isActive(it.status))
+        })
+        if (finished.length === 0) return
+        batchesRef.current = batchesRef.current.filter((b) => !finished.includes(b))
+        for (const b of finished) {
+            if (!b.autoDownload && !autoDownloadRef.current) continue
+            void downloadMany(items.filter((it) => b.ids.has(it.id)))
+        }
     }, [items, downloadMany, autoDownloadRef])
 
     const reset = useCallback((id: string) => {

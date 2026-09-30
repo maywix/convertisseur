@@ -351,3 +351,17 @@ def test_advanced_image_options(client, media, tmp_path):
         "action": "convert_compress", "format": "jpg", "comp_mode": "size", "comp_value": "0.1",
     }, tmp_path, "small.jpg")
     assert job["output_size"] <= 0.1 * 1024 * 1024
+
+
+@needs_ffmpeg
+def test_stalled_ffmpeg_is_killed(tmp_path, monkeypatch):
+    fifo = tmp_path / "never.fifo"
+    os.mkfifo(fifo)  # nobody writes: ffmpeg waits forever without progress
+    monkeypatch.setattr(server, "VIDEO_STALL_TIMEOUT", 1)
+    t0 = time.time()
+    with pytest.raises(RuntimeError, match="ne progressait plus"):
+        server._run_ffmpeg_tracked(
+            ["ffmpeg", "-y", "-f", "s16le", "-i", str(fifo), str(tmp_path / "out.wav")],
+            job_id="0" * 32, total_us=10_000_000,
+        )
+    assert time.time() - t0 < 30

@@ -1,9 +1,9 @@
-import { memo, useState } from 'react'
+import { memo, useState, type ReactNode } from 'react'
 import {
-    IconAlert, IconArrowRight, IconAudio, IconCube, IconDocument, IconDownload, IconImage,
-    IconRefresh, IconSequence, IconTerminal, IconVideo, IconX,
+    IconAlert, IconAudio, IconCube, IconDocument, IconDownload, IconFolder, IconImage,
+    IconRefresh, IconSequence, IconSliders, IconTerminal, IconVideo, IconX,
 } from '@/components/icons'
-import { Button, ProgressBar, Select } from '@/components/ui'
+import { ProgressBar, Select } from '@/components/ui'
 import { objectUrlFor } from '@/lib/objectUrl'
 import { cn } from '@/lib/utils'
 import { FORMATS, formatLabel, formatSize, isActive, type QueueItem } from '@/types'
@@ -21,7 +21,7 @@ function Thumb({ item }: { item: QueueItem }) {
     const [failed, setFailed] = useState(false)
     const url = item.kind === 'image' && item.file && !failed ? objectUrlFor(item.file) : null
     return (
-        <div className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-muted text-muted-foreground">
+        <div className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-[3px] bg-muted text-faint">
             {url ? (
                 <img src={url} alt="" loading="lazy" decoding="async" className="h-full w-full object-cover" onError={() => setFailed(true)} />
             ) : (
@@ -34,70 +34,99 @@ function Thumb({ item }: { item: QueueItem }) {
 function StatusLine({ item }: { item: QueueItem }) {
     switch (item.status) {
         case 'pending':
-            return <span className="text-muted-foreground">Prêt</span>
+            return <span className="text-faint">Prêt</span>
         case 'queued':
             return <span className="text-muted-foreground">{item.jobId ? 'Dans la file du serveur…' : 'En attente…'}</span>
         case 'uploading':
-            return <span className="text-primary">Envoi · {item.progress} %</span>
+            return <span className="text-foreground">Envoi · {item.progress} %</span>
         case 'processing':
             return (
-                <span className="text-primary">
-                    Conversion{item.local ? ' (navigateur)' : ''}{item.progress > 0 ? ` · ${item.progress} %` : '…'}
+                <span className="text-foreground">
+                    {item.local ? 'Conversion dans le navigateur' : 'Conversion sur le serveur'}{item.progress > 0 ? ` · ${item.progress} %` : '…'}
                 </span>
             )
         case 'done': {
             const saved = item.outputSize && item.size ? Math.round((1 - item.outputSize / item.size) * 100) : null
             return (
                 <span className="text-success">
-                    Terminé{item.outputSize ? ` · ${formatSize(item.outputSize)}` : ''}
-                    {saved !== null && saved > 1 && <span className="text-success/80"> (−{saved} %)</span>}
-                    {item.local && <span className="ml-1.5 rounded bg-success/12 px-1 py-px text-[10px] font-semibold uppercase">local</span>}
+                    ✓ Terminé{item.outputSize ? ` · ${formatSize(item.outputSize)}` : ''}
+                    {saved !== null && saved > 1 && ` (−${saved} %)`}
+                    {item.local && <span className="ml-1.5 text-faint">· local</span>}
                 </span>
             )
         }
         case 'error':
             return (
                 <span className="inline-flex min-w-0 items-center gap-1 text-destructive" title={item.error ?? undefined}>
-                    <IconAlert size={13} className="shrink-0" />
+                    <IconAlert size={12} className="shrink-0" />
                     <span className="truncate">{item.error || 'Échec'}</span>
                 </span>
             )
     }
 }
 
+function IconButton({ onClick, title, children, className }: { onClick: () => void; title: string; children: ReactNode; className?: string }) {
+    return (
+        <button
+            type="button"
+            onClick={onClick}
+            title={title}
+            aria-label={title}
+            className={cn('flex h-7 w-7 items-center justify-center rounded-[3px] text-faint transition-colors hover:bg-accent hover:text-foreground', className)}
+        >
+            {children}
+        </button>
+    )
+}
+
 export const FileRow = memo(function FileRow({
     item,
+    custom,
+    editing,
     onFormat,
     onRemove,
     onRetry,
     onDownload,
     onShowLog,
+    onEdit,
 }: {
     item: QueueItem
+    /** Has its own settings (per-file override). */
+    custom?: boolean
+    /** Its settings are open in the options card. */
+    editing?: boolean
     onFormat: (id: string, format: string) => void
     onRemove: (id: string) => void
     onRetry: (id: string) => void
     onDownload: (item: QueueItem) => void
-    /** Advanced mode: open the FFmpeg log of server jobs. */
     onShowLog?: (item: QueueItem) => void
+    onEdit?: (item: QueueItem) => void
 }) {
     const active = isActive(item.status)
     const options = item.kind === 'sequence' ? FORMATS.video.filter((f) => ['mp4', 'webm', 'gif'].includes(f.value))
         : item.kind === 'unknown' ? [] : FORMATS[item.kind]
     const canPick = !!item.file && !active && options.length > 1
+    const folder = item.relativePath.includes('/') ? item.relativePath.slice(0, item.relativePath.lastIndexOf('/')) : ''
 
     return (
-        <div className={cn('group flex items-center gap-3 px-4 py-3 transition-colors', item.status === 'done' && 'bg-success/[0.03]')}>
+        <div className={cn('group flex gap-3 px-4 py-3 transition-colors hover:bg-foreground/[0.03]', editing && 'bg-foreground/[0.05]')}>
             <Thumb item={item} />
             <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-medium text-foreground" title={item.relativePath || item.name}>
+                <p className="truncate text-[13px] font-semibold text-foreground" title={item.relativePath || item.name}>
                     {item.name}
+                    {custom && <span className="ml-2 rounded-[2px] border border-input px-1.5 py-px align-middle text-[9px] font-bold tracking-[0.04em] text-muted-foreground uppercase">Réglages perso</span>}
                 </p>
-                <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-                    {item.size > 0 && <span className="text-muted-foreground tabular-nums">{formatSize(item.size)}</span>}
+                <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-faint">
+                    {folder && (
+                        <span className="inline-flex min-w-0 items-center gap-1" title={folder}>
+                            <IconFolder size={11} className="shrink-0" />
+                            <span className="max-w-[220px] truncate">{folder}</span>
+                        </span>
+                    )}
+                    {item.size > 0 && <span className="tabular-nums">{formatSize(item.size)}</span>}
                     {item.kind !== 'unknown' && (
-                        <span className="inline-flex items-center gap-1.5 text-muted-foreground">
-                            <IconArrowRight size={12} />
+                        <span className="inline-flex items-center gap-1.5">
+                            →
                             {canPick ? (
                                 <Select
                                     size="sm"
@@ -105,48 +134,44 @@ export const FileRow = memo(function FileRow({
                                     value={item.targetFormat}
                                     options={options}
                                     onChange={(v) => onFormat(item.id, v)}
-                                    className="w-[124px]"
+                                    className="w-[112px] [&_select]:h-7"
                                 />
                             ) : (
                                 <span className="font-semibold text-foreground">{formatLabel(item.kind, item.targetFormat)}</span>
                             )}
                         </span>
                     )}
-                    <span className="min-w-0 text-xs">
-                        <StatusLine item={item} />
-                    </span>
                 </div>
                 {(item.status === 'uploading' || item.status === 'processing') && (
                     <ProgressBar value={item.progress} indeterminate={item.status === 'processing' && item.progress === 0} className="mt-2" />
                 )}
+                <p className="mt-1 min-w-0 truncate text-[11px]"><StatusLine item={item} /></p>
             </div>
-            <div className="flex shrink-0 items-center gap-1">
-                {onShowLog && item.jobId && !item.local && (item.status === 'done' || item.status === 'error' || item.status === 'processing') && (
-                    <Button variant="ghost" size="icon" onClick={() => onShowLog(item)} title="Journal FFmpeg" aria-label={`Journal de ${item.name}`}>
-                        <IconTerminal size={15} />
-                    </Button>
-                )}
+            <div className="flex shrink-0 items-start gap-1 pt-0.5">
                 {item.status === 'done' && item.downloadUrl && (
-                    <Button variant="success" size="sm" onClick={() => onDownload(item)}>
-                        <IconDownload size={14} />
-                        <span className="hidden sm:inline">Télécharger</span>
-                    </Button>
+                    <button
+                        type="button"
+                        onClick={() => onDownload(item)}
+                        className="inline-flex h-7 items-center gap-1.5 rounded-[3px] bg-success px-3 text-xs font-bold text-black transition-opacity hover:opacity-85"
+                    >
+                        <IconDownload size={13} />
+                        <span className="hidden sm:inline">Sauvegarder</span>
+                    </button>
                 )}
                 {item.status === 'error' && item.file && item.kind !== 'unknown' && (
-                    <Button variant="ghost" size="sm" onClick={() => onRetry(item.id)} title="Réessayer">
-                        <IconRefresh size={14} />
-                        <span className="hidden sm:inline">Réessayer</span>
-                    </Button>
+                    <IconButton onClick={() => onRetry(item.id)} title="Réessayer"><IconRefresh size={14} /></IconButton>
                 )}
-                <Button
-                    variant="danger"
-                    size="icon"
-                    onClick={() => onRemove(item.id)}
-                    title={active ? 'Annuler' : 'Retirer'}
-                    aria-label={active ? `Annuler ${item.name}` : `Retirer ${item.name}`}
-                >
-                    <IconX size={15} />
-                </Button>
+                {onEdit && item.file && !active && item.kind !== 'unknown' && (
+                    <IconButton onClick={() => onEdit(item)} title="Réglages de ce fichier" className={cn((custom || editing) && 'text-foreground')}>
+                        <IconSliders size={14} />
+                    </IconButton>
+                )}
+                {onShowLog && item.jobId && !item.local && (item.status === 'done' || item.status === 'error' || item.status === 'processing') && (
+                    <IconButton onClick={() => onShowLog(item)} title={`Journal de ${item.name}`}><IconTerminal size={14} /></IconButton>
+                )}
+                <IconButton onClick={() => onRemove(item.id)} title={active ? `Annuler ${item.name}` : `Retirer ${item.name}`} className="hover:text-destructive">
+                    <IconX size={14} />
+                </IconButton>
             </div>
         </div>
     )

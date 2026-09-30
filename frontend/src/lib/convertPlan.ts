@@ -2,16 +2,16 @@
 // "Convertir" page: options model and the per-file job plan (where to run it
 // and which parameters the server gets).
 //
-// Simple mode exposes a handful of choices; Avancé exposes every parameter
-// the backend understands. Advanced values are kept when switching back to
-// Simple, but ignored (see effectiveOptions) so Simple always behaves simply.
+// The main card shows the common choices; "Réglages avancés" exposes every
+// parameter the backend understands. Everything set applies, whether the
+// advanced block is open or not (advancedCount tells how many are active).
 // ──────────────────────────────────────────────────────────
 import type { JobPlan } from '@/hooks/useQueue'
 import { BROWSER_DECODABLE, BROWSER_ENCODABLE, processImageInBrowser } from '@/lib/clientProcessor'
 import type { ProcessingPreference } from '@/lib/settings'
 import { AUDIO_FORMATS, extOf, type QueueItem } from '@/types'
 
-export type VideoQuality = 'high' | 'balanced' | 'small' | 'size' | 'crf' | 'bitrate'
+export type VideoQuality = 'high' | 'balanced' | 'small' | 'size' | 'crf' | 'bitrate' | 'percent'
 export type VideoCodec = 'libx264' | 'libx265' | 'libvpx-vp9' | 'libaom-av1'
 export type Rotate = 'none' | '90' | '180' | '270' | 'hflip' | 'vflip'
 export type TextPosition = 'bottom' | 'top' | 'center' | 'bottom-left' | 'bottom-right' | 'top-left' | 'top-right'
@@ -21,6 +21,7 @@ export interface ConvertOptions {
     // ── Vidéo : encodage
     videoQuality: VideoQuality
     videoTargetMb: string
+    videoPercent: number
     videoCrf: number
     videoBitrateK: string
     twoPass: boolean
@@ -82,6 +83,7 @@ export const DEFAULT_CONVERT_OPTIONS: ConvertOptions = {
     advanced: false,
     videoQuality: 'balanced',
     videoTargetMb: '25',
+    videoPercent: 50,
     videoCrf: 23,
     videoBitrateK: '4000',
     twoPass: false,
@@ -134,27 +136,48 @@ export const DEFAULT_CONVERT_OPTIONS: ConvertOptions = {
     frameFps: '1',
 }
 
-/** Settings that only exist in the advanced panel. */
+/** Settings that only exist in the advanced block. */
 const ADVANCED_ONLY: (keyof ConvertOptions)[] = [
-    'videoCrf', 'videoBitrateK', 'twoPass', 'videoPreset', 'videoProfile', 'videoTune', 'pixelFormat',
+    'videoCrf', 'videoBitrateK', 'videoPercent', 'twoPass', 'videoPreset', 'videoProfile', 'videoTune', 'pixelFormat',
     'resizeMode', 'resizeWidth', 'resizeHeight', 'cropTop', 'cropBottom', 'cropLeft', 'cropRight',
     'deinterlace', 'denoise', 'hdr', 'overlayText', 'overlayPosition',
     'audioCopy', 'audioSampleRate', 'audioChannels', 'audioVolume',
     'gifDither', 'gifLoop', 'imageLossless', 'imageResizeMode', 'imagePercent', 'imageTargetMb', 'icoSize',
 ]
 
+const SIMPLE_VIDEO_QUALITY: VideoQuality[] = ['high', 'balanced', 'small', 'size']
 export const SIMPLE_VIDEO_FPS = ['', '60', '30', '25', '24']
 export const SIMPLE_AUDIO_BITRATES = ['128k', '192k', '256k', '320k']
 export const SIMPLE_GIF_COLORS = [64, 128, 256]
 
-/** What actually applies: in Simple mode, advanced-only settings fall back to defaults. */
-export function effectiveOptions(o: ConvertOptions): ConvertOptions {
-    if (o.advanced) return o
-    const e: ConvertOptions = { ...o }
+function differs(o: ConvertOptions, key: keyof ConvertOptions): boolean {
+    return o[key] !== DEFAULT_CONVERT_OPTIONS[key]
+}
+
+/** How many advanced settings currently differ from their default. */
+export function advancedCount(o: ConvertOptions): number {
+    let n = 0
+    for (const key of ADVANCED_ONLY) {
+        if (key === 'videoCrf' || key === 'videoBitrateK' || key === 'videoPercent' || key === 'twoPass') continue
+        if (key === 'overlayPosition' || key === 'resizeWidth' || key === 'resizeHeight' || key === 'imagePercent') continue
+        if (differs(o, key)) n++
+    }
+    if (!SIMPLE_VIDEO_QUALITY.includes(o.videoQuality)) n++
+    if (o.videoCodec === 'libvpx-vp9' || o.videoCodec === 'libaom-av1') n++
+    if (o.rotate === 'vflip') n++
+    if (!SIMPLE_VIDEO_FPS.includes(o.videoFps)) n++
+    if (!SIMPLE_AUDIO_BITRATES.includes(o.audioBitrate)) n++
+    if (!SIMPLE_GIF_COLORS.includes(o.gifColors)) n++
+    return n
+}
+
+/** Back to defaults for everything that lives in the advanced block. */
+export function resetAdvanced(o: ConvertOptions): ConvertOptions {
+    const next = { ...o } as unknown as Record<string, unknown>
     const d = DEFAULT_CONVERT_OPTIONS as unknown as Record<string, unknown>
-    const target = e as unknown as Record<string, unknown>
-    for (const key of ADVANCED_ONLY) target[key] = d[key]
-    if (e.videoQuality === 'crf' || e.videoQuality === 'bitrate') e.videoQuality = 'balanced'
+    for (const key of ADVANCED_ONLY) next[key] = d[key]
+    const e = next as unknown as ConvertOptions
+    if (!SIMPLE_VIDEO_QUALITY.includes(e.videoQuality)) e.videoQuality = 'balanced'
     if (e.videoCodec !== 'libx264' && e.videoCodec !== 'libx265') e.videoCodec = 'libx264'
     if (e.rotate === 'vflip') e.rotate = 'none'
     if (!SIMPLE_VIDEO_FPS.includes(e.videoFps)) e.videoFps = ''
@@ -260,8 +283,7 @@ function browserVideoCompatible(o: ConvertOptions): boolean {
         && !o.audioCopy && !o.audioSampleRate && !o.audioChannels && !o.audioVolume
 }
 
-export function planForItem(item: QueueItem, options: ConvertOptions, processing: ProcessingPreference): JobPlan {
-    const o = effectiveOptions(options)
+export function planForItem(item: QueueItem, o: ConvertOptions, processing: ProcessingPreference): JobPlan {
     const fmt = item.targetFormat
     const src = extOf(item.name)
 
@@ -285,10 +307,13 @@ export function planForItem(item: QueueItem, options: ConvertOptions, processing
             }
             const fields = videoFields(o, fmt)
             const sizeTarget = o.videoQuality === 'size' && num(o.videoTargetMb) > 0
+            const percent = o.videoQuality === 'percent'
             const plan: JobPlan = {
                 server: sizeTarget
                     ? { action: 'convert_compress', format: fmt, fields: { ...fields, comp_mode: 'size', comp_value: String(num(o.videoTargetMb)) } }
-                    : { action: 'convert', format: fmt, fields },
+                    : percent
+                        ? { action: 'convert_compress', format: fmt, fields: { ...fields, comp_mode: 'percent', comp_value: String(o.videoPercent) } }
+                        : { action: 'convert', format: fmt, fields },
             }
             if (processing === 'browser' && browserVideoCompatible(o)) {
                 plan.local = {

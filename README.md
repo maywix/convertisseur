@@ -23,24 +23,26 @@ Pensé pour tourner chez soi et être utilisé à distance via un **Cloudflare T
 
 ## L'interface
 
-Deux espaces, accessibles en haut de la page. Ils partagent la même liste de fichiers.
+Même style que Eclypse Downloader : fond noir, une colonne, onglets en haut, badge d'état du serveur en bas à droite. Deux espaces, **Convertir** et **Color Lab · étalonnage**, qui partagent la même liste de fichiers.
 
 | Espace | Ce qu'on y fait |
 |---|---|
-| **Convertir** | Déposer des fichiers (ou un dossier, ou Ctrl+V), choisir le format par type ou fichier par fichier, régler quelques options, cliquer sur **Convertir**. |
+| **Convertir** | Déposer des fichiers (ou des dossiers entiers, ou Ctrl+V), choisir le format par type ou fichier par fichier, régler les options, cliquer sur **Convertir**. |
 | **Color Lab** | Étalonner vidéos et photos : LUT, lumière, couleur, roues chromatiques, effets, détourage, découpe, texte. Aperçu en direct, export fichier par fichier ou en lot. |
 
 On peut glisser des fichiers n'importe où sur la page. Les options affichées dépendent des fichiers présents : les réglages vidéo n'apparaissent que s'il y a des vidéos, etc.
 
 **Options de conversion** :
 
-- **Vidéo** : qualité (haute / équilibrée / légère) ou **taille cible en Mo** (pratique pour Discord), résolution max (sans jamais agrandir), images/s, H.264 ou H.265, rotation, suppression du son. Les vidéos HDR (iPhone…) sont automatiquement ramenées en SDR pour ne pas sortir grises.
+- **Vidéo** : qualité (haute / équilibrée / légère), **taille cible en Mo** (pratique pour Discord) ou **réduction en %**, résolution max (sans jamais agrandir), images/s, H.264 ou H.265, rotation, suppression du son. Les vidéos HDR (iPhone…) sont automatiquement ramenées en SDR pour ne pas sortir grises.
 - **GIF** : largeur, images/s, vitesse, nombre de couleurs.
 - **Son** : débit, normalisation du volume. On peut aussi extraire le son d'une vidéo (MP3, M4A, WAV…).
 - **Images** : qualité, taille max, agrandissement ×2 à ×4, et **diaporama** (plusieurs images → une vidéo ou un GIF).
 - **Couper** : début / fin pour vidéos, GIF et sons.
 
-**Mode Avancé** (bascule en haut du panneau d'options) : tous les paramètres du serveur.
+**Réglages d'un seul fichier** : le bouton ⚙ d'une ligne ouvre ses propres réglages (format, qualité, résolution…). Le fichier est marqué « Réglages perso » ; « Revenir aux réglages communs » annule.
+
+**Réglages avancés** (bloc repliable en bas des options, avec le nombre de réglages actifs) : tous les paramètres du serveur.
 
 - **Vidéo** : codec (H.264, H.265, VP9, AV1), contrôle de la qualité (préréglage, CRF, débit fixe avec 2 passes, taille cible), preset, tune, profil, format de pixels, taille exacte ou hauteur max, images/s libres, rotation / miroir, recadrage, débruitage, désentrelacement, HDR → SDR, texte incrusté avec position.
 - **Son** : copie de la piste d'origine sans réencodage, débit, fréquence, mono / stéréo, volume en dB, normalisation.
@@ -48,11 +50,13 @@ On peut glisser des fichiers n'importe où sur la page. Les options affichées d
 - **Images** : redimensionnement en pourcentage, poids cible en Mo, WebP sans perte, taille des icônes ICO.
 - Un bouton **Journal** sur chaque fichier affiche la commande FFmpeg exécutée et ses messages.
 
-Repasser en Simple garde les réglages avancés de côté sans les appliquer.
+Un bouton **Réinitialiser** remet les réglages avancés à zéro. Une barre de progression globale suit le lot en cours.
 
-Les résultats se téléchargent un par un ou en ZIP (« Tout télécharger »). Un rechargement de page ne fait pas perdre les conversions faites sur le serveur. Les fichiers sont supprimés du serveur automatiquement après 3 h.
+**Téléchargements** : bouton vert **Sauvegarder** par fichier, et **Tout sauvegarder** pour le lot, au choix en **un ZIP** ou en **fichiers séparés** (Réglages). Quand on dépose un dossier, le ZIP **garde l'arborescence** (dossiers et sous-dossiers), que la conversion se soit faite sur le serveur ou dans le navigateur. Option « Télécharger automatiquement à la fin ».
 
-Le menu **Réglages** (roue dentée) permet de choisir où convertir, la limite de débit via le tunnel, le téléchargement automatique et le thème (système / clair / sombre).
+**Arrière-plan** (activé par défaut) : les conversions serveur continuent si on ferme l'onglet, et la liste revient au rechargement de la page. Désactivé, la page prévient avant de se fermer et ne restaure rien. Les fichiers sont supprimés du serveur automatiquement après 3 h.
+
+Le menu **Réglages** (roue dentée) regroupe : où convertir, téléchargement auto, ZIP / fichiers séparés, arrière-plan, limite de débit via le tunnel et thème (sombre par défaut, clair, système).
 
 ---
 
@@ -78,7 +82,7 @@ Le serveur détecte automatiquement les connexions qui passent par un tunnel Clo
 - **Reprise automatique** : si la connexion saute, l'envoi reprend là où il s'était arrêté.
 - **Débit limité** à 5 Mo/s par défaut, à l'envoi comme au téléchargement. Réglable dans *Réglages → Tunnel Cloudflare* (1 à 50 Mo/s, ou illimité), ou côté serveur avec `TUNNEL_RATE_LIMIT_MBPS`.
 - **Téléchargements reprenables** (requêtes `Range`) et **ZIP envoyé en streaming**, pour ne plus tomber sur les erreurs 524 de Cloudflare sur les gros lots.
-- Un badge **Tunnel · 5 Mo/s** apparaît dans l'en-tête.
+- Le badge en bas à droite affiche **Tunnel Cloudflare · 5 Mo/s**.
 
 En accès direct (réseau local, `localhost`), aucune limite n'est appliquée.
 
@@ -91,6 +95,7 @@ En accès direct (réseau local, `localhost`), aucune limite n'est appliquée.
 - **Aperçu en direct** sur les vidéos (lecture, scrub) et sur les photos, LUT compris. Bouton **Avant / après** à maintenir pour voir l'original.
 - **Sur tous** : applique le look du fichier courant à tous les fichiers.
 - **Export** : MP4 (H.264), MOV, WebM, MKV, GIF pour les vidéos ; JPG, PNG, WebP, AVIF, TIFF pour les images. Pour les vidéos : images/s, découpe (avec « position actuelle ») et texte incrusté.
+- **Exporter en …** lance le rendu puis **télécharge le fichier tout seul** à la fin. Tant que les réglages ne bougent pas, le bouton devient **Télécharger** (pas de nouveau rendu) avec **Refaire** à côté ; dès qu'un réglage change, il repasse en **Exporter**. « Tout exporter » rend les fichiers pas encore exportés et les télécharge en ZIP ou séparément selon les réglages.
 - Les vidéos exportées sont toujours en **H.264 / yuv420p + faststart**, lisibles partout (navigateurs, iPhone, QuickTime, Windows). Avant, un LUT produisait du H.264 4:4:4 que la plupart des lecteurs refusaient.
 - Les photos lisibles par le navigateur sont exportées sur place avec **exactement** le même rendu que l'aperçu. Les autres (HEIC, RAW) passent par le serveur, LUT compris.
 
@@ -206,7 +211,8 @@ Toutes les actions sont enregistrées dans `scripts/manage.log`.
 | `MAX_ENQUEUED_JOBS` | `50` | Nombre maximum de conversions en attente par visiteur. |
 | `TUNNEL_MODE` | `auto` | `auto` : détecte Cloudflare Tunnel via ses en-têtes. `on` : considère toujours qu'on passe par le tunnel. `off` : jamais. |
 | `TUNNEL_RATE_LIMIT_MBPS` | `5` | Débit par défaut (Mo/s) proposé aux navigateurs qui passent par le tunnel. Chacun peut le changer dans ses Réglages. |
-| `VIDEO_PROC_TIMEOUT` | `1800` | Durée max (s) d'une conversion vidéo / audio. |
+| `VIDEO_STALL_TIMEOUT` | `600` | Une conversion qui n'avance plus pendant ce temps (s) est arrêtée. Les longues vidéos 4K / HDR ne sont plus coupées tant qu'elles progressent. |
+| `VIDEO_PROC_TIMEOUT` | `21600` | Durée max absolue (s) d'une conversion vidéo / audio. |
 | `LOG_LEVEL` | `INFO` | DEBUG, INFO, WARNING, ERROR. |
 
 ---

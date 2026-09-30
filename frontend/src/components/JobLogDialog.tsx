@@ -27,16 +27,16 @@ export function JobLogDialog({ item, onClose }: { item: QueueItem; onClose: () =
 
     const text = (lines ?? []).join('\n')
     return (
-        <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm animate-in fade-in duration-100" onMouseDown={onClose}>
+        <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm animate-in fade-in duration-100" onMouseDown={onClose}>
             <div
                 role="dialog"
                 aria-label={`Journal de ${item.name}`}
-                className="flex max-h-[80vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl"
+                className="flex max-h-[80vh] w-full max-w-3xl flex-col overflow-hidden rounded-[6px] border border-input bg-card shadow-[0_12px_32px_rgba(0,0,0,0.5)]"
                 onMouseDown={(e) => e.stopPropagation()}
             >
                 <div className="flex items-center gap-2 border-b border-border px-4 py-3">
                     <IconTerminal size={16} className="text-muted-foreground" />
-                    <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">Journal · {item.name}</h2>
+                    <h2 className="min-w-0 flex-1 truncate text-[13px] font-bold">Journal · {item.name}</h2>
                     {text && (
                         <Button variant="ghost" size="sm" onClick={() => void navigator.clipboard?.writeText(text)}>Copier</Button>
                     )}

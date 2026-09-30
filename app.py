@@ -66,7 +66,10 @@ MAX_ENQUEUED_JOBS = int(os.environ.get("MAX_ENQUEUED_JOBS", "50"))
 # exceeds its limit is killed and the job fails, so one stuck file can't hang a
 # worker (and, for video where workers=1, the whole queue) forever.
 PROBE_TIMEOUT = int(os.environ.get("PROBE_TIMEOUT", "60"))          # ffprobe metadata
-VIDEO_PROC_TIMEOUT = int(os.environ.get("VIDEO_PROC_TIMEOUT", "1800"))  # ffmpeg video/audio
+VIDEO_PROC_TIMEOUT = int(os.environ.get("VIDEO_PROC_TIMEOUT", "21600"))  # ffmpeg video/audio (hard cap, 6 h)
+# A tracked encode that stops reporting progress for this long is considered
+# stuck and killed — long 4K / HDR exports can legitimately take hours.
+VIDEO_STALL_TIMEOUT = int(os.environ.get("VIDEO_STALL_TIMEOUT", "600"))
 IMAGE_PROC_TIMEOUT = int(os.environ.get("IMAGE_PROC_TIMEOUT", "300"))   # dcraw / image tools
 OFFICE_PROC_TIMEOUT = int(os.environ.get("OFFICE_PROC_TIMEOUT", "300")) # libreoffice
 
@@ -1306,22 +1309,29 @@ def _run_ffmpeg_tracked(cmdline: list[str], job_id: str | None, total_us: int) -
     t = threading.Thread(target=_drain_stderr, daemon=True)
     t.start()
 
-    # Watchdog: kill ffmpeg if it stalls past the limit so it can't hang the
-    # (single) video worker forever. timed_out is read after the process exits.
+    # Watchdog: kill ffmpeg when it stops making progress (or exceeds the hard
+    # cap) so a stuck file can't hang the single video worker forever.
+    started = time.monotonic()
+    last_progress = {"t": started}
     timed_out = {"hit": False}
+    finished = threading.Event()
 
-    def _kill_on_timeout():
-        timed_out["hit"] = True
-        try:
-            proc.kill()
-        except Exception:
-            pass
+    def _watch():
+        while not finished.wait(5):
+            now = time.monotonic()
+            if now - last_progress["t"] > VIDEO_STALL_TIMEOUT or now - started > VIDEO_PROC_TIMEOUT:
+                timed_out["hit"] = True
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                return
 
-    watchdog = threading.Timer(VIDEO_PROC_TIMEOUT, _kill_on_timeout)
-    watchdog.daemon = True
+    watchdog = threading.Thread(target=_watch, daemon=True)
     watchdog.start()
 
     last_pct = 0
+    last_out_us = -1
     for line in proc.stdout:
         # out_time_us (and the misnamed out_time_ms) are both microseconds.
         if line.startswith(("out_time_us=", "out_time_ms=")):
@@ -1329,19 +1339,26 @@ def _run_ffmpeg_tracked(cmdline: list[str], job_id: str | None, total_us: int) -
                 out_us = int(line.split("=", 1)[1])
             except (ValueError, TypeError):
                 continue
+            if out_us > last_out_us:
+                last_out_us = out_us
+                last_progress["t"] = time.monotonic()
             pct = min(99, int(out_us / total_us * 100))
             if pct > last_pct:
                 last_pct = pct
                 _db_update_progress(job_id, pct)
 
     proc.wait()
-    watchdog.cancel()
+    finished.set()
     t.join(timeout=2)
     with _active_procs_lock:
         _active_procs.pop(job_id, None)
 
     if timed_out["hit"]:
-        raise RuntimeError(f"conversion interrompue : depassement du delai ({VIDEO_PROC_TIMEOUT}s)")
+        raise RuntimeError(
+            f"conversion interrompue : ffmpeg ne progressait plus depuis {VIDEO_STALL_TIMEOUT // 60} min"
+            if time.monotonic() - started <= VIDEO_PROC_TIMEOUT
+            else f"conversion interrompue : depassement du delai ({VIDEO_PROC_TIMEOUT}s)"
+        )
 
     if proc.returncode != 0:
         raise RuntimeError(_ffmpeg_error_summary(stderr_lines))
