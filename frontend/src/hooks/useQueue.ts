@@ -200,7 +200,7 @@ export function useQueue(config: ServerConfig, queueOptions: QueueOptions) {
     const setFormatForKind = useCallback((kind: MediaKind, format: string) => {
         setKindFormats((prev) => ({ ...prev, [kind]: format }))
         setItems((prev) => prev.map((it) => (
-            it.kind === kind && (it.status === 'pending' || it.status === 'done' || it.status === 'error') && it.file
+            it.kind === kind && (it.status === 'pending' || it.status === 'error') && it.file
                 ? { ...it, targetFormat: format }
                 : it
         )))

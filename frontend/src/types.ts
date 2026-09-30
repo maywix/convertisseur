@@ -81,6 +81,7 @@ export const FORMATS: Record<MediaKind, FormatOption[]> = {
         opt('gif', 'GIF animé', 'Animation'),
         opt('mp3', 'MP3', 'Son seul'), opt('m4a', 'M4A', 'Son seul'), opt('wav', 'WAV', 'Son seul'),
         opt('flac', 'FLAC', 'Son seul'), opt('ogg', 'OGG', 'Son seul'), opt('opus', 'Opus', 'Son seul'),
+        opt('aac', 'AAC', 'Son seul'), opt('aiff', 'AIFF', 'Son seul'), opt('wma', 'WMA', 'Son seul'), opt('ac3', 'AC3', 'Son seul'),
         opt('zip', 'PNG (zip)', 'Images'),
     ],
     audio: [

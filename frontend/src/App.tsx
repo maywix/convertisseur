@@ -78,7 +78,7 @@ function App() {
 
     return (
         <div className="min-h-screen bg-background text-foreground">
-            <div className={cn('mx-auto px-4 pt-10 pb-28 sm:px-8 sm:pt-[72px]', tab === 'lab' && labCount > 0 ? 'max-w-[1440px]' : 'max-w-[860px]')}>
+            <div className={cn('mx-auto px-4 pt-10 pb-28 sm:px-8 sm:pt-[72px]', tab === 'convert' ? 'max-w-[1280px]' : labCount > 0 ? 'max-w-[1440px]' : 'max-w-[860px]')}>
                 <header className="mb-10 sm:mb-12">
                     <div className="mb-2 flex items-center justify-between gap-4">
                         <h1 className="text-[28px] leading-tight font-bold tracking-[-1px] sm:text-[34px]">
@@ -112,7 +112,9 @@ function App() {
                             autoDownload={settings.autoDownload}
                             onAutoDownload={(v) => updateSettings({ autoDownload: v })}
                             exportMode={settings.exportMode}
+                            onExportMode={(v) => updateSettings({ exportMode: v })}
                             background={settings.background}
+                            onBackground={(v) => updateSettings({ background: v })}
                         />
                     ) : (
                         <Suspense fallback={<p className="py-16 text-center text-[13px] text-faint">Chargement du Color Lab…</p>}>

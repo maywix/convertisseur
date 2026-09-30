@@ -354,6 +354,19 @@ def test_advanced_image_options(client, media, tmp_path):
 
 
 @needs_ffmpeg
+def test_compress_levels_keep_format_and_shrink(client, media, tmp_path):
+    sizes = {}
+    for level in ("low", "high"):
+        job, out = run_job(client, media["video"], {
+            "action": "compress", "comp_mode": "crf", "comp_value": level,
+        }, tmp_path, f"{level}.mp4")
+        assert job["output_filename"].endswith(".mp4")
+        assert [s["codec_name"] for s in probe(str(out)) if s["codec_type"] == "video"] == ["h264"]
+        sizes[level] = job["output_size"]
+    assert sizes["high"] < sizes["low"]
+
+
+@needs_ffmpeg
 def test_stalled_ffmpeg_is_killed(tmp_path, monkeypatch):
     fifo = tmp_path / "never.fifo"
     os.mkfifo(fifo)  # nobody writes: ffmpeg waits forever without progress

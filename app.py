@@ -1417,9 +1417,10 @@ _CRF_BY_QUALITY = {
     "high": {"libx264": 20, "libx265": 24, "libvpx-vp9": 30, "libaom-av1": 28},
     "balanced": {"libx264": 23, "libx265": 28, "libvpx-vp9": 34, "libaom-av1": 32},
     "small": {"libx264": 28, "libx265": 32, "libvpx-vp9": 40, "libaom-av1": 38},
+    "tiny": {"libx264": 32, "libx265": 35, "libvpx-vp9": 46, "libaom-av1": 44},
 }
-# Legacy compression levels (Simple / Pro UI) mapped onto the quality tiers.
-_LEGACY_COMPRESS_LEVEL = {"low": "balanced", "medium": "small", "high": "small"}
+# Compression levels ("Compresser" : légère / moyenne / forte) mapped onto the quality tiers.
+_LEGACY_COMPRESS_LEVEL = {"low": "balanced", "medium": "small", "high": "tiny"}
 
 _X26X_PRESETS = {"ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"}
 _PIXEL_FORMATS = {"yuv420p", "yuv422p", "yuv444p", "yuv420p10le"}
@@ -1769,9 +1770,9 @@ def _process_with_ffmpeg(
             crf = _CRF_BY_QUALITY[quality].get(vcodec)
             if crf is None and vcodec in {"mpeg2video", "wmv2", "libtheora"}:
                 # mpeg2 / wmv2: q scale (lower = better); theora: 0-10 (higher = better)
-                qscale = {"high": 3, "balanced": 5, "small": 8}[quality]
+                qscale = {"high": 3, "balanced": 5, "small": 8, "tiny": 12}[quality]
                 if vcodec == "libtheora":
-                    qscale = {"high": 8, "balanced": 6, "small": 4}[quality]
+                    qscale = {"high": 8, "balanced": 6, "small": 4, "tiny": 2}[quality]
 
         if target_bitrate_k is not None:
             cmd += [

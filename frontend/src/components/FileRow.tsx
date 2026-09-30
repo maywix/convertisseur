@@ -89,8 +89,11 @@ export const FileRow = memo(function FileRow({
     onDownload,
     onShowLog,
     onEdit,
+    formatNote,
 }: {
     item: QueueItem
+    /** Replaces the format menu (e.g. "même format" when compressing). */
+    formatNote?: string
     /** Has its own settings (per-file override). */
     custom?: boolean
     /** Its settings are open in the options card. */
@@ -108,7 +111,9 @@ export const FileRow = memo(function FileRow({
     const canPick = !!item.file && !active && options.length > 1
     const folder = item.relativePath.includes('/') ? item.relativePath.slice(0, item.relativePath.lastIndexOf('/')) : ''
 
-    const format = item.kind !== 'unknown' && (
+    const format = formatNote ? (
+        <span className="text-[11px] text-faint">{formatNote}</span>
+    ) : item.kind !== 'unknown' && (
         <span className="inline-flex items-center gap-2 text-[11px] text-faint">
             en
             {canPick ? (
@@ -127,7 +132,7 @@ export const FileRow = memo(function FileRow({
     )
 
     return (
-        <div className={cn('group flex items-center gap-3 px-4 py-3 transition-colors hover:bg-foreground/[0.03]', editing && 'bg-foreground/[0.05]')}>
+        <div className={cn('group flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-3 transition-colors hover:bg-foreground/[0.03]', editing && 'bg-foreground/[0.05]')}>
             <Thumb item={item} />
             <div className="min-w-0 flex-1">
                 <p className="truncate text-[13px] font-semibold text-foreground" title={item.relativePath || item.name}>
@@ -147,9 +152,9 @@ export const FileRow = memo(function FileRow({
                     <ProgressBar value={item.progress} indeterminate={item.status === 'processing' && item.progress === 0} className="mt-2" />
                 )}
                 <p className="mt-1 min-w-0 truncate text-[11px]"><StatusLine item={item} /></p>
-                {format && <div className="mt-1.5 sm:hidden">{format}</div>}
             </div>
-            {format && <div className="hidden shrink-0 sm:block">{format}</div>}
+            {/* Under the name on phones, on the right from sm up. */}
+            {format && <div className="order-last w-full pl-14 sm:order-none sm:w-auto sm:shrink-0 sm:pl-0">{format}</div>}
             <div className="flex shrink-0 items-center gap-1">
                 {item.status === 'done' && item.downloadUrl && (
                     <button

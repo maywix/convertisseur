@@ -2,26 +2,37 @@
 // "Convertir" page: options model and the per-file job plan (where to run it
 // and which parameters the server gets).
 //
-// The options card shows every parameter the backend understands as
-// dropdowns, grouped by media type; the rarely used video ones sit in a
-// collapsed block (advancedCount tells how many of those are active).
+// The settings column works in steps: action (convertir / compresser / les
+// deux), output type, output format, then the options of that type as
+// dropdowns ("Simple" shows the everyday ones, "Avancé" all of them).
 // ──────────────────────────────────────────────────────────
 import type { JobPlan } from '@/hooks/useQueue'
 import { BROWSER_DECODABLE, BROWSER_ENCODABLE, processImageInBrowser } from '@/lib/clientProcessor'
 import type { ProcessingPreference } from '@/lib/settings'
-import { AUDIO_FORMATS, extOf, type QueueItem } from '@/types'
+import { AUDIO_FORMATS, FORMATS, extOf, type FormatOption, type MediaKind, type QueueItem } from '@/types'
 
-export type VideoQuality = 'high' | 'balanced' | 'small' | 'size' | 'crf' | 'bitrate' | 'percent'
+export type VideoQuality = 'high' | 'balanced' | 'small' | 'crf' | 'bitrate'
+export type Action = 'convert' | 'compress' | 'convert_compress'
+/** Output type picked in step 2 ("Audio" also turns videos into sound files). */
+export type Category = 'video' | 'audio' | 'image' | 'slideshow' | 'document' | '3d'
+export type CompressMode = 'level' | 'size' | 'percent'
+export type CompressLevel = 'low' | 'medium' | 'high'
 export type VideoCodec = 'libx264' | 'libx265' | 'libvpx-vp9' | 'libaom-av1'
 export type Rotate = 'none' | '90' | '180' | '270' | 'hflip' | 'vflip'
 export type TextPosition = 'bottom' | 'top' | 'center' | 'bottom-left' | 'bottom-right' | 'top-left' | 'top-right'
 
 export interface ConvertOptions {
-    advanced: boolean
+    action: Action
+    category: Category | null
+    /** "Simple" shows the everyday options, "Avancé" every parameter. */
+    detail: 'simple' | 'advanced'
+    // ── Compression (Compresser / Convertir + compresser)
+    compressMode: CompressMode
+    compressLevel: CompressLevel
+    compressTargetMb: string
+    compressPercent: number
     // ── Vidéo : encodage
     videoQuality: VideoQuality
-    videoTargetMb: string
-    videoPercent: number
     videoCrf: number
     videoBitrateK: string
     twoPass: boolean
@@ -80,10 +91,14 @@ export interface ConvertOptions {
 }
 
 export const DEFAULT_CONVERT_OPTIONS: ConvertOptions = {
-    advanced: false,
+    action: 'convert',
+    category: null,
+    detail: 'simple',
+    compressMode: 'level',
+    compressLevel: 'medium',
+    compressTargetMb: '25',
+    compressPercent: 50,
     videoQuality: 'balanced',
-    videoTargetMb: '25',
-    videoPercent: 50,
     videoCrf: 23,
     videoBitrateK: '4000',
     twoPass: false,
@@ -136,24 +151,78 @@ export const DEFAULT_CONVERT_OPTIONS: ConvertOptions = {
     frameFps: '1',
 }
 
-/** Settings that live in the "Plus d'options vidéo" block. */
-const ADVANCED_ONLY: (keyof ConvertOptions)[] = [
-    'videoPreset', 'videoProfile', 'videoTune', 'pixelFormat',
-    'cropTop', 'cropBottom', 'cropLeft', 'cropRight',
-    'deinterlace', 'denoise', 'hdr', 'overlayText', 'overlayPosition',
-]
+// ── Steps: output types and their formats ─────────────────
 
-/** How many of those currently differ from their default. */
-export function advancedCount(o: ConvertOptions): number {
-    return ADVANCED_ONLY.filter((key) => key !== 'overlayPosition' && o[key] !== DEFAULT_CONVERT_OPTIONS[key]).length
+/** Which files each output type applies to. */
+export const CATEGORY_KINDS: Record<Category, MediaKind[]> = {
+    video: ['video'],
+    audio: ['audio', 'video'],
+    image: ['image'],
+    slideshow: ['image'],
+    document: ['document', 'pdf'],
+    '3d': ['3d'],
 }
 
-/** Back to defaults for everything in that block. */
-export function resetAdvanced(o: ConvertOptions): ConvertOptions {
-    const next = { ...o } as unknown as Record<string, unknown>
-    const d = DEFAULT_CONVERT_OPTIONS as unknown as Record<string, unknown>
-    for (const key of ADVANCED_ONLY) next[key] = d[key]
-    return next as unknown as ConvertOptions
+export const CATEGORY_FORMATS: Record<Category, FormatOption[]> = {
+    video: FORMATS.video.filter((f) => !AUDIO_FORMATS.has(f.value)),
+    audio: FORMATS.audio,
+    image: FORMATS.image,
+    slideshow: FORMATS.video.filter((f) => ['mp4', 'webm', 'gif'].includes(f.value)),
+    document: [{ value: 'pdf', label: 'PDF' }],
+    '3d': FORMATS['3d'],
+}
+
+const KIND_CATEGORY: Record<MediaKind, Category> = {
+    video: 'video', audio: 'audio', image: 'image', pdf: 'document', document: 'document', '3d': '3d',
+}
+
+/** Output type of one file, from its kind and target format. */
+export function categoryOfItem(item: QueueItem): Category | null {
+    if (item.kind === 'unknown') return null
+    if (item.kind === 'sequence') return 'slideshow'
+    if (item.kind === 'video' && AUDIO_FORMATS.has(item.targetFormat)) return 'audio'
+    return KIND_CATEGORY[item.kind]
+}
+
+/** Output type to preselect for a queue: videos first, else the first file decides. */
+export function inferCategory(items: QueueItem[]): Category | null {
+    if (items.some((it) => it.kind === 'video' && !AUDIO_FORMATS.has(it.targetFormat))) return 'video'
+    for (const it of items) {
+        const c = categoryOfItem(it)
+        if (c) return c
+    }
+    return null
+}
+
+/** Groups of options, in display order. */
+export type GroupKey = 'video' | 'gif' | 'frames' | 'image' | 'audio' | 'slideshow' | 'trim'
+
+export function groupsFor(category: Category | null, format: string, o: ConvertOptions): GroupKey[] {
+    const withAudio = !o.removeAudio && !o.audioCopy
+    switch (category) {
+        case 'video':
+            if (format === 'gif') return ['gif', 'trim']
+            if (format === 'zip') return ['frames', 'trim']
+            return withAudio ? ['video', 'audio', 'trim'] : ['video', 'trim']
+        case 'audio':
+            return ['audio', 'trim']
+        case 'image':
+            return ['image']
+        case 'slideshow':
+            return ['slideshow']
+        default:
+            return []
+    }
+}
+
+/** "Compresser" keeps each file's format: options of every kind present. */
+export function groupsForKinds(kinds: MediaKind[], o: ConvertOptions): GroupKey[] {
+    const out: GroupKey[] = []
+    if (kinds.includes('video')) out.push('video')
+    if (kinds.includes('image')) out.push('image')
+    if ((kinds.includes('video') && !o.removeAudio && !o.audioCopy) || kinds.includes('audio')) out.push('audio')
+    if (kinds.includes('video') || kinds.includes('audio')) out.push('trim')
+    return out
 }
 
 const CODEC_CONTAINERS: Record<VideoCodec, Set<string>> = {
@@ -182,6 +251,15 @@ const num = (s: string) => {
     return Number.isFinite(n) && n > 0 ? n : 0
 }
 
+const LEVEL_VIDEO_QUALITY: Record<CompressLevel, string> = { low: 'balanced', medium: 'small', high: 'tiny' }
+const LEVEL_IMAGE_QUALITY: Record<CompressLevel, number> = { low: 85, medium: 70, high: 50 }
+
+function compressFields(o: ConvertOptions): Record<string, string> {
+    if (o.compressMode === 'size' && num(o.compressTargetMb)) return { comp_mode: 'size', comp_value: String(num(o.compressTargetMb)) }
+    if (o.compressMode === 'percent') return { comp_mode: 'percent', comp_value: String(o.compressPercent) }
+    return { comp_mode: 'crf', comp_value: o.compressLevel }
+}
+
 function trimFields(o: ConvertOptions): Record<string, string> {
     const f: Record<string, string> = {}
     if (o.trimStart.trim()) f.trim_start = o.trimStart.trim()
@@ -189,13 +267,14 @@ function trimFields(o: ConvertOptions): Record<string, string> {
     return f
 }
 
-function audioFields(o: ConvertOptions, forVideo: boolean): Record<string, string> {
+function audioFields(o: ConvertOptions, forVideo: boolean, compressing = false): Record<string, string> {
     const f: Record<string, string> = {}
     if (forVideo && o.audioCopy) {
         f.audio_codec = 'copy'
         return f
     }
-    f.audio_bitrate = o.audioBitrate
+    // When compressing, the server picks the bitrate from the target.
+    if (!compressing) f.audio_bitrate = o.audioBitrate
     if (o.audioSampleRate) f.audio_sample_rate = o.audioSampleRate
     if (o.audioChannels) f.audio_channels = o.audioChannels
     if (o.audioVolume) f.audio_volume = String(o.audioVolume)
@@ -203,11 +282,16 @@ function audioFields(o: ConvertOptions, forVideo: boolean): Record<string, strin
     return f
 }
 
-function videoFields(o: ConvertOptions, fmt: string): Record<string, string> {
+function videoFields(o: ConvertOptions, fmt: string, compressing = false): Record<string, string> {
     const f: Record<string, string> = { ...trimFields(o) }
-    if (o.videoQuality === 'high' || o.videoQuality === 'balanced' || o.videoQuality === 'small') f.video_quality = o.videoQuality
-    if (o.videoQuality === 'crf') f.video_crf = String(Math.round(o.videoCrf))
-    if (o.videoQuality === 'bitrate' && num(o.videoBitrateK)) {
+    if (compressing) {
+        // The compression target decides the quality.
+        if (o.compressMode === 'level') f.video_quality = LEVEL_VIDEO_QUALITY[o.compressLevel]
+    } else if (o.videoQuality === 'high' || o.videoQuality === 'balanced' || o.videoQuality === 'small') {
+        f.video_quality = o.videoQuality
+    } else if (o.videoQuality === 'crf') {
+        f.video_crf = String(Math.round(o.videoCrf))
+    } else if (o.videoQuality === 'bitrate' && num(o.videoBitrateK)) {
         f.video_quality_mode = 'bitrate'
         f.video_bitrate_k = String(Math.round(num(o.videoBitrateK)))
         if (o.twoPass) f.two_pass = '1'
@@ -238,7 +322,7 @@ function videoFields(o: ConvertOptions, fmt: string): Record<string, string> {
         f.overlay_text_y = y
     }
     if (o.removeAudio) f.remove_audio = '1'
-    else Object.assign(f, audioFields(o, true))
+    else Object.assign(f, audioFields(o, true, compressing))
     return f
 }
 
@@ -254,12 +338,18 @@ function browserVideoCompatible(o: ConvertOptions): boolean {
 }
 
 export function planForItem(item: QueueItem, o: ConvertOptions, processing: ProcessingPreference): JobPlan {
-    const fmt = item.targetFormat
+    const compressing = o.action !== 'convert'
+    // "Compresser" keeps the file's own format (the server keeps its extension).
+    const keepFormat = o.action === 'compress'
+    const fmt = keepFormat ? extOf(item.name) : item.targetFormat
+    const format = keepFormat ? '' : fmt
+    const action = o.action
+    const comp = compressing ? compressFields(o) : {}
     const src = extOf(item.name)
 
     switch (item.kind) {
         case 'video': {
-            if (fmt === 'gif') {
+            if (!keepFormat && fmt === 'gif') {
                 const speed = num(o.gifSpeed) || 1
                 const fields: Record<string, string> = {
                     ...trimFields(o), gif_fps: o.gifFps, gif_speed: (1 / speed).toFixed(3),
@@ -269,23 +359,14 @@ export function planForItem(item: QueueItem, o: ConvertOptions, processing: Proc
                 else fields.gif_resolution = '-1'
                 return { server: { action: 'convert', format: 'gif', fields } }
             }
-            if (AUDIO_FORMATS.has(fmt)) {
-                return { server: { action: 'convert', format: fmt, fields: { ...trimFields(o), ...audioFields(o, false) } } }
-            }
-            if (fmt === 'zip') {
+            if (!keepFormat && fmt === 'zip') {
                 return { server: { action: 'convert', format: 'zip', fields: { ...trimFields(o), sequence_fps: o.frameFps } } }
             }
-            const fields = videoFields(o, fmt)
-            const sizeTarget = o.videoQuality === 'size' && num(o.videoTargetMb) > 0
-            const percent = o.videoQuality === 'percent'
-            const plan: JobPlan = {
-                server: sizeTarget
-                    ? { action: 'convert_compress', format: fmt, fields: { ...fields, comp_mode: 'size', comp_value: String(num(o.videoTargetMb)) } }
-                    : percent
-                        ? { action: 'convert_compress', format: fmt, fields: { ...fields, comp_mode: 'percent', comp_value: String(o.videoPercent) } }
-                        : { action: 'convert', format: fmt, fields },
+            if (AUDIO_FORMATS.has(fmt)) {
+                return { server: { action, format, fields: { ...trimFields(o), ...audioFields(o, false, compressing), ...comp } } }
             }
-            if (processing === 'browser' && browserVideoCompatible(o)) {
+            const plan: JobPlan = { server: { action, format, fields: { ...videoFields(o, fmt, compressing), ...comp } } }
+            if (!compressing && processing === 'browser' && browserVideoCompatible(o)) {
                 plan.local = {
                     run: async ({ file, onProgress }) => {
                         const { processVideoInBrowser } = await import('@/lib/clientVideoProcessor')
@@ -299,9 +380,11 @@ export function planForItem(item: QueueItem, o: ConvertOptions, processing: Proc
             return plan
         }
         case 'audio':
-            return { server: { action: 'convert', format: fmt, fields: { ...trimFields(o), ...audioFields(o, false) } } }
+            return { server: { action, format, fields: { ...trimFields(o), ...audioFields(o, false, compressing), ...comp } } }
         case 'image': {
-            const fields: Record<string, string> = { image_quality: String(o.imageQuality) }
+            const fields: Record<string, string> = {
+                image_quality: String(compressing ? LEVEL_IMAGE_QUALITY[o.compressLevel] : o.imageQuality),
+            }
             if (o.imageResizeMode === 'percent' && o.imagePercent !== 100) {
                 fields.image_resize_mode = 'percent'
                 fields.image_resize_percent = String(o.imagePercent)
@@ -312,6 +395,7 @@ export function planForItem(item: QueueItem, o: ConvertOptions, processing: Proc
             if (o.imageUpscale !== '1') fields.image_upscale = o.imageUpscale
             if (o.imageLossless && fmt === 'webp') fields.lossless = '1'
             if (fmt === 'ico') fields.ico_size = o.icoSize
+            if (compressing) return { server: { action, format, fields: { ...fields, ...comp } } }
             const target = num(o.imageTargetMb)
             const plan: JobPlan = target && ['jpg', 'jpeg', 'webp', 'png', 'avif'].includes(fmt)
                 ? { server: { action: 'convert_compress', format: fmt, fields: { ...fields, comp_mode: 'size', comp_value: String(target) } } }
@@ -329,14 +413,15 @@ export function planForItem(item: QueueItem, o: ConvertOptions, processing: Proc
             return plan
         }
         case 'pdf':
-            return fmt === 'pdf'
+            return fmt === 'pdf' || keepFormat
                 ? { server: { action: 'compress', format: '', fields: { comp_mode: 'crf', comp_value: 'high' } } }
                 : { server: { action: 'convert', format: fmt, fields: {} } }
         case 'sequence':
-            return { server: { action: 'convert', format: fmt, fields: { sequence_fps: o.slideshowFps } } }
+            return { server: { action: 'convert', format: item.targetFormat, fields: { sequence_fps: o.slideshowFps } } }
         case 'document':
         case '3d':
-            return { server: { action: 'convert', format: fmt, fields: {} } }
+            // Nothing to compress: always converted to their format.
+            return { server: { action: 'convert', format: item.targetFormat, fields: {} } }
         default:
             return {}
     }

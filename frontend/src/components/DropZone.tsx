@@ -1,6 +1,6 @@
-import { useRef, type ChangeEvent } from 'react'
-import { IconFolder, IconPlus, IconUpload } from '@/components/icons'
-import { Button } from '@/components/ui'
+import { useRef, type ChangeEvent, type ReactNode } from 'react'
+import { IconChevronDown, IconFolder, IconPlus, IconUpload } from '@/components/icons'
+import { Button, Popover } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import { ACCEPT_ATTR } from '@/types'
 
@@ -62,13 +62,62 @@ export function FilePickers({
     )
 }
 
-/** Compact "add more" row shown above the list (like the downloader's input row). */
-export function DropBar({ onFiles, accept, folder = true }: { onFiles: (files: File[]) => void; accept?: string; folder?: boolean }) {
+/**
+ * Drop area of the Convertir page: a split "Choisir les fichiers" button
+ * (the arrow opens "Choisir un dossier"), drag and drop, Ctrl+V.
+ */
+export function DropCard({ onFiles, compact = false }: { onFiles: (files: File[]) => void; compact?: boolean }) {
+    const fileRef = useRef<HTMLInputElement>(null)
+    const dirRef = useRef<HTMLInputElement>(null)
+    const pick = (e: ChangeEvent<HTMLInputElement>) => {
+        const files = Array.from(e.target.files ?? [])
+        e.target.value = ''
+        if (files.length) onFiles(files)
+    }
     return (
-        <div className="flex flex-wrap items-center gap-2 rounded-[4px] border border-dashed border-input px-3 py-2.5">
-            <FilePickers onFiles={onFiles} accept={accept} folder={folder} compact />
-            <span className="ml-1 text-[13px] text-faint">ou glisse des fichiers et dossiers n'importe où · Ctrl+V</span>
+        <div className={cn('fade-up flex flex-col items-center justify-center rounded-[4px] border border-dashed border-input bg-card px-6 text-center', compact ? 'py-7' : 'py-14 sm:py-16')}>
+            <input ref={fileRef} type="file" multiple accept={ACCEPT_ATTR} className="hidden" onChange={pick} />
+            <input ref={dirRef} type="file" multiple className="hidden" onChange={pick} {...({ webkitdirectory: '', directory: '' } as Record<string, string>)} />
+            <div className="inline-flex">
+                <Button variant="primary" size={compact ? 'md' : 'lg'} className="rounded-r-none" onClick={() => fileRef.current?.click()}>
+                    <IconPlus size={15} />
+                    {compact ? 'Ajouter des fichiers' : 'Choisir les fichiers'}
+                </Button>
+                <Popover
+                    className="w-56 p-1"
+                    trigger={({ open, toggle }) => (
+                        <Button
+                            variant="primary"
+                            size={compact ? 'md' : 'lg'}
+                            className="rounded-l-none border-l border-black/25 px-3"
+                            onClick={toggle}
+                            aria-label="Autres façons d'ajouter"
+                            aria-expanded={open}
+                        >
+                            <IconChevronDown size={15} />
+                        </Button>
+                    )}
+                >
+                    {(close) => (
+                        <>
+                            <MenuItem onClick={() => { close(); fileRef.current?.click() }} icon={<IconPlus size={14} />}>Choisir des fichiers</MenuItem>
+                            <MenuItem onClick={() => { close(); dirRef.current?.click() }} icon={<IconFolder size={14} />}>Choisir un dossier</MenuItem>
+                        </>
+                    )}
+                </Popover>
+            </div>
+            <p className={cn('text-muted-foreground', compact ? 'mt-3 text-[12px]' : 'mt-5 text-[14px]')}>ou glisser-déposer ici · Ctrl+V pour coller</p>
+            {!compact && <p className="mt-1.5 text-[11px] text-faint">Vidéo · Audio · Image · Document · 3D · Dossier (l'arborescence est gardée)</p>}
         </div>
+    )
+}
+
+function MenuItem({ onClick, icon, children }: { onClick: () => void; icon: ReactNode; children: ReactNode }) {
+    return (
+        <button type="button" onClick={onClick} className="flex w-full items-center gap-2.5 rounded-[3px] px-3 py-2 text-left text-[13px] text-foreground hover:bg-accent">
+            <span className="text-muted-foreground">{icon}</span>
+            {children}
+        </button>
     )
 }
 

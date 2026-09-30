@@ -23,21 +23,26 @@ Pensé pour tourner chez soi et être utilisé à distance via un **Cloudflare T
 
 ## L'interface
 
-Même style que Eclypse Downloader : fond noir, une colonne, onglets en haut, badge d'état du serveur en bas à droite. Deux espaces, **Convertir** et **Color Lab · étalonnage**, qui partagent la même liste de fichiers.
+Même style que Eclypse Downloader (fond noir, badge d'état du serveur en bas à droite). Deux espaces, **Convertir** et **Color Lab · étalonnage**, qui partagent la même liste de fichiers.
 
-| Espace | Ce qu'on y fait |
+La page **Convertir** reprend l'organisation d'origine : la colonne **Réglages** à gauche, la zone d'ajout et la **file d'attente** à droite.
+
+| Étape | Choix |
 |---|---|
-| **Convertir** | Déposer des fichiers (ou des dossiers entiers, ou Ctrl+V), choisir le format par type ou fichier par fichier, régler les options, cliquer sur **Convertir**. |
-| **Color Lab** | Étalonner vidéos et photos : LUT, lumière, couleur, roues chromatiques, effets, détourage, découpe, texte. Aperçu en direct, export fichier par fichier ou en lot. |
+| **1 · Action** | Convertir, Compresser (même format, plus léger), ou Convertir + compresser |
+| **2 · Type de média** | Vidéo, Audio, Image, Images → Vidéo (diaporama), Document Office, Modèle 3D. Présélectionné d'après les fichiers déposés. **Audio** transforme aussi les vidéos en fichiers son. |
+| **3 · Format de sortie** | Les formats du type choisi. Les fichiers d'un autre type ont leur propre menu (« Images en [JPG] »…). |
+| **Compression** | Niveau (légère / moyenne / forte), poids cible en Mo ou réduction en %. |
+| **Options** | En menus déroulants. **Simple** montre l'essentiel, **Avancé** tous les paramètres. |
 
-On peut glisser des fichiers n'importe où sur la page. Chaque fichier a son menu **« en [format] »** sur sa ligne. En dessous, la carte **Paramètres de conversion** est organisée comme un convertisseur classique : une section par type (Format de sortie, Vidéo, GIF, Images, Son, Découper), chaque réglage étant un **menu déroulant**. Seules les sections utiles aux fichiers présents s'affichent.
+En bas de la colonne : **Export** (un ZIP ou fichiers séparés), **Traitement en arrière-plan**, **Téléchargement auto** et **Démarrer la conversion**. À droite, chaque fichier a son menu « en [format] », ses boutons Sauvegarder, ⚙ et Journal ; la file a **Exporter les fichiers** et **Vider**.
 
-**Réglages d'un seul fichier** : le bouton ⚙ d'une ligne ouvre ses propres réglages (format, qualité, résolution…). Le fichier est marqué « Réglages perso » ; « Revenir aux réglages communs » annule.
+**Réglages d'un seul fichier** : le bouton ⚙ d'une ligne ouvre ses propres réglages (format, qualité, résolution…). Le fichier est marqué « Réglages perso » ; « Réglages communs » annule.
 
-Tous les paramètres du serveur sont accessibles dans ces menus :
+En mode **Avancé**, tous les paramètres du serveur sont accessibles :
 
-- **Vidéo** : qualité (préréglage, poids cible, réduction en %, CRF, débit fixe en 1 ou 2 passes), résolution max ou taille exacte, codec (H.264, H.265, VP9, AV1), images/s, rotation / miroir, piste son (garder, copier sans réencoder, supprimer). Les vidéos HDR (iPhone…) sont ramenées en SDR automatiquement pour ne pas sortir grises. On peut aussi extraire le son d'une vidéo (MP3, M4A, WAV…).
-- **Plus d'options vidéo** (bloc repliable, avec le nombre de réglages actifs et un bouton pour tout remettre par défaut) : preset, tune, profil, format de pixels, débruitage, HDR → SDR, désentrelacement, rognage, texte incrusté avec position.
+- **Vidéo** : qualité (préréglage, CRF, débit fixe en 1 ou 2 passes), résolution max ou taille exacte, codec (H.264, H.265, VP9, AV1), images/s, rotation / miroir, piste son (garder, copier sans réencoder, supprimer). Les vidéos HDR (iPhone…) sont ramenées en SDR automatiquement pour ne pas sortir grises. On peut aussi extraire le son d'une vidéo (MP3, M4A, WAV…).
+- **Vidéo (suite)** : preset, tune, profil, format de pixels, débruitage, HDR → SDR, désentrelacement, rognage, texte incrusté avec position.
 - **Son** : débit, fréquence, mono / stéréo, volume en dB ou normalisation.
 - **GIF** : largeur, images/s, vitesse, 8 à 256 couleurs, tramage, lecture en boucle / une fois / N fois.
 - **Images** : qualité, taille max en px ou en %, agrandissement, poids cible en Mo, WebP sans perte, taille des icônes ICO, diaporama.
