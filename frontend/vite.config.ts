@@ -5,8 +5,9 @@ import react from "@vitejs/plugin-react"
 import { defineConfig } from "vite"
 
 // Polyfill for Node < 20.12 — Vite's worker bundling uses crypto.hash().
-if (typeof (crypto as any).hash !== "function") {
-  ;(crypto as any).hash = (algorithm: string, data: crypto.BinaryLike, outputEncoding?: crypto.BinaryToTextEncoding) => {
+const nodeCrypto = crypto as unknown as Record<string, unknown>
+if (typeof nodeCrypto.hash !== "function") {
+  nodeCrypto.hash = (algorithm: string, data: crypto.BinaryLike, outputEncoding?: crypto.BinaryToTextEncoding) => {
     const h = crypto.createHash(algorithm).update(data)
     return outputEncoding ? h.digest(outputEncoding) : h.digest()
   }
@@ -20,10 +21,9 @@ export default defineConfig({
       "@": path.resolve(__dirname, "./src"),
     },
   },
-  // ffmpeg.wasm needs cross-origin isolation; exclude it from the optimizer
-  // so its Worker is loaded at runtime from the unpkg CDN we point to.
+  // ffmpeg.wasm ships its own worker and core: keep them out of the optimizer.
   optimizeDeps: {
-    exclude: ["@ffmpeg/ffmpeg", "@ffmpeg/util"],
+    exclude: ["@ffmpeg/ffmpeg", "@ffmpeg/util", "@ffmpeg/core"],
   },
   server: {
     headers: {
@@ -36,6 +36,8 @@ export default defineConfig({
       "/download-all": "http://localhost:5000",
       "/clear-all": "http://localhost:5000",
       "/health": "http://localhost:5000",
+      "/uploads": "http://localhost:5000",
+      "/api": "http://localhost:5000",
     },
   },
 })

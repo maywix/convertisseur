@@ -1,1296 +1,682 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-    IconChevronDown,
-    IconChevronUp,
-    IconDownload,
-    IconImage,
-    IconRefresh,
-    IconVideo,
-    IconWand,
-    IconX,
+    useCallback, useEffect, useMemo, useRef, useState,
+    type CSSProperties, type Dispatch, type ReactNode, type RefObject, type SetStateAction,
+} from 'react'
+import { EmptyDrop, FilePickers } from '@/components/DropZone'
+import { KindIcon } from '@/components/FileRow'
+import {
+    IconAlert, IconChevronLeft, IconChevronRight, IconCompare, IconCopy, IconDownload, IconPause, IconPlay,
+    IconRefresh, IconWand, IconX,
 } from '@/components/icons'
-import { Button } from '@/components/ui/button'
-import { processImageClientSide, isClientSupportedFormat, type ClientGrade } from '@/lib/clientProcessor'
+import { Button, Field, ProgressBar, Section, Segmented, Select, Slider, TextInput, Toggle } from '@/components/ui'
+import type { JobPlan, QueueApi } from '@/hooks/useQueue'
+import { BROWSER_DECODABLE, BROWSER_ENCODABLE, decodeImage, processImageInBrowser } from '@/lib/clientProcessor'
 import { parseCubeLut, type Lut3D } from '@/lib/cubeLut'
-import { createCanvas2DLutRenderer, gradeToExtraFilter, type Canvas2DLutRenderer } from '@/lib/lutCanvas2D'
+import { DEFAULT_GRADE, NEUTRAL, gradeToFilter, gradeToServerFields, isNeutral, lookOf, type Grade } from '@/lib/grade'
+import { createCanvas2DLutRenderer, renderStill, type Canvas2DLutRenderer, type ExtraFilter } from '@/lib/lutCanvas2D'
+import { objectUrlFor } from '@/lib/objectUrl'
+import type { LabState } from '@/lib/labState'
+import type { ProcessingPreference } from '@/lib/settings'
 import { cn } from '@/lib/utils'
-import { formatSize, getFileType, type QueueItem } from '@/types'
+import { extOf, formatSize, isActive, type QueueItem } from '@/types'
 
-// ──────────────────────────────────────────────────────────
-// Color Lab — multi-file colour grading workspace.
-//
-// Highlights:
-//   - per-file Grade objects, navigated with ← / → buttons or arrow keys
-//   - LUT (.cube) can apply globally (one for all videos) or per file
-//   - live WebGL2 LUT preview on video (LUT + brightness/contrast/sat/hue/vignette
-//     applied in a fragment shader, real-time at native frame rate)
-//   - FPS slider 1..original (estimated client-side via rVFC when available)
-// ──────────────────────────────────────────────────────────
+const VIDEO_OUT = [
+    { value: 'mp4', label: 'MP4 (H.264)' }, { value: 'mov', label: 'MOV' }, { value: 'webm', label: 'WebM' },
+    { value: 'mkv', label: 'MKV' }, { value: 'gif', label: 'GIF' },
+]
+const IMAGE_OUT = [
+    { value: 'jpg', label: 'JPG' }, { value: 'png', label: 'PNG' }, { value: 'webp', label: 'WebP' }, { value: 'avif', label: 'AVIF' },
+    { value: 'tiff', label: 'TIFF' },
+]
 
-type ProcessingMode = 'frontend' | 'backend'
-
-interface ColorLabProps {
-    processingMode: ProcessingMode
-    /** Shared queue so files added in Simple / Pro also show up here, and vice versa. */
-    queue: QueueItem[]
-    onFilesAdded: (files: FileList | File[]) => Promise<void> | void
-    onRemove: (id: string) => void
-    onClearAll: () => void
-    /** Persisted grading state (lifted to App so it survives mode switches). */
-    gradesMap: Record<string, Grade>
-    setGradesMap: React.Dispatch<React.SetStateAction<Record<string, Grade>>>
-    lutScope: 'global' | 'per-file'
-    setLutScope: (scope: 'global' | 'per-file') => void
-    globalLutFile: File | null
-    setGlobalLutFile: (f: File | null) => void
+function isEditable(target: EventTarget | null): boolean {
+    const el = target as HTMLElement | null
+    return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable)
 }
 
-type MediaKind = 'image' | 'video'
-
-export interface Grade {
-    // Light
-    exposure: number
-    contrast: number
-    highlights: number
-    shadows: number
-    whites: number
-    blacks: number
-    // Color
-    saturation: number
-    temperature: number
-    tint: number
-    hue: number
-    // Color wheels (DaVinci LGG)
-    liftColor: string
-    liftAmount: number
-    gammaColor: string
-    gammaAmount: number
-    gainColor: string
-    gainAmount: number
-    // Detail
-    sharpness: number
-    // Effects
-    vignette: number
-    glow: number
-    grain: number
-    chromatic: number
-    // Color remover
-    removeEnabled: boolean
-    removeColor: string
-    removeTolerance: number
-    // Output
-    targetFps: number | null   // null = original; 1..originalFps otherwise
-    // Per-file LUT (used only when scope === 'per-file')
-    lutFile: File | null
-    // Advanced: trim + text overlay
-    trimStart: string          // "" or "HH:MM:SS"
-    trimEnd: string
-    overlayText: string
-    overlayTextX: string
-    overlayTextY: string
+function useParsedLut(file: File | null): { lut: Lut3D | null; error: string | null } {
+    const [cache, setCache] = useState<Map<File, Lut3D | string>>(() => new Map())
+    useEffect(() => {
+        if (!file || cache.has(file)) return
+        let cancelled = false
+        file.text().then(parseCubeLut).then(
+            (lut) => { if (!cancelled) setCache((prev) => new Map(prev).set(file, lut)) },
+            (e) => { if (!cancelled) setCache((prev) => new Map(prev).set(file, e instanceof Error ? e.message : 'LUT illisible')) },
+        )
+        return () => { cancelled = true }
+    }, [file, cache])
+    const value = file ? cache.get(file) : undefined
+    return { lut: value && typeof value !== 'string' ? value : null, error: typeof value === 'string' ? value : null }
 }
 
-export const NEUTRAL = '#808080'
-
-export const DEFAULT_GRADE: Grade = {
-    exposure: 0, contrast: 0,
-    highlights: 0, shadows: 0, whites: 0, blacks: 0,
-    saturation: 0, temperature: 0, tint: 0, hue: 0,
-    liftColor: NEUTRAL, liftAmount: 1,
-    gammaColor: NEUTRAL, gammaAmount: 1,
-    gainColor: NEUTRAL, gainAmount: 1,
-    sharpness: 0,
-    vignette: 0, glow: 0, grain: 0, chromatic: 0,
-    removeEnabled: false, removeColor: '#ffffff', removeTolerance: 15,
-    targetFps: null,
-    lutFile: null,
-    trimStart: '', trimEnd: '',
-    overlayText: '', overlayTextX: '(w-text_w)/2', overlayTextY: 'h-(text_h*2)',
-}
-
-const VIDEO_OUTPUTS = ['mp4', 'webm', 'mov', 'mkv'] as const
-const IMAGE_OUTPUTS = ['png', 'jpg', 'webp', 'avif'] as const
-
-function detectKind(file: File): MediaKind | null {
-    const t = getFileType(file.name)
-    if (t === 'image') return 'image'
-    if (t === 'video') return 'video'
-    return null
-}
-
-function clamp(value: number, min: number, max: number): number {
-    return Math.max(min, Math.min(max, value))
-}
-
-function gradeToCssFilter(g: Grade): string {
-    const brightness = clamp(1 + g.exposure * 0.25 + g.whites * 0.002 + g.blacks * -0.0015, 0.1, 2.5)
-    const contrast = clamp(1 + g.contrast / 100 + g.highlights * -0.002 + g.shadows * -0.002, 0, 2)
-    const saturate = clamp(1 + g.saturation / 100, 0, 3)
-    const hueDeg = clamp(g.hue + g.tint * 0.45, -180, 180)
-    const blurPx = g.glow > 0 ? (g.glow / 100) * 3.5 : 0
-    const blurPart = blurPx > 0 ? ` blur(${blurPx.toFixed(2)}px)` : ''
-    return `brightness(${brightness.toFixed(3)}) contrast(${contrast.toFixed(3)}) saturate(${saturate.toFixed(3)}) hue-rotate(${hueDeg}deg)${blurPart}`
-}
-
-function Slider({
-    label, value, min, max, step, onChange, suffix, disabled,
-}: {
-    label: string; value: number; min: number; max: number; step: number;
-    onChange: (v: number) => void; suffix?: string; disabled?: boolean
-}) {
-    const display = `${value > 0 ? '+' : ''}${value.toFixed(step < 1 ? 1 : 0)}${suffix ?? ''}`
-    return (
-        <div className={cn('space-y-1.5', disabled && 'opacity-40 pointer-events-none')}>
-            <div className="flex items-center justify-between">
-                <span className="text-xs font-medium text-foreground">{label}</span>
-                <span className="text-[11px] font-mono text-muted-foreground tabular-nums">{display}</span>
-            </div>
-            <input
-                type="range" min={min} max={max} step={step} value={value}
-                onChange={(e) => onChange(parseFloat(e.target.value))}
-                disabled={disabled}
-                className="h-1.5 w-full accent-primary"
-            />
-        </div>
-    )
-}
-
-function ColorSwatch({
-    label, color, amount, onColorChange, onAmountChange, onReset,
-}: {
-    label: string; color: string; amount: number;
-    onColorChange: (c: string) => void; onAmountChange: (a: number) => void;
-    onReset: () => void;
-}) {
-    return (
-        <div className="rounded-lg border border-border bg-background/40 p-2.5 space-y-2">
-            <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</span>
-                <button type="button" onClick={onReset} className="text-[10px] text-muted-foreground hover:text-destructive">Reset</button>
-            </div>
-            <div className="flex items-center gap-2">
-                <input
-                    type="color" value={color}
-                    onChange={(e) => onColorChange(e.target.value)}
-                    className="h-9 w-9 shrink-0 rounded-md border border-border bg-background cursor-pointer"
-                />
-                <div className="flex-1">
-                    <Slider label="Intensité" value={amount} min={0} max={2} step={0.05} onChange={onAmountChange} />
-                </div>
-            </div>
-        </div>
-    )
-}
-
-function CollapsibleSection({
-    title, defaultOpen = true, children,
-}: { title: string; defaultOpen?: boolean; children: React.ReactNode }) {
-    const [open, setOpen] = useState(defaultOpen)
-    return (
-        <div className="overflow-hidden rounded-lg border border-border bg-background/40">
-            <button
-                type="button" onClick={() => setOpen((v) => !v)}
-                className="flex w-full items-center justify-between px-3 py-2 text-left transition-colors hover:bg-muted/40"
-            >
-                <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{title}</span>
-                {open ? <IconChevronUp size={12} /> : <IconChevronDown size={12} />}
-            </button>
-            {open && <div className="space-y-3 border-t border-border px-3 py-3">{children}</div>}
-        </div>
-    )
-}
-
-interface JobResult {
-    id: string
-    status: 'queued' | 'processing' | 'done' | 'error'
-    download_url: string | null
-    output_filename: string | null
-    progress?: number
-    error?: string | null
-}
-
-async function uploadAndConvert(
-    file: File,
-    targetFormat: string,
-    grade: Grade,
-    kind: MediaKind,
-    lutFile: File | null,
-    onProgress?: (state: string) => void,
-): Promise<{ downloadUrl: string; filename: string }> {
-    const fd = new FormData()
-    fd.append('file', file)
-    fd.append('action', 'convert')
-    fd.append('format', targetFormat)
-    if (lutFile) fd.append('lut_file', lutFile)
-
-    const slidersMap: Record<string, [keyof Grade, string, string]> = {
-        exposure:    ['exposure', 'video_exposure', 'photo_exposure'],
-        contrast:    ['contrast', 'video_contrast', 'photo_contrast'],
-        highlights:  ['highlights', 'video_highlights', 'photo_highlights'],
-        shadows:     ['shadows', 'video_shadows', 'photo_shadows'],
-        whites:      ['whites', 'video_whites', 'photo_whites'],
-        blacks:      ['blacks', 'video_blacks', 'photo_blacks'],
-        saturation:  ['saturation', 'video_saturation', 'photo_saturation'],
-        temperature: ['temperature', 'video_temperature', 'photo_temperature'],
-        tint:        ['tint', 'video_tint', 'photo_tint'],
-        sharpness:   ['sharpness', 'video_sharpness', 'photo_sharpness'],
-    }
-    for (const k of Object.keys(slidersMap)) {
-        const [gk, vname, pname] = slidersMap[k]
-        const v = grade[gk] as number
-        if (v !== 0) {
-            const target = kind === 'video' ? vname : pname
-            if (target) fd.append(target, String(v))
-        }
-    }
-    if (kind === 'video' && grade.hue !== 0) fd.append('video_hue', String(grade.hue))
-
-    if (kind === 'video') {
-        if (grade.liftColor.toLowerCase() !== NEUTRAL) {
-            fd.append('video_lift_color', grade.liftColor)
-            fd.append('video_lift_amount', String(grade.liftAmount))
-        }
-        if (grade.gammaColor.toLowerCase() !== NEUTRAL) {
-            fd.append('video_gamma_color', grade.gammaColor)
-            fd.append('video_gamma_amount', String(grade.gammaAmount))
-        }
-        if (grade.gainColor.toLowerCase() !== NEUTRAL) {
-            fd.append('video_gain_color', grade.gainColor)
-            fd.append('video_gain_amount', String(grade.gainAmount))
-        }
-        if (grade.vignette > 0) fd.append('video_vignette', String(grade.vignette))
-        if (grade.glow > 0) fd.append('video_glow', String(grade.glow))
-        if (grade.grain > 0) fd.append('video_grain', String(grade.grain))
-        if (grade.chromatic > 0) fd.append('video_chromatic', String(grade.chromatic))
-        if (grade.targetFps && grade.targetFps > 0) fd.append('fps', String(grade.targetFps))
-        if (grade.trimStart) fd.append('trim_start', grade.trimStart)
-        if (grade.trimEnd) fd.append('trim_end', grade.trimEnd)
-        if (grade.overlayText) {
-            fd.append('overlay_text', grade.overlayText)
-            fd.append('overlay_text_x', grade.overlayTextX || '(w-text_w)/2')
-            fd.append('overlay_text_y', grade.overlayTextY || 'h-(text_h*2)')
-        }
-    }
-
-    if (grade.removeEnabled && grade.removeColor) {
-        fd.append('color_remove_color', grade.removeColor)
-        fd.append('color_remove_tolerance', String(grade.removeTolerance))
-    }
-
-    // Log everything we're sending so the user can verify in DevTools.
-    const sentParams = Array.from(fd.entries())
-        .filter(([k]) => k !== 'file' && k !== 'lut_file')
-        .map(([k, v]) => `${k}=${v}`)
-    // eslint-disable-next-line no-console
-    console.info(
-        `[upload →] hasFile=${fd.has('file')} hasLut=${fd.has('lut_file')} params: ${sentParams.length === 0 ? '(aucun slider)' : sentParams.join(', ')}`,
-    )
-
-    onProgress?.('Envoi du fichier…')
-    const res = await fetch('/jobs', { method: 'POST', body: fd })
-    if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: 'upload failed' }))
-        throw new Error(err.error || 'upload failed')
-    }
-    const { job_id } = await res.json()
-
-    onProgress?.('Traitement…')
-    while (true) {
-        await new Promise((r) => setTimeout(r, 800))
-        const j = await fetch(`/jobs/${job_id}`).then((r) => r.json() as Promise<JobResult>)
-        if (j.status === 'done' && j.download_url) {
-            // Fetch the FFmpeg command from the server logs so we can see what
-            // actually ran. Helps diagnose "the slider didn't take effect" bugs.
-            try {
-                const logs = await fetch(`/jobs/${job_id}/logs`).then((r) => r.text())
-                const ffmpegLine = logs.split('\n').find((l) => l.includes('ffmpeg') && (l.startsWith('$') || l.includes('-vf')))
-                if (ffmpegLine) {
-                    // eslint-disable-next-line no-console
-                    console.info(`[backend FFmpeg] ${ffmpegLine.trim()}`)
-                }
-            } catch { /* ignore log fetch errors */ }
-            return { downloadUrl: j.download_url, filename: j.output_filename || file.name }
-        }
-        if (j.status === 'error') throw new Error(j.error || 'conversion failed')
-        if (typeof j.progress === 'number') onProgress?.(`Traitement… ${Math.round(j.progress)} %`)
-    }
-}
-
-interface BatchItem {
-    state: 'idle' | 'busy' | 'done' | 'error'
-    progress: string
-    downloadUrl?: string
-    filename?: string
-    error?: string
-}
-
-// Estimate video FPS via requestVideoFrameCallback if available, falling back to 30.
-async function estimateFps(video: HTMLVideoElement): Promise<number> {
-    return new Promise((resolve) => {
-        const w = video as HTMLVideoElement & {
-            requestVideoFrameCallback?: (cb: (now: number, meta: { mediaTime: number }) => void) => void
-        }
-        if (typeof w.requestVideoFrameCallback !== 'function') {
-            resolve(30)
-            return
-        }
-        let count = 0
-        let first = -1
-        const onFrame = (_now: number, meta: { mediaTime: number }) => {
-            if (first < 0) first = meta.mediaTime
-            count++
-            const dt = meta.mediaTime - first
-            if (count > 30 || dt > 1.2) {
-                const fps = count / Math.max(0.1, dt)
-                resolve(Math.round(Math.max(1, Math.min(240, fps))))
-                return
-            }
-            w.requestVideoFrameCallback!(onFrame)
-        }
-        w.requestVideoFrameCallback(onFrame)
-        const wasPaused = video.paused
-        video.muted = true
-        video.play().catch(() => resolve(30))
-        // Restore pause shortly after if we paused before
-        setTimeout(() => { if (wasPaused) video.pause() }, 1500)
-    })
+function fmtTime(s: number): string {
+    if (!Number.isFinite(s)) return '0:00'
+    const m = Math.floor(s / 60)
+    const sec = s - m * 60
+    return `${m}:${sec < 10 ? '0' : ''}${sec.toFixed(1)}`
 }
 
 export function ColorLab({
-    processingMode, queue, onFilesAdded, onRemove, onClearAll,
-    gradesMap, setGradesMap, lutScope, setLutScope, globalLutFile, setGlobalLutFile,
-}: ColorLabProps) {
-    // Lab works on the subset of the shared queue that contains images or videos.
+    queue,
+    processing,
+    lab,
+    setLab,
+}: {
+    queue: QueueApi
+    processing: ProcessingPreference
+    lab: LabState
+    setLab: Dispatch<SetStateAction<LabState>>
+}) {
     const labItems = useMemo(
-        () => queue.filter((it) => detectKind(it.file) !== null),
-        [queue],
+        () => queue.items.filter((it) => (it.kind === 'image' || it.kind === 'video') && it.file),
+        [queue.items],
     )
-    const files = useMemo(() => labItems.map((it) => it.file), [labItems])
-
-    // Local UI state (active selection, batch results — these don't need to outlive a mode switch).
-    const [activeIndex, setActiveIndex] = useState(0)
-    const [batch, setBatch] = useState<Record<string, BatchItem>>({})
-
-    // Initialise grade for any new item that enters the queue.
-    useEffect(() => {
-        setGradesMap((prev) => {
-            const next: Record<string, Grade> = { ...prev }
-            let changed = false
-            for (const it of labItems) {
-                if (!next[it.id]) { next[it.id] = { ...DEFAULT_GRADE }; changed = true }
-            }
-            return changed ? next : prev
-        })
-    }, [labItems])
-
-    // Keep activeIndex within bounds.
-    useEffect(() => {
-        if (activeIndex >= labItems.length && labItems.length > 0) setActiveIndex(labItems.length - 1)
-    }, [labItems.length, activeIndex])
-
-    const grades = labItems.map((it) => gradesMap[it.id] || DEFAULT_GRADE)
-
-    // LUT parsing cache (lifted to component lifetime; the Lut3D blob is heavy).
-    const [parsedGlobalLut, setParsedGlobalLut] = useState<Lut3D | null>(null)
-    const parsedLutCacheRef = useRef<Map<string, Lut3D>>(new Map())
-
-    // FPS estimation
-    const [originalFps, setOriginalFps] = useState<Record<number, number>>({})
-
-    // Preview / runtime
-    const [previewUrl, setPreviewUrl] = useState<string | null>(null)
-    const [busy, setBusy] = useState(false)
-    const [busyMessage, setBusyMessage] = useState('')
-    const [err, setErr] = useState<string | null>(null)
-    const [outputFormat, setOutputFormat] = useState<string>('')
-    const fileInputRef = useRef<HTMLInputElement>(null)
-    const lutInputRef = useRef<HTMLInputElement>(null)
-    const videoRef = useRef<HTMLVideoElement | null>(null)
-    const glCanvasRef = useRef<HTMLCanvasElement | null>(null)
-    const lutRendererRef = useRef<Canvas2DLutRenderer | null>(null)
-    const [videoError, setVideoError] = useState<string | null>(null)
-    /** Hold-to-compare: when true the preview shows the original (no grade). */
+    const [activeId, setActiveId] = useState<string | null>(null)
+    const active = labItems.find((it) => it.id === activeId) ?? labItems[0] ?? null
+    const activeIndex = active ? labItems.indexOf(active) : -1
+    const grade = (active && lab.grades[active.id]) || DEFAULT_GRADE
+    const isVideo = active?.kind === 'video'
+    const lutFile = lab.lutScope === 'global' ? lab.globalLut : grade.lutFile
+    const { lut, error: lutError } = useParsedLut(lutFile)
+    const filter = useMemo(() => gradeToFilter(grade), [grade])
     const [comparing, setComparing] = useState(false)
-    const [videoReady, setVideoReady] = useState(false)
+    const videoRef = useRef<HTMLVideoElement | null>(null)
+    const lutInput = useRef<HTMLInputElement>(null)
 
-    const file = files[activeIndex] || null
-    const grade = grades[activeIndex] || DEFAULT_GRADE
-    const kind: MediaKind | null = file ? detectKind(file) : null
-    const isVideo = kind === 'video'
+    const updateGrade = useCallback((patch: Partial<Grade>) => {
+        if (!active) return
+        setLab((prev) => ({
+            ...prev,
+            grades: { ...prev.grades, [active.id]: { ...(prev.grades[active.id] || DEFAULT_GRADE), ...patch } },
+        }))
+    }, [active, setLab])
 
-    // Active LUT (depending on scope) — parsed asynchronously into a state so
-    // React re-renders the preview once it's ready.
-    const activeLutFile = lutScope === 'global' ? globalLutFile : grade.lutFile
-    const [activeParsedLut, setActiveParsedLut] = useState<Lut3D | null>(null)
+    const go = useCallback((delta: number) => {
+        if (labItems.length === 0) return
+        const next = Math.max(0, Math.min(labItems.length - 1, activeIndex + delta))
+        setActiveId(labItems[next].id)
+    }, [labItems, activeIndex])
 
-    // Object URL for the active preview
-    useEffect(() => {
-        if (!file) { setPreviewUrl(null); return }
-        const url = URL.createObjectURL(file)
-        setPreviewUrl(url)
-        return () => URL.revokeObjectURL(url)
-    }, [file])
-
-    // Pick a reasonable default output format whenever the active file changes
-    useEffect(() => {
-        if (!file) return
-        if (kind === 'image') setOutputFormat((prev) => prev || 'png')
-        else if (kind === 'video') setOutputFormat((prev) => prev || 'mp4')
-    }, [file, kind])
-
-    // Parse the active LUT once (cache by file identity)
-    useEffect(() => {
-        if (!activeLutFile) {
-            setActiveParsedLut(null)
-            if (lutScope === 'global') setParsedGlobalLut(null)
-            return
-        }
-        const key = `${activeLutFile.name}-${activeLutFile.size}-${activeLutFile.lastModified}`
-        if (parsedLutCacheRef.current.has(key)) {
-            const cached = parsedLutCacheRef.current.get(key)!
-            setActiveParsedLut(cached)
-            if (lutScope === 'global') setParsedGlobalLut(cached)
-            return
-        }
-        activeLutFile.text().then((txt) => {
-            try {
-                const lut = parseCubeLut(txt)
-                parsedLutCacheRef.current.set(key, lut)
-                setActiveParsedLut(lut)
-                if (lutScope === 'global') setParsedGlobalLut(lut)
-            } catch (e) {
-                console.warn('[lut] parse failed:', e)
-            }
-        })
-    }, [activeLutFile, lutScope])
-
-    // Reset video state when the active file changes
-    useEffect(() => { setVideoError(null); setVideoReady(false) }, [file])
-
-    // Use the Canvas 2D preview path for *any* video the browser can decode.
-    // This makes every slider (incl. temperature, tint) visible live, and the
-    // optional LUT is just one more pass on top of the post-process.
-    const activeLutForRender = lutScope === 'global' ? globalLutFile : grade.lutFile
-    const useGLPreview = isVideo && videoReady && !videoError
-
-    // Build the shape the renderer wants out of the current Grade.
-    const currentExtraFilter = useMemo(() => gradeToExtraFilter({
-        exposure: grade.exposure, contrast: grade.contrast, saturation: grade.saturation,
-        temperature: grade.temperature, tint: grade.tint, hue: grade.hue,
-        highlights: grade.highlights, shadows: grade.shadows,
-        whites: grade.whites, blacks: grade.blacks,
-        liftColor: grade.liftColor, liftAmount: grade.liftAmount,
-        gammaColor: grade.gammaColor, gammaAmount: grade.gammaAmount,
-        gainColor: grade.gainColor, gainAmount: grade.gainAmount,
-        vignette: grade.vignette, grain: grade.grain,
-        chromatic: grade.chromatic, glow: grade.glow,
-        removeEnabled: grade.removeEnabled,
-        removeColor: grade.removeColor,
-        removeTolerance: grade.removeTolerance,
-    }), [grade])
-
-    // Refs that the renderer-creation effect reads, so it always picks up the
-    // latest LUT / filter without listing them as deps (we don't want to
-    // recreate the renderer every time a slider moves).
-    const filterStateRef = useRef({ lut: null as Lut3D | null, filter: currentExtraFilter })
-    useEffect(() => {
-        filterStateRef.current = {
-            lut: activeParsedLut || parsedGlobalLut || null,
-            filter: currentExtraFilter,
-        }
-    }, [activeParsedLut, parsedGlobalLut, currentExtraFilter])
-
-    useEffect(() => {
-        if (!useGLPreview || !videoRef.current || !glCanvasRef.current) return
-        const r = createCanvas2DLutRenderer(glCanvasRef.current, videoRef.current)
-        lutRendererRef.current = r
-        // Apply whatever's currently in state before the renderer's first frame.
-        r.setLut(filterStateRef.current.lut)
-        r.setExtraFilter(filterStateRef.current.filter)
-        r.start()
-        videoRef.current.play().catch(() => { /* silent */ })
-        return () => { r.stop(); lutRendererRef.current = null }
-    }, [useGLPreview, file])
-
-    // Live updates to the renderer when grade or LUT change without a remount.
-    useEffect(() => {
-        if (!lutRendererRef.current) return
-        lutRendererRef.current.setLut(activeParsedLut || parsedGlobalLut || null)
-        lutRendererRef.current.setExtraFilter(currentExtraFilter)
-    }, [currentExtraFilter, activeParsedLut, parsedGlobalLut])
-
-    // Compare button: bypass the renderer pipeline so user sees the raw frame.
-    useEffect(() => {
-        lutRendererRef.current?.setBypass(comparing)
-    }, [comparing, useGLPreview])
-
-    // Estimate FPS for the currently active video once it can play
-    useEffect(() => {
-        if (!isVideo || !videoRef.current || originalFps[activeIndex]) return
-        const v = videoRef.current
-        const onCanPlay = () => {
-            estimateFps(v).then((fps) => {
-                setOriginalFps((prev) => ({ ...prev, [activeIndex]: fps }))
-            })
-        }
-        if (v.readyState >= 2) onCanPlay()
-        else v.addEventListener('loadeddata', onCanPlay, { once: true })
-        return () => v.removeEventListener('loadeddata', onCanPlay)
-    }, [isVideo, activeIndex, originalFps])
-
-    // Keyboard arrows to navigate
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
-            if ((e.target as HTMLElement)?.tagName === 'INPUT') return
-            if (e.key === 'ArrowLeft') setActiveIndex((i) => Math.max(0, i - 1))
-            else if (e.key === 'ArrowRight') setActiveIndex((i) => Math.min(files.length - 1, i + 1))
+            if (isEditable(e.target) || e.ctrlKey || e.metaKey || e.altKey) return
+            if (e.key === 'ArrowLeft') go(-1)
+            else if (e.key === 'ArrowRight') go(1)
         }
         window.addEventListener('keydown', onKey)
         return () => window.removeEventListener('keydown', onKey)
-    }, [files.length])
+    }, [go])
 
-    const handlePick = async (incoming: FileList | File[] | null) => {
-        if (!incoming) return
-        const arr = Array.from(incoming).filter((f) => detectKind(f) !== null)
-        if (arr.length === 0) {
-            setErr('Aucun fichier image/vidéo détecté.')
-            return
-        }
-        setErr(null)
-        // Delegate to the shared queue — items appear in Simple / Pro too.
-        await onFilesAdded(arr)
-    }
-
-    const onDrop = (e: React.DragEvent) => {
-        e.preventDefault()
-        if (busy) return
-        void handlePick(e.dataTransfer.files)
-    }
-    const onDragOver = (e: React.DragEvent) => e.preventDefault()
-
-    const updateGrade = useCallback((patch: Partial<Grade>) => {
-        const item = labItems[activeIndex]
-        if (!item) return
-        setGradesMap((prev) => ({
-            ...prev,
-            [item.id]: { ...(prev[item.id] || DEFAULT_GRADE), ...patch },
-        }))
-    }, [activeIndex, labItems])
-
-    const removeFile = (idx: number) => {
-        const item = labItems[idx]
-        if (!item) return
-        onRemove(item.id)
-        setBatch((prev) => {
-            const next = { ...prev }; delete next[item.id]; return next
-        })
-        setGradesMap((prev) => {
-            const next = { ...prev }; delete next[item.id]; return next
-        })
-        setActiveIndex((curr) => {
-            if (curr > idx) return curr - 1
-            if (curr >= labItems.length - 1) return Math.max(0, labItems.length - 2)
-            return curr
+    const copyLookToAll = () => {
+        const look = lookOf(grade)
+        setLab((prev) => {
+            const grades = { ...prev.grades }
+            for (const it of labItems) grades[it.id] = { ...(grades[it.id] || DEFAULT_GRADE), ...look }
+            return { ...prev, grades }
         })
     }
 
-    const cssFilter = useMemo(() => gradeToCssFilter(grade), [grade])
+    const setLutFile = (f: File | null) => {
+        if (lab.lutScope === 'global') setLab((prev) => ({ ...prev, globalLut: f }))
+        else updateGrade({ lutFile: f })
+    }
 
-    const apply = useCallback(async () => {
-        if (labItems.length === 0 || !outputFormat) return
-        setBusy(true); setErr(null)
-        try {
-            const initial: Record<string, BatchItem> = {}
-            for (const it of labItems) initial[it.id] = { state: 'idle', progress: '' }
-            setBatch(initial)
-
-            for (let i = 0; i < labItems.length; i++) {
-                const item = labItems[i]
-                const f = item.file
-                const fKind = detectKind(f)
-                if (!fKind) {
-                    setBatch((b) => ({ ...b, [item.id]: { state: 'error', progress: '', error: 'type non supporté' } }))
-                    continue
-                }
-                const fGrade = gradesMap[item.id] || DEFAULT_GRADE
-                const fLut = lutScope === 'global' ? globalLutFile : fGrade.lutFile
-                const fmt = fKind === 'video'
-                    ? (VIDEO_OUTPUTS.includes(outputFormat as typeof VIDEO_OUTPUTS[number]) ? outputFormat : 'mp4')
-                    : (IMAGE_OUTPUTS.includes(outputFormat as typeof IMAGE_OUTPUTS[number]) ? outputFormat : 'png')
-
-                setBatch((b) => ({ ...b, [item.id]: { state: 'busy', progress: 'En cours…' } }))
-
-                const nonZero = Object.entries(fGrade).filter(([_k, v]) => {
-                    if (typeof v === 'number') return v !== 0 && !Number.isNaN(v)
-                    if (typeof v === 'string') return v.length > 0 && v.toLowerCase() !== '#808080' && v !== '#ffffff' && v !== '(w-text_w)/2' && v !== 'h-(text_h*2)'
-                    if (typeof v === 'boolean') return v === true
-                    return v !== null
-                })
-                // eslint-disable-next-line no-console
-                console.info(
-                    `[apply] ${f.name} | mode=${processingMode} | fmt=${fmt} | hasLut=${!!fLut} | sliders actifs: ${
-                        nonZero.length === 0 ? '(aucun)' : nonZero.map(([k, v]) => `${k}=${v}`).join(', ')
-                    }`,
-                )
-
-                try {
-                    if (
-                        processingMode === 'frontend' &&
-                        fKind === 'image' &&
-                        isClientSupportedFormat(fmt)
-                    ) {
-                        const cg: ClientGrade = {
-                            exposure: fGrade.exposure, contrast: fGrade.contrast,
-                            highlights: fGrade.highlights, shadows: fGrade.shadows,
-                            whites: fGrade.whites, blacks: fGrade.blacks,
-                            saturation: fGrade.saturation, temperature: fGrade.temperature, tint: fGrade.tint,
-                            sharpness: fGrade.sharpness,
-                            vignette: fGrade.vignette, grain: fGrade.grain,
-                            chromatic: fGrade.chromatic, glow: fGrade.glow,
-                            liftColor: fGrade.liftColor, liftAmount: fGrade.liftAmount,
-                            gammaColor: fGrade.gammaColor, gammaAmount: fGrade.gammaAmount,
-                            gainColor: fGrade.gainColor, gainAmount: fGrade.gainAmount,
-                            removeEnabled: fGrade.removeEnabled,
-                            removeColor: fGrade.removeColor,
-                            removeTolerance: fGrade.removeTolerance,
-                        }
-                        const { blob, filename } = await processImageClientSide(f, cg, fmt, undefined, fLut)
-                        const url = URL.createObjectURL(blob)
-                        setBatch((b) => ({ ...b, [item.id]: { state: 'done', progress: 'Prêt', downloadUrl: url, filename } }))
-                        continue
-                    }
-
-                    if (processingMode === 'frontend' && fKind === 'video') {
-                        const { processVideoClientSide, isClientSupportedVideoFormat } = await import('@/lib/clientVideoProcessor')
-                        if (isClientSupportedVideoFormat(fmt)) {
-                            const vg = {
-                                exposure: fGrade.exposure, contrast: fGrade.contrast,
-                                highlights: fGrade.highlights, shadows: fGrade.shadows,
-                                whites: fGrade.whites, blacks: fGrade.blacks,
-                                saturation: fGrade.saturation, temperature: fGrade.temperature,
-                                tint: fGrade.tint, hue: fGrade.hue,
-                                liftColor: fGrade.liftColor, liftAmount: fGrade.liftAmount,
-                                gammaColor: fGrade.gammaColor, gammaAmount: fGrade.gammaAmount,
-                                gainColor: fGrade.gainColor, gainAmount: fGrade.gainAmount,
-                                sharpness: fGrade.sharpness,
-                                vignette: fGrade.vignette, grain: fGrade.grain,
-                                chromatic: fGrade.chromatic, glow: fGrade.glow,
-                                targetFps: fGrade.targetFps,
-                                trimStart: fGrade.trimStart, trimEnd: fGrade.trimEnd,
-                                overlayText: fGrade.overlayText,
-                                overlayTextX: fGrade.overlayTextX,
-                                overlayTextY: fGrade.overlayTextY,
-                                removeEnabled: fGrade.removeEnabled,
-                                removeColor: fGrade.removeColor,
-                                removeTolerance: fGrade.removeTolerance,
-                            }
-                            const { blob, filename } = await processVideoClientSide(
-                                f, fmt, vg,
-                                (msg, ratio) => {
-                                    setBatch((b) => ({
-                                        ...b,
-                                        [item.id]: { state: 'busy', progress: ratio != null ? `${Math.round(ratio * 100)} %` : msg },
-                                    }))
-                                },
-                                fLut,
-                            )
-                            const url = URL.createObjectURL(blob)
-                            setBatch((b) => ({ ...b, [item.id]: { state: 'done', progress: 'Prêt', downloadUrl: url, filename } }))
-                            continue
-                        }
-                    }
-
-                    // Backend path (default in Backend mode, or fallback)
-                    const { downloadUrl, filename } = await uploadAndConvert(f, fmt, fGrade, fKind, fLut)
-                    setBatch((b) => ({ ...b, [item.id]: { state: 'done', progress: 'Prêt', downloadUrl, filename } }))
-                } catch (e) {
-                    setBatch((b) => ({
-                        ...b,
-                        [item.id]: { state: 'error', progress: '', error: e instanceof Error ? e.message : 'Erreur' },
-                    }))
+    const planFor = useCallback((it: QueueItem): { plan: JobPlan; format: string } => {
+        const g = lab.grades[it.id] || DEFAULT_GRADE
+        const itemLut = lab.lutScope === 'global' ? lab.globalLut : g.lutFile
+        if (it.kind === 'video') {
+            const format = lab.videoFormat
+            const plan: JobPlan = {
+                server: { action: 'convert', format, fields: { ...gradeToServerFields(g, 'video'), video_quality: 'high' }, lut: itemLut },
+            }
+            if (processing === 'browser' && format !== 'gif') {
+                plan.local = {
+                    run: async ({ file, onProgress }) => {
+                        const { processVideoInBrowser } = await import('@/lib/clientVideoProcessor')
+                        return processVideoInBrowser(file, format, { grade: g, lutFile: itemLut, crf: 20, onProgress })
+                    },
                 }
             }
-            setBusyMessage('Terminé ✓')
-        } catch (e) {
-            setErr(e instanceof Error ? e.message : 'Erreur inconnue')
-        } finally {
-            setBusy(false)
+            return { plan, format }
         }
-    }, [labItems, gradesMap, outputFormat, lutScope, globalLutFile, processingMode])
+        const format = lab.imageFormat
+        const plan: JobPlan = {
+            server: { action: 'convert', format, fields: { ...gradeToServerFields(g, 'image'), image_quality: '95' }, lut: itemLut },
+        }
+        // Same pixel pipeline as the preview: the export matches the screen.
+        if (processing !== 'server' && BROWSER_DECODABLE.has(extOf(it.name)) && BROWSER_ENCODABLE.has(format)) {
+            plan.local = {
+                run: async ({ file }) => {
+                    const parsed = itemLut ? parseCubeLut(await itemLut.text()) : null
+                    return processImageInBrowser(file, format, {
+                        quality: 95, filter: gradeToFilter(g), sharpness: g.sharpness, lut: parsed,
+                    })
+                },
+            }
+        }
+        return { plan, format }
+    }, [lab, processing])
 
-    const reset = () => {
-        onClearAll()
-        setGradesMap({})
-        setActiveIndex(0)
-        setGlobalLutFile(null); setParsedGlobalLut(null)
-        setBatch({}); setErr(null); setBusyMessage('')
-        setOriginalFps({})
+    const exportItems = (list: QueueItem[]) => {
+        const entries = list.map((it) => {
+            const { plan, format } = planFor(it)
+            queue.setFormat(it.id, format)
+            return { id: it.id, plan }
+        })
+        queue.run(entries)
     }
 
-    const outputs = kind === 'video' ? VIDEO_OUTPUTS : kind === 'image' ? IMAGE_OUTPUTS : []
-    const detectedOriginalFps = originalFps[activeIndex] || 60
+    const addFiles = (files: File[]) => {
+        const added = queue.add(files).filter((it) => it.kind === 'image' || it.kind === 'video')
+        if (added.length && !active) setActiveId(added[0].id)
+    }
+
+    if (!active) {
+        return (
+            <div className="mx-auto w-full max-w-3xl px-4 py-10 sm:py-16">
+                <EmptyDrop
+                    title="Étalonne tes vidéos et photos"
+                    subtitle="Applique un LUT .cube (Resolve, Premiere, Lightroom…), règle la lumière et les couleurs avec un aperçu en direct, puis exporte tout en une fois."
+                    onFiles={addFiles}
+                    accept="image/*,video/*,.heic,.heif,.dng,.cr2,.nef,.arw,.mkv,.mov"
+                />
+            </div>
+        )
+    }
+
+    const exportable = labItems.filter((it) => !isActive(it.status))
+    const doneItems = labItems.filter((it) => it.status === 'done')
 
     return (
-        <div className="mx-auto w-full max-w-[1500px] px-4 lg:px-6 py-4 pb-12">
-            {/* ─── Header ─── */}
-            <div className="mb-4 flex items-center justify-between gap-4 flex-wrap">
-                <div>
-                    <h1 className="inline-flex items-center gap-2 text-xl font-semibold tracking-tight sm:text-2xl">
-                        <IconWand size={20} className="text-primary" />
-                        Color Lab
-                    </h1>
-                    <p className="mt-0.5 text-xs text-muted-foreground">
-                        Étalonnage multi-fichiers, LUT live, montage léger.
-                    </p>
+        <div className="mx-auto grid w-full max-w-[1600px] gap-4 px-4 py-4 pb-10 lg:grid-cols-[minmax(0,1fr)_380px] lg:px-6">
+            {/* ── Stage ── */}
+            <div className="min-w-0 space-y-3">
+                <div className="checker relative overflow-hidden rounded-2xl border border-border shadow-sm">
+                    <div className="relative flex aspect-video max-h-[72vh] w-full items-center justify-center bg-stage/90">
+                        {isVideo ? (
+                            <VideoPreview key={active.id} file={active.file!} lut={lut} filter={filter} comparing={comparing} videoRef={videoRef} />
+                        ) : (
+                            <ImagePreview key={active.id} file={active.file!} lut={lut} filter={filter} sharpness={grade.sharpness} comparing={comparing} />
+                        )}
+
+                        <div className="absolute top-3 left-3 flex max-w-[70%] items-center gap-2">
+                            <span className="truncate rounded-md bg-black/60 px-2 py-1 text-xs font-medium text-white backdrop-blur" title={active.name}>
+                                {active.name}
+                            </span>
+                            {lutFile && (
+                                <span className={cn('shrink-0 rounded-md px-2 py-1 text-[11px] font-semibold backdrop-blur', lutError ? 'bg-red-500/80 text-white' : 'bg-emerald-500/85 text-white')}>
+                                    {lutError ? 'LUT invalide' : 'LUT'}
+                                </span>
+                            )}
+                        </div>
+
+                        <button
+                            type="button"
+                            onPointerDown={() => setComparing(true)}
+                            onPointerUp={() => setComparing(false)}
+                            onPointerLeave={() => setComparing(false)}
+                            onPointerCancel={() => setComparing(false)}
+                            onContextMenu={(e) => e.preventDefault()}
+                            className={cn(
+                                'absolute top-3 right-3 inline-flex select-none items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold backdrop-blur transition-colors',
+                                comparing ? 'bg-white text-black' : 'bg-black/60 text-white hover:bg-black/75',
+                            )}
+                            title="Maintenir pour voir l'original"
+                        >
+                            <IconCompare size={14} />
+                            {comparing ? 'Original' : 'Avant / après'}
+                        </button>
+                    </div>
                 </div>
-                <div className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card/60 px-2.5 py-0.5 text-[10px]">
-                    <span className={`h-1.5 w-1.5 rounded-full ${processingMode === 'frontend' ? 'bg-emerald-500' : 'bg-amber-500'}`} />
-                    <span className="text-muted-foreground">Mode :</span>
-                    <span className="font-semibold text-foreground">
-                        {processingMode === 'frontend' ? 'Frontend (navigateur)' : 'Backend (serveur)'}
+
+                {/* Filmstrip */}
+                <div className="flex items-center gap-2">
+                    <Button variant="secondary" size="icon" onClick={() => go(-1)} disabled={activeIndex <= 0} aria-label="Fichier précédent">
+                        <IconChevronLeft size={16} />
+                    </Button>
+                    <div className="scroll-thin flex min-w-0 flex-1 gap-2 overflow-x-auto py-1">
+                        {labItems.map((it) => (
+                            <FilmThumb
+                                key={it.id}
+                                item={it}
+                                active={it.id === active.id}
+                                graded={!isNeutral(lab.grades[it.id] || DEFAULT_GRADE)}
+                                onSelect={() => setActiveId(it.id)}
+                                onRemove={() => queue.remove(it.id)}
+                            />
+                        ))}
+                    </div>
+                    <Button variant="secondary" size="icon" onClick={() => go(1)} disabled={activeIndex >= labItems.length - 1} aria-label="Fichier suivant">
+                        <IconChevronRight size={16} />
+                    </Button>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                    <span>Fichier {activeIndex + 1} / {labItems.length} · ← → pour naviguer</span>
+                    <span className="ml-auto flex gap-1">
+                        <FilePickers onFiles={addFiles} accept="image/*,video/*,.heic,.heif,.dng,.cr2,.nef,.arw" folder={false} compact />
                     </span>
                 </div>
             </div>
 
-            {/* ─── Empty drop zone ─── */}
-            {files.length === 0 && (
-                <div
-                    onDrop={onDrop} onDragOver={onDragOver}
-                    onClick={() => fileInputRef.current?.click()}
-                    className="mx-auto flex max-w-3xl cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed border-border bg-card/40 px-6 py-16 text-center transition-colors hover:border-primary/40 hover:bg-card"
-                >
-                    <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-                        <IconImage size={26} />
+            {/* ── Controls ── */}
+            <aside className="min-w-0 lg:sticky lg:top-[72px] lg:self-start">
+                <div className="flex flex-col lg:max-h-[calc(100vh-104px)] overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
+                    <div className="flex items-center gap-1 border-b border-border px-4 py-2.5">
+                        <h2 className="mr-auto text-sm font-semibold">Étalonnage</h2>
+                        {labItems.length > 1 && (
+                            <Button variant="ghost" size="sm" onClick={copyLookToAll} title="Appliquer ces réglages à tous les fichiers">
+                                <IconCopy size={14} /> Sur tous
+                            </Button>
+                        )}
+                        <Button variant="ghost" size="sm" onClick={() => updateGrade({ ...lookOf(DEFAULT_GRADE) })} disabled={isNeutral(grade)}>
+                            <IconRefresh size={14} /> Reset
+                        </Button>
                     </div>
-                    <p className="mt-4 text-sm font-medium text-foreground">Déposez une ou plusieurs images / vidéos</p>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                        Étalonnage par fichier, LUT live, export en lot.
-                    </p>
-                    <input
-                        ref={fileInputRef} type="file" multiple accept="image/*,video/*"
-                        className="hidden"
-                        onChange={(e) => handlePick(e.target.files)}
-                    />
-                </div>
-            )}
 
-            {file && previewUrl && (
-                <div className="grid gap-4 lg:grid-cols-[400px_minmax(0,1fr)] items-start">
-                    {/* ───── LEFT: Controls panel (sticky) ───── */}
-                    <aside className="space-y-3 lg:sticky lg:top-[68px] lg:max-h-[calc(100vh-84px)] overflow-y-auto pr-1">
-                        <div className="rounded-2xl border border-border bg-card p-4 shadow-sm space-y-3">
-                            <div className="flex items-center justify-between">
-                                <h2 className="text-sm font-semibold">Réglages</h2>
-                                <button
-                                    type="button"
-                                    onClick={() => updateGrade(DEFAULT_GRADE)}
-                                    className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
-                                >
-                                    <IconRefresh size={11} /> Reset
-                                </button>
-                            </div>
-
-                            <CollapsibleSection title="Lumière" defaultOpen>
-                                <Slider label="Exposition" value={grade.exposure} min={-2} max={2} step={0.1} onChange={(v) => updateGrade({ exposure: v })} suffix=" EV" />
-                                <Slider label="Contraste" value={grade.contrast} min={-100} max={100} step={1} onChange={(v) => updateGrade({ contrast: v })} />
-                                <Slider label="Hautes lumières" value={grade.highlights} min={-100} max={100} step={1} onChange={(v) => updateGrade({ highlights: v })} />
-                                <Slider label="Ombres" value={grade.shadows} min={-100} max={100} step={1} onChange={(v) => updateGrade({ shadows: v })} />
-                                <Slider label="Blancs" value={grade.whites} min={-100} max={100} step={1} onChange={(v) => updateGrade({ whites: v })} />
-                                <Slider label="Noirs" value={grade.blacks} min={-100} max={100} step={1} onChange={(v) => updateGrade({ blacks: v })} />
-                            </CollapsibleSection>
-
-                            <CollapsibleSection title="Couleur" defaultOpen>
-                                <Slider label="Saturation" value={grade.saturation} min={-100} max={100} step={1} onChange={(v) => updateGrade({ saturation: v })} />
-                                <Slider label="Température" value={grade.temperature} min={-100} max={100} step={1} onChange={(v) => updateGrade({ temperature: v })} />
-                                <Slider label="Teinte" value={grade.tint} min={-100} max={100} step={1} onChange={(v) => updateGrade({ tint: v })} />
-                                <Slider label="Hue (°)" value={grade.hue} min={-180} max={180} step={1} onChange={(v) => updateGrade({ hue: v })} suffix="°" disabled={!isVideo} />
-                            </CollapsibleSection>
-
-                            {isVideo && (
-                                <CollapsibleSection title="Color Wheels (DaVinci)" defaultOpen={false}>
-                                    <ColorSwatch label="Lift (ombres)" color={grade.liftColor} amount={grade.liftAmount}
-                                        onColorChange={(c) => updateGrade({ liftColor: c })}
-                                        onAmountChange={(a) => updateGrade({ liftAmount: a })}
-                                        onReset={() => updateGrade({ liftColor: NEUTRAL, liftAmount: 1 })} />
-                                    <ColorSwatch label="Gamma (mids)" color={grade.gammaColor} amount={grade.gammaAmount}
-                                        onColorChange={(c) => updateGrade({ gammaColor: c })}
-                                        onAmountChange={(a) => updateGrade({ gammaAmount: a })}
-                                        onReset={() => updateGrade({ gammaColor: NEUTRAL, gammaAmount: 1 })} />
-                                    <ColorSwatch label="Gain (highlights)" color={grade.gainColor} amount={grade.gainAmount}
-                                        onColorChange={(c) => updateGrade({ gainColor: c })}
-                                        onAmountChange={(a) => updateGrade({ gainAmount: a })}
-                                        onReset={() => updateGrade({ gainColor: NEUTRAL, gainAmount: 1 })} />
-                                </CollapsibleSection>
-                            )}
-
-                            <CollapsibleSection title="Détail" defaultOpen={false}>
-                                <Slider label="Netteté" value={grade.sharpness} min={-100} max={100} step={1} onChange={(v) => updateGrade({ sharpness: v })} />
-                            </CollapsibleSection>
-
-                            {isVideo && (
-                                <CollapsibleSection title="Effets" defaultOpen={false}>
-                                    <Slider label="Vignette" value={grade.vignette} min={0} max={100} step={1} onChange={(v) => updateGrade({ vignette: v })} suffix=" %" />
-                                    <Slider label="Glow" value={grade.glow} min={0} max={100} step={1} onChange={(v) => updateGrade({ glow: v })} suffix=" %" />
-                                    <Slider label="Grain film" value={grade.grain} min={0} max={100} step={1} onChange={(v) => updateGrade({ grain: v })} suffix=" %" />
-                                    <Slider label="Aberration chromatique" value={grade.chromatic} min={0} max={20} step={1} onChange={(v) => updateGrade({ chromatic: v })} suffix=" px" />
-                                </CollapsibleSection>
-                            )}
-
-                            {isVideo && (
-                                <CollapsibleSection title="Compression" defaultOpen={false}>
-                                    <div className="space-y-1.5">
-                                        <div className="flex items-center justify-between">
-                                            <span className="text-xs font-medium">FPS de sortie</span>
-                                            <span className="text-[11px] font-mono text-muted-foreground tabular-nums">
-                                                {grade.targetFps ? `${grade.targetFps} fps` : `original (${detectedOriginalFps} fps)`}
-                                            </span>
-                                        </div>
-                                        <input
-                                            type="range" min={1} max={detectedOriginalFps} step={1}
-                                            value={grade.targetFps ?? detectedOriginalFps}
-                                            onChange={(e) => {
-                                                const v = parseInt(e.target.value, 10)
-                                                updateGrade({ targetFps: v >= detectedOriginalFps ? null : v })
-                                            }}
-                                            className="h-1.5 w-full accent-primary"
-                                        />
+                    <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">
+                        <div className="space-y-3 border-b border-border p-4">
+                            <input
+                                ref={lutInput}
+                                type="file"
+                                accept=".cube"
+                                className="hidden"
+                                onChange={(e) => {
+                                    const f = e.target.files?.[0]
+                                    e.target.value = ''
+                                    if (f) setLutFile(f)
+                                }}
+                            />
+                            {lutFile ? (
+                                <div className={cn('flex items-center gap-2 rounded-xl border px-3 py-2', lutError ? 'border-destructive/40 bg-destructive/5' : 'border-border bg-muted/50')}>
+                                    <IconWand size={16} className={lutError ? 'text-destructive' : 'text-primary'} />
+                                    <div className="min-w-0 flex-1">
+                                        <p className="truncate text-sm font-medium" title={lutFile.name}>{lutFile.name}</p>
+                                        <p className={cn('text-xs', lutError ? 'text-destructive' : 'text-muted-foreground')}>
+                                            {lutError ?? (lut ? `LUT 3D ${lut.size}³ · appliqué en premier` : 'Lecture…')}
+                                        </p>
                                     </div>
-                                </CollapsibleSection>
-                            )}
-
-                            <CollapsibleSection title="Color Remover" defaultOpen={false}>
-                                <div className="flex items-center justify-between">
-                                    <span className="text-xs">Activer</span>
-                                    <label className="relative inline-flex h-5 w-9 cursor-pointer items-center">
-                                        <input type="checkbox" checked={grade.removeEnabled}
-                                            onChange={(e) => updateGrade({ removeEnabled: e.target.checked })}
-                                            className="peer sr-only" />
-                                        <span className="absolute inset-0 rounded-full bg-muted peer-checked:bg-primary transition-colors" />
-                                        <span className="absolute left-0.5 h-4 w-4 rounded-full bg-background shadow transition-transform peer-checked:translate-x-4" />
-                                    </label>
-                                </div>
-                                {grade.removeEnabled && (
-                                    <>
-                                        <div className="flex items-center gap-2">
-                                            <input type="color" value={grade.removeColor}
-                                                onChange={(e) => updateGrade({ removeColor: e.target.value })}
-                                                className="h-8 w-10 shrink-0 rounded border border-border bg-background cursor-pointer" />
-                                            <input type="text" value={grade.removeColor}
-                                                onChange={(e) => updateGrade({ removeColor: e.target.value })}
-                                                placeholder="#ffffff"
-                                                className="h-8 flex-1 rounded-md border border-input bg-background px-2 text-xs" />
-                                        </div>
-                                        <Slider label="Tolérance" value={grade.removeTolerance} min={0} max={100} step={1} onChange={(v) => updateGrade({ removeTolerance: v })} suffix=" %" />
-                                    </>
-                                )}
-                            </CollapsibleSection>
-
-                            <CollapsibleSection title="LUT (.cube) scope" defaultOpen={false}>
-                                <div className="flex items-center gap-1 rounded-md border border-border bg-background/60 p-0.5">
-                                    <button type="button"
-                                        onClick={() => setLutScope('global')}
-                                        className={cn(
-                                            'flex-1 rounded px-2 py-1 text-[10px] font-semibold transition-colors',
-                                            lutScope === 'global' ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:text-foreground',
-                                        )}
-                                    >
-                                        Global
-                                    </button>
-                                    <button type="button"
-                                        onClick={() => setLutScope('per-file')}
-                                        className={cn(
-                                            'flex-1 rounded px-2 py-1 text-[10px] font-semibold transition-colors',
-                                            lutScope === 'per-file' ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:text-foreground',
-                                        )}
-                                    >
-                                        Par fichier
-                                    </button>
-                                </div>
-                                <p className="text-[10px] italic text-muted-foreground">
-                                    Le LUT se charge via le bouton en haut à gauche de la vidéo.
-                                </p>
-                            </CollapsibleSection>
-
-                            {isVideo && (
-                                <CollapsibleSection title="Avancé : montage" defaultOpen={false}>
-                                    <div className="space-y-2">
-                                        <p className="text-[11px] font-semibold text-muted-foreground">Trim</p>
-                                        <div className="grid grid-cols-2 gap-2">
-                                            <div>
-                                                <label className="text-[10px] text-muted-foreground">Début</label>
-                                                <input type="text"
-                                                    value={grade.trimStart}
-                                                    onChange={(e) => updateGrade({ trimStart: e.target.value })}
-                                                    placeholder="00:00:05"
-                                                    className="mt-0.5 h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
-                                                />
-                                            </div>
-                                            <div>
-                                                <label className="text-[10px] text-muted-foreground">Fin</label>
-                                                <input type="text"
-                                                    value={grade.trimEnd}
-                                                    onChange={(e) => updateGrade({ trimEnd: e.target.value })}
-                                                    placeholder="00:01:30"
-                                                    className="mt-0.5 h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
-                                                />
-                                            </div>
-                                        </div>
-                                    </div>
-                                    <div className="space-y-2 pt-2 border-t border-border">
-                                        <p className="text-[11px] font-semibold text-muted-foreground">Texte incrusté</p>
-                                        <input type="text"
-                                            value={grade.overlayText}
-                                            onChange={(e) => updateGrade({ overlayText: e.target.value })}
-                                            placeholder="Texte à afficher…"
-                                            className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
-                                        />
-                                        {grade.overlayText && (
-                                            <div className="grid grid-cols-2 gap-2">
-                                                <input type="text"
-                                                    value={grade.overlayTextX}
-                                                    onChange={(e) => updateGrade({ overlayTextX: e.target.value })}
-                                                    placeholder="X"
-                                                    className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
-                                                />
-                                                <input type="text"
-                                                    value={grade.overlayTextY}
-                                                    onChange={(e) => updateGrade({ overlayTextY: e.target.value })}
-                                                    placeholder="Y"
-                                                    className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
-                                                />
-                                            </div>
-                                        )}
-                                    </div>
-                                </CollapsibleSection>
-                            )}
-                        </div>
-                    </aside>
-
-                    {/* ───── RIGHT: Preview + controls + queue ───── */}
-                    <div className="space-y-3 min-w-0">
-                        {/* Preview — big */}
-                        <div
-                            className="relative overflow-hidden rounded-2xl border border-border bg-black/60 shadow-sm w-full"
-                            style={{ aspectRatio: isVideo ? '16 / 9' : undefined, maxHeight: isVideo ? undefined : '78vh' }}
-                        >
-                            {kind === 'image' ? (
-                                <div className="absolute inset-0 flex items-center justify-center">
-                                    <img
-                                        src={previewUrl} alt="Aperçu"
-                                        className="max-h-[78vh] max-w-full object-contain"
-                                        style={{ filter: comparing ? 'none' : cssFilter }}
-                                    />
+                                    <Button variant="ghost" size="sm" onClick={() => lutInput.current?.click()}>Changer</Button>
+                                    <Button variant="danger" size="icon" onClick={() => setLutFile(null)} aria-label="Retirer le LUT"><IconX size={14} /></Button>
                                 </div>
                             ) : (
-                                <div className="absolute inset-0">
-                                    <video
-                                        ref={videoRef}
-                                        src={previewUrl}
-                                        controls loop playsInline muted
-                                        onError={() => {
-                                            setVideoReady(false)
-                                            setVideoError("Format vidéo non décodable par le navigateur. Le rendu en backend fonctionnera quand même.")
-                                        }}
-                                        onLoadedData={(e) => {
-                                            const v = e.currentTarget
-                                            if (v.videoWidth > 0) setVideoReady(true)
-                                        }}
-                                        className={cn(
-                                            "absolute inset-0 h-full w-full object-contain transition-opacity",
-                                            useGLPreview ? "opacity-0 pointer-events-none" : "opacity-100",
-                                        )}
-                                        style={!useGLPreview ? { filter: comparing ? 'none' : cssFilter } : undefined}
-                                    />
-                                    {useGLPreview && (
-                                        <>
-                                            <canvas
-                                                ref={glCanvasRef}
-                                                className="absolute inset-0 h-full w-full object-contain"
-                                            />
-                                            <VideoControls videoRef={videoRef} />
-                                        </>
-                                    )}
-                                    {videoError && (
-                                        <div className="absolute inset-0 flex items-center justify-center p-6 pointer-events-none">
-                                            <div className="max-w-md rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-center text-xs text-amber-300">
-                                                {videoError}
-                                            </div>
-                                        </div>
-                                    )}
-                                    {activeLutForRender && (
-                                        <div className="absolute top-2 right-2 rounded-md bg-emerald-500/15 px-2 py-1 text-[10px] font-semibold text-emerald-400 pointer-events-none">
-                                            LUT {useGLPreview ? 'live ✓' : 'actif'}
-                                        </div>
-                                    )}
-                                </div>
+                                <Button variant="secondary" className="w-full border-dashed" onClick={() => lutInput.current?.click()}>
+                                    <IconWand size={15} /> Charger un LUT (.cube)
+                                </Button>
                             )}
+                            <Segmented
+                                size="sm"
+                                className="w-full"
+                                value={lab.lutScope}
+                                onChange={(v) => setLab((prev) => ({ ...prev, lutScope: v }))}
+                                options={[
+                                    { value: 'global', label: 'LUT pour tous les fichiers' },
+                                    { value: 'per-file', label: 'Un LUT par fichier' },
+                                ]}
+                            />
+                        </div>
 
-                            {/* Before / After compare button — hold to see the raw frame.
-                                Bottom-right corner so it doesn't sit on the scrubber. */}
-                            <button
-                                type="button"
-                                onMouseDown={() => setComparing(true)}
-                                onMouseUp={() => setComparing(false)}
-                                onMouseLeave={() => setComparing(false)}
-                                onTouchStart={(e) => { e.preventDefault(); setComparing(true) }}
-                                onTouchEnd={() => setComparing(false)}
-                                className={cn(
-                                    "absolute bottom-12 right-2 z-20 inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] font-semibold backdrop-blur-sm select-none transition-colors",
-                                    comparing
-                                        ? "bg-white text-black"
-                                        : "bg-black/70 text-white hover:bg-black/85",
-                                )}
-                                aria-label="Maintenir pour comparer avant / après"
-                                title="Maintenir pour voir l'original sans grade"
-                            >
-                                {comparing ? '◉ Original' : '◐ Avant / Après'}
-                            </button>
-                            {comparing && kind === 'image' && (
-                                <div className="absolute top-2 right-2 rounded-md bg-white text-black px-2 py-0.5 text-[10px] font-bold pointer-events-none">
-                                    AVANT
-                                </div>
+                        <Section title="Lumière">
+                            <Slider label="Exposition" value={grade.exposure} min={-2} max={2} step={0.05} onChange={(v) => updateGrade({ exposure: v })} format={(v) => `${v > 0 ? '+' : ''}${v.toFixed(2)} EV`} />
+                            <Slider label="Contraste" value={grade.contrast} min={-100} max={100} onChange={(v) => updateGrade({ contrast: v })} />
+                            <Slider label="Hautes lumières" value={grade.highlights} min={-100} max={100} onChange={(v) => updateGrade({ highlights: v })} />
+                            <Slider label="Ombres" value={grade.shadows} min={-100} max={100} onChange={(v) => updateGrade({ shadows: v })} />
+                            <Slider label="Blancs" value={grade.whites} min={-100} max={100} onChange={(v) => updateGrade({ whites: v })} />
+                            <Slider label="Noirs" value={grade.blacks} min={-100} max={100} onChange={(v) => updateGrade({ blacks: v })} />
+                        </Section>
+
+                        <Section title="Couleur">
+                            <Slider label="Température" value={grade.temperature} min={-100} max={100} onChange={(v) => updateGrade({ temperature: v })} />
+                            <Slider label="Teinte" value={grade.tint} min={-100} max={100} onChange={(v) => updateGrade({ tint: v })} />
+                            <Slider label="Saturation" value={grade.saturation} min={-100} max={100} onChange={(v) => updateGrade({ saturation: v })} />
+                            <Slider label="Rotation de teinte" value={grade.hue} min={-180} max={180} onChange={(v) => updateGrade({ hue: v })} format={(v) => `${v}°`}
+                                disabled={!isVideo && processing === 'server'} />
+                        </Section>
+
+                        <Section title="Roues chromatiques" defaultOpen={false}>
+                            <Wheel label="Lift · ombres" color={grade.liftColor} amount={grade.liftAmount}
+                                onChange={(c, a) => updateGrade({ liftColor: c, liftAmount: a })} />
+                            <Wheel label="Gamma · tons moyens" color={grade.gammaColor} amount={grade.gammaAmount}
+                                onChange={(c, a) => updateGrade({ gammaColor: c, gammaAmount: a })} />
+                            <Wheel label="Gain · hautes lumières" color={grade.gainColor} amount={grade.gainAmount}
+                                onChange={(c, a) => updateGrade({ gainColor: c, gainAmount: a })} />
+                        </Section>
+
+                        <Section title="Détail et effets" defaultOpen={false}>
+                            <Slider label="Netteté" value={grade.sharpness} min={-100} max={100} onChange={(v) => updateGrade({ sharpness: v })} />
+                            <Slider label="Vignette" value={grade.vignette} min={0} max={100} onChange={(v) => updateGrade({ vignette: v })} />
+                            <Slider label="Grain" value={grade.grain} min={0} max={100} onChange={(v) => updateGrade({ grain: v })} />
+                            <Slider label="Glow" value={grade.glow} min={0} max={100} onChange={(v) => updateGrade({ glow: v })} />
+                            <Slider label="Aberration chromatique" value={grade.chromatic} min={0} max={20} onChange={(v) => updateGrade({ chromatic: v })} format={(v) => `${v} px`} />
+                        </Section>
+
+                        <Section title="Détourage (fond vert)" defaultOpen={grade.removeEnabled}>
+                            <Toggle checked={grade.removeEnabled} onChange={(v) => updateGrade({ removeEnabled: v })} label="Rendre une couleur transparente"
+                                description={isVideo ? 'Transparence conservée en WebM et MOV.' : 'Transparence conservée en PNG, WebP, AVIF.'} />
+                            {grade.removeEnabled && (
+                                <>
+                                    <div className="flex items-center gap-2">
+                                        <input type="color" value={grade.removeColor} onChange={(e) => updateGrade({ removeColor: e.target.value })}
+                                            className="h-9 w-12 shrink-0 cursor-pointer rounded-lg border border-input bg-card p-1" aria-label="Couleur à retirer" />
+                                        <TextInput value={grade.removeColor} onChange={(v) => updateGrade({ removeColor: v })} ariaLabel="Couleur à retirer (hex)" />
+                                    </div>
+                                    <Slider label="Tolérance" value={grade.removeTolerance} min={1} max={100} neutral={20} onChange={(v) => updateGrade({ removeTolerance: v })} format={(v) => `${v} %`} />
+                                </>
                             )}
+                        </Section>
 
-                            {/* LUT picker overlay — top-left */}
+                        <Section title="Export">
+                            <div className="grid grid-cols-2 gap-2">
+                                <Field label="Vidéos en">
+                                    <Select value={lab.videoFormat} options={VIDEO_OUT} onChange={(v) => setLab((p) => ({ ...p, videoFormat: v }))} className="w-full" ariaLabel="Format des vidéos" />
+                                </Field>
+                                <Field label="Images en">
+                                    <Select value={lab.imageFormat} options={IMAGE_OUT} onChange={(v) => setLab((p) => ({ ...p, imageFormat: v }))} className="w-full" ariaLabel="Format des images" />
+                                </Field>
+                            </div>
                             {isVideo && (
-                                <div className="absolute top-2 left-2 z-10 flex items-center gap-1">
-                                    {activeLutForRender ? (
-                                        <div className="flex items-center gap-1 rounded-md bg-black/70 px-2 py-1 backdrop-blur-sm">
-                                            <span className="text-[10px] font-medium text-white max-w-[140px] truncate">{activeLutForRender.name}</span>
-                                            <button
-                                                type="button"
-                                                onClick={() => {
-                                                    if (lutScope === 'global') setGlobalLutFile(null)
-                                                    else updateGrade({ lutFile: null })
-                                                }}
-                                                className="text-white/70 hover:text-destructive"
-                                                aria-label="Retirer le LUT"
-                                            >
-                                                <IconX size={11} />
-                                            </button>
-                                        </div>
-                                    ) : (
-                                        <label className="inline-flex cursor-pointer items-center gap-1 rounded-md bg-black/70 px-2 py-1 text-[10px] font-semibold text-white backdrop-blur-sm hover:bg-black/85">
-                                            <IconWand size={11} />
-                                            Charger LUT (.cube)
-                                            <input
-                                                type="file" accept=".cube" className="hidden"
-                                                onChange={(e) => {
-                                                    const f = e.target.files?.[0]
-                                                    if (f) {
-                                                        if (lutScope === 'global') setGlobalLutFile(f)
-                                                        else updateGrade({ lutFile: f })
-                                                    }
-                                                    e.target.value = ''
-                                                }}
-                                            />
-                                        </label>
-                                    )}
-                                </div>
+                                <>
+                                    <Field label="Images / s">
+                                        <Select
+                                            value={grade.targetFps ? String(grade.targetFps) : ''}
+                                            onChange={(v) => updateGrade({ targetFps: v ? parseInt(v, 10) : null })}
+                                            className="w-full"
+                                            ariaLabel="Images par seconde"
+                                            options={[{ value: '', label: 'Original' }, ...['60', '50', '30', '25', '24', '15', '12'].map((v) => ({ value: v, label: v }))]}
+                                        />
+                                    </Field>
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <Field label="Début" hint={<TimeGrab videoRef={videoRef} onGrab={(t) => updateGrade({ trimStart: t })} />}>
+                                            <TextInput value={grade.trimStart} onChange={(v) => updateGrade({ trimStart: v })} placeholder="0:00" ariaLabel="Début" />
+                                        </Field>
+                                        <Field label="Fin" hint={<TimeGrab videoRef={videoRef} onGrab={(t) => updateGrade({ trimEnd: t })} />}>
+                                            <TextInput value={grade.trimEnd} onChange={(v) => updateGrade({ trimEnd: v })} placeholder="fin" ariaLabel="Fin" />
+                                        </Field>
+                                    </div>
+                                    <Field label="Texte incrusté (bas de l'image)">
+                                        <TextInput value={grade.overlayText} onChange={(v) => updateGrade({ overlayText: v })} placeholder="Optionnel" ariaLabel="Texte incrusté" />
+                                    </Field>
+                                </>
+                            )}
+                        </Section>
+                    </div>
+
+                    <div className="space-y-2 border-t border-border p-4">
+                        <ActiveStatus item={active} onDownload={queue.download} />
+                        <div className="flex gap-2">
+                            <Button variant="primary" size="lg" className="flex-1" disabled={isActive(active.status)} onClick={() => exportItems([active])}>
+                                <IconWand size={15} /> Exporter
+                            </Button>
+                            {labItems.length > 1 && (
+                                <Button variant="secondary" size="lg" disabled={exportable.length === 0} onClick={() => exportItems(exportable)}>
+                                    Tout ({exportable.length})
+                                </Button>
                             )}
                         </div>
-
-                        {/* Carousel + Lancer */}
-                        <div className="flex items-center justify-center gap-3 flex-wrap">
-                            <button
-                                type="button"
-                                onClick={() => setActiveIndex((i) => Math.max(0, i - 1))}
-                                disabled={activeIndex === 0}
-                                className="inline-flex h-11 w-11 items-center justify-center rounded-xl border border-border bg-card text-foreground transition-colors hover:bg-muted disabled:opacity-30"
-                                aria-label="Fichier précédent"
-                            >
-                                ←
-                            </button>
-
-                            <Button
-                                type="button"
-                                onClick={apply}
-                                disabled={busy || !outputFormat || labItems.length === 0}
-                                className="h-11 text-sm font-semibold gap-2 rounded-xl px-6 min-w-[240px]"
-                            >
-                                {busy ? (
-                                    <>
-                                        <span className="h-4 w-4 animate-spin rounded-full border-2 border-primary-foreground/40 border-t-primary-foreground" />
-                                        {busyMessage || 'Traitement…'}
-                                    </>
-                                ) : (
-                                    <>
-                                        <IconWand size={15} />
-                                        {labItems.length > 1 ? `Lancer le traitement (${labItems.length})` : 'Lancer le traitement'}
-                                    </>
-                                )}
+                        {doneItems.length > 1 && (
+                            <Button variant="success" className="w-full" onClick={() => void queue.downloadMany(doneItems)}>
+                                <IconDownload size={15} /> Télécharger les {doneItems.length} exports
                             </Button>
-
-                            <button
-                                type="button"
-                                onClick={() => setActiveIndex((i) => Math.min(labItems.length - 1, i + 1))}
-                                disabled={activeIndex >= labItems.length - 1}
-                                className="inline-flex h-11 w-11 items-center justify-center rounded-xl border border-border bg-card text-foreground transition-colors hover:bg-muted disabled:opacity-30"
-                                aria-label="Fichier suivant"
-                            >
-                                →
-                            </button>
-                        </div>
-
-                        <div className="flex items-center justify-between text-[11px] text-muted-foreground px-1">
-                            <span>
-                                Fichier <span className="font-semibold text-foreground">{activeIndex + 1}</span> / {labItems.length}
-                            </span>
-                            <button type="button" onClick={reset} className="hover:text-destructive">
-                                <IconX size={11} className="inline-block mr-1" />Tout effacer
-                            </button>
-                        </div>
-
-                        {/* Format de sortie */}
-                        <div className="rounded-xl border border-border bg-card p-3">
-                            <div className="flex items-center gap-3 flex-wrap">
-                                <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Format de sortie</span>
-                                <div className="flex flex-wrap gap-1.5">
-                                    {outputs.map((fmt) => (
-                                        <button
-                                            key={fmt} type="button"
-                                            onClick={() => setOutputFormat(fmt)}
-                                            className={cn(
-                                                'rounded-md border px-2.5 py-1 text-xs font-mono font-semibold transition-colors',
-                                                outputFormat === fmt
-                                                    ? 'border-primary bg-primary text-primary-foreground'
-                                                    : 'border-border bg-background text-muted-foreground hover:border-muted-foreground hover:text-foreground',
-                                            )}
-                                        >
-                                            {fmt.toUpperCase()}
-                                        </button>
-                                    ))}
-                                </div>
-                            </div>
-                        </div>
-
-                        {err && (
-                            <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                                {err}
-                            </div>
                         )}
-
-                        {/* File queue — horizontal carousel below the preview */}
-                        <div className="rounded-xl border border-border bg-card p-3">
-                            <div className="mb-2 flex items-center justify-between">
-                                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                                    File d'attente ({labItems.length})
-                                </h3>
-                                <button
-                                    type="button"
-                                    onClick={() => fileInputRef.current?.click()}
-                                    className="text-[11px] font-medium text-primary hover:underline"
-                                >
-                                    + Ajouter
-                                </button>
-                            </div>
-                            <div className="flex gap-2 overflow-x-auto pb-1">
-                                {labItems.map((labItem, i) => {
-                                    const f = labItem.file
-                                    const isCurrent = i === activeIndex
-                                    const itemBatch = batch[labItem.id]
-                                    const itemKind = detectKind(f)
-                                    return (
-                                        <button
-                                            key={`${f.name}-${i}`}
-                                            type="button"
-                                            onClick={() => setActiveIndex(i)}
-                                            className={cn(
-                                                'shrink-0 w-32 rounded-lg border overflow-hidden text-left transition-all',
-                                                isCurrent
-                                                    ? 'border-primary shadow-md ring-2 ring-primary/20'
-                                                    : 'border-border hover:border-muted-foreground',
-                                            )}
-                                        >
-                                            <div className="flex h-16 w-full items-center justify-center bg-black/70 text-muted-foreground">
-                                                {itemKind === 'video' ? <IconVideo size={20} /> : <IconImage size={20} />}
-                                            </div>
-                                            <div className="px-2 py-1.5 bg-card">
-                                                <p className="truncate text-[11px] font-medium text-foreground">{f.name}</p>
-                                                <p className="text-[10px] text-muted-foreground">{formatSize(f.size)}</p>
-                                                {itemBatch?.state === 'done' && itemBatch.downloadUrl && (
-                                                    <a
-                                                        href={itemBatch.downloadUrl} download={itemBatch.filename}
-                                                        onClick={(e) => e.stopPropagation()}
-                                                        className="mt-1 inline-flex h-5 items-center gap-0.5 rounded bg-emerald-500/15 px-1 text-[10px] font-semibold text-emerald-600 hover:bg-emerald-500/25 dark:text-emerald-400"
-                                                    >
-                                                        <IconDownload size={10} /> DL
-                                                    </a>
-                                                )}
-                                                {itemBatch?.state === 'busy' && (
-                                                    <span className="mt-1 inline-block h-2.5 w-2.5 animate-spin rounded-full border-2 border-primary/30 border-t-primary" />
-                                                )}
-                                                {itemBatch?.state === 'error' && (
-                                                    <p className="mt-0.5 text-[9px] text-destructive truncate">{itemBatch.error}</p>
-                                                )}
-                                            </div>
-                                        </button>
-                                    )
-                                })}
-                            </div>
-                        </div>
                     </div>
                 </div>
-            )}
+            </aside>
         </div>
     )
 }
 
-// ─────────────────────────────────────────────────────────
-// Minimal controls underlay for the WebGL canvas: lets the user play/pause
-// and seek without showing the hidden <video> tag.
-// ─────────────────────────────────────────────────────────
-function VideoControls({ videoRef }: { videoRef: React.MutableRefObject<HTMLVideoElement | null> }) {
+function ActiveStatus({ item, onDownload }: { item: QueueItem; onDownload: (it: QueueItem) => void }) {
+    if (item.status === 'uploading' || item.status === 'processing' || item.status === 'queued') {
+        const label = item.status === 'uploading' ? 'Envoi' : item.status === 'queued' ? 'En attente' : 'Rendu'
+        return (
+            <div className="space-y-1.5">
+                <p className="text-xs text-primary">{label}{item.progress ? ` · ${item.progress} %` : '…'}</p>
+                <ProgressBar value={item.progress} indeterminate={item.status !== 'uploading' && item.progress === 0} />
+            </div>
+        )
+    }
+    if (item.status === 'done' && item.downloadUrl) {
+        return (
+            <Button variant="success" className="w-full" onClick={() => onDownload(item)}>
+                <IconDownload size={15} /> Télécharger {item.outputName ?? ''}{item.outputSize ? ` · ${formatSize(item.outputSize)}` : ''}
+            </Button>
+        )
+    }
+    if (item.status === 'error') {
+        return (
+            <p className="flex items-start gap-1.5 text-xs text-destructive"><IconAlert size={14} className="mt-px shrink-0" />{item.error}</p>
+        )
+    }
+    return null
+}
+
+function FilmThumb({
+    item, active, graded, onSelect, onRemove,
+}: {
+    item: QueueItem
+    active: boolean
+    graded: boolean
+    onSelect: () => void
+    onRemove: () => void
+}) {
+    const [failed, setFailed] = useState(false)
+    const url = item.kind === 'image' && item.file && !failed ? objectUrlFor(item.file) : null
+    return (
+        <div className={cn('group relative w-28 shrink-0 overflow-hidden rounded-xl border bg-card transition-all', active ? 'border-primary ring-2 ring-primary/25' : 'border-border hover:border-muted-foreground/50')}>
+            <button type="button" onClick={onSelect} className="block w-full text-left" aria-current={active}>
+                <div className="flex h-16 items-center justify-center bg-muted text-muted-foreground">
+                    {url ? <img src={url} alt="" loading="lazy" className="h-full w-full object-cover" onError={() => setFailed(true)} /> : <KindIcon kind={item.kind} size={20} />}
+                </div>
+                <div className="px-2 py-1.5">
+                    <p className="truncate text-[11px] font-medium">{item.name}</p>
+                    <p className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                        {item.status === 'done' ? <span className="text-success">Terminé</span>
+                            : item.status === 'error' ? <span className="text-destructive">Erreur</span>
+                                : isActive(item.status) ? <span className="text-primary">{item.progress} %</span>
+                                    : graded ? <span className="text-primary">Modifié</span> : formatSize(item.size)}
+                    </p>
+                </div>
+            </button>
+            {isActive(item.status) && <ProgressBar value={item.progress} className="absolute inset-x-0 bottom-0 h-0.5 rounded-none" />}
+            <button
+                type="button"
+                onClick={onRemove}
+                aria-label={`Retirer ${item.name}`}
+                className="absolute top-1 right-1 hidden h-6 w-6 items-center justify-center rounded-md bg-black/60 text-white group-hover:flex"
+            >
+                <IconX size={12} />
+            </button>
+        </div>
+    )
+}
+
+function Wheel({ label, color, amount, onChange }: { label: string; color: string; amount: number; onChange: (c: string, a: number) => void }) {
+    const neutral = color.toLowerCase() === NEUTRAL
+    return (
+        <div className="flex items-center gap-3">
+            <input type="color" value={color} onChange={(e) => onChange(e.target.value, amount)} aria-label={label}
+                className="h-10 w-10 shrink-0 cursor-pointer rounded-full border border-input bg-card p-0.5 [&::-webkit-color-swatch]:rounded-full [&::-webkit-color-swatch-wrapper]:p-0" />
+            <div className="min-w-0 flex-1">
+                <Slider label={label} value={amount} min={0} max={2} step={0.05} neutral={1} onChange={(a) => onChange(color, a)} disabled={neutral}
+                    format={(v) => `× ${v.toFixed(2)}`} />
+            </div>
+            <Button variant="ghost" size="icon" onClick={() => onChange(NEUTRAL, 1)} disabled={neutral} aria-label={`Réinitialiser ${label}`}>
+                <IconRefresh size={13} />
+            </Button>
+        </div>
+    )
+}
+
+function TimeGrab({ videoRef, onGrab }: { videoRef: RefObject<HTMLVideoElement | null>; onGrab: (t: string) => void }) {
+    return (
+        <button type="button" className="text-[11px] text-primary hover:underline" onClick={() => {
+            const v = videoRef.current
+            if (v) onGrab(v.currentTime.toFixed(2))
+        }}>
+            position actuelle
+        </button>
+    )
+}
+
+function PreviewMessage({ children }: { children: ReactNode }) {
+    return (
+        <div className="absolute inset-0 flex items-center justify-center p-6">
+            <p className="max-w-sm rounded-xl bg-black/70 px-4 py-3 text-center text-sm text-white/90 backdrop-blur">{children}</p>
+        </div>
+    )
+}
+
+function ImagePreview({
+    file, lut, filter, sharpness, comparing,
+}: {
+    file: File
+    lut: Lut3D | null
+    filter: ExtraFilter
+    sharpness: number
+    comparing: boolean
+}) {
+    const canvasRef = useRef<HTMLCanvasElement>(null)
+    const [image, setImage] = useState<Awaited<ReturnType<typeof decodeImage>> | null>(null)
+    const [failed, setFailed] = useState(false)
+
+    useEffect(() => {
+        let cancelled = false
+        let decoded: Awaited<ReturnType<typeof decodeImage>> | null = null
+        decodeImage(file).then(
+            (img) => {
+                if (cancelled) img.close()
+                else { decoded = img; setImage(img) }
+            },
+            () => { if (!cancelled) setFailed(true) },
+        )
+        return () => {
+            cancelled = true
+            decoded?.close()
+        }
+    }, [file])
+
+    useEffect(() => {
+        const canvas = canvasRef.current
+        if (!image || !canvas) return
+        const raf = requestAnimationFrame(() => {
+            try {
+                renderStill(image.source, image.width, image.height, canvas, comparing ? null : lut,
+                    comparing ? gradeToFilter(DEFAULT_GRADE) : filter, comparing ? 0 : sharpness, 1600)
+            } catch (e) {
+                console.warn('[preview]', e)
+            }
+        })
+        return () => cancelAnimationFrame(raf)
+    }, [image, lut, filter, sharpness, comparing])
+
+    if (failed) {
+        return <PreviewMessage>Aperçu impossible pour ce format dans le navigateur (HEIC, RAW…). L'export se fera sur le serveur avec tes réglages.</PreviewMessage>
+    }
+    return <canvas ref={canvasRef} className="h-full w-full object-contain" />
+}
+
+function VideoPreview({
+    file, lut, filter, comparing, videoRef,
+}: {
+    file: File
+    lut: Lut3D | null
+    filter: ExtraFilter
+    comparing: boolean
+    videoRef: RefObject<HTMLVideoElement | null>
+}) {
+    const canvasRef = useRef<HTMLCanvasElement>(null)
+    const rendererRef = useRef<Canvas2DLutRenderer | null>(null)
+    const [ready, setReady] = useState(false)
+    const [failed, setFailed] = useState(false)
+
+    useEffect(() => {
+        const video = videoRef.current
+        const canvas = canvasRef.current
+        if (!ready || !video || !canvas) return
+        const r = createCanvas2DLutRenderer(canvas, video)
+        rendererRef.current = r
+        r.start()
+        return () => {
+            r.stop()
+            rendererRef.current = null
+        }
+    }, [ready, videoRef])
+
+    useEffect(() => {
+        const r = rendererRef.current
+        if (!r) return
+        r.setLut(lut)
+        r.setExtraFilter(filter)
+        r.setBypass(comparing)
+    }, [lut, filter, comparing, ready])
+
+    return (
+        <>
+            <video
+                ref={videoRef}
+                src={objectUrlFor(file)}
+                muted
+                loop
+                playsInline
+                preload="auto"
+                className="hidden"
+                onLoadedData={(e) => { if (e.currentTarget.videoWidth > 0) setReady(true) }}
+                onError={() => setFailed(true)}
+            />
+            <canvas ref={canvasRef} className={cn('h-full w-full object-contain', !ready && 'hidden')} />
+            {failed && (
+                <PreviewMessage>Le navigateur ne sait pas lire cette vidéo (ProRes, Apple Log, HEVC…). L'export sur le serveur fonctionnera quand même avec tes réglages.</PreviewMessage>
+            )}
+            {!failed && !ready && <PreviewMessage>Chargement de la vidéo…</PreviewMessage>}
+            {ready && <VideoControls videoRef={videoRef} />}
+        </>
+    )
+}
+
+function VideoControls({ videoRef }: { videoRef: RefObject<HTMLVideoElement | null> }) {
     const [playing, setPlaying] = useState(false)
-    const [progress, setProgress] = useState(0)
+    const [time, setTime] = useState(0)
+    const [duration, setDuration] = useState(0)
 
     useEffect(() => {
         const v = videoRef.current
         if (!v) return
-        const onPlay = () => setPlaying(true)
-        const onPause = () => setPlaying(false)
-        const onTime = () => {
-            if (v.duration) setProgress(v.currentTime / v.duration)
+        const sync = () => {
+            setPlaying(!v.paused)
+            setTime(v.currentTime)
+            setDuration(v.duration || 0)
         }
-        v.addEventListener('play', onPlay)
-        v.addEventListener('pause', onPause)
-        v.addEventListener('timeupdate', onTime)
-        return () => {
-            v.removeEventListener('play', onPlay)
-            v.removeEventListener('pause', onPause)
-            v.removeEventListener('timeupdate', onTime)
-        }
+        const events = ['play', 'pause', 'timeupdate', 'durationchange', 'seeked'] as const
+        events.forEach((ev) => v.addEventListener(ev, sync))
+        return () => events.forEach((ev) => v.removeEventListener(ev, sync))
     }, [videoRef])
 
     const toggle = () => {
         const v = videoRef.current
         if (!v) return
-        if (v.paused) v.play().catch(() => { /* ignore */ })
+        if (v.paused) v.play().catch(() => undefined)
         else v.pause()
     }
 
-    const onScrub = (e: React.ChangeEvent<HTMLInputElement>) => {
-        const v = videoRef.current
-        if (!v || !v.duration) return
-        v.currentTime = v.duration * parseFloat(e.target.value)
-    }
-
     return (
-        <div className="pointer-events-auto absolute bottom-2 left-2 right-2 flex items-center gap-3 rounded-lg bg-black/70 px-3 py-2 backdrop-blur-sm">
-            <button
-                type="button"
-                onClick={toggle}
-                className="text-white text-base leading-none w-6 text-center"
-                aria-label={playing ? 'Pause' : 'Lecture'}
-            >
-                {playing ? '❚❚' : '▶'}
+        <div className="absolute inset-x-3 bottom-3 flex items-center gap-3 rounded-xl bg-black/65 px-3 py-2 text-white backdrop-blur">
+            <button type="button" onClick={toggle} aria-label={playing ? 'Pause' : 'Lecture'} className="flex h-7 w-7 items-center justify-center rounded-md hover:bg-white/15">
+                {playing ? <IconPause size={16} /> : <IconPlay size={14} />}
             </button>
             <input
-                type="range" min={0} max={1} step={0.001}
-                value={progress}
-                onChange={onScrub}
-                className="h-1 flex-1 accent-primary"
+                type="range"
+                className="range flex-1"
+                min={0}
+                max={duration || 1}
+                step={0.01}
+                value={time}
+                aria-label="Position"
+                onChange={(e) => {
+                    const v = videoRef.current
+                    if (v) v.currentTime = parseFloat(e.target.value)
+                }}
+                style={{ '--fill-from': '0%', '--fill-to': `${duration ? (time / duration) * 100 : 0}%` } as CSSProperties}
             />
+            <span className="shrink-0 whitespace-nowrap text-right font-mono text-[11px] tabular-nums text-white/80">{fmtTime(time)} / {fmtTime(duration)}</span>
         </div>
     )
 }

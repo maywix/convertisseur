@@ -311,3 +311,94 @@ export function IconWand(props: IconProps) {
         </svg>
     )
 }
+
+export function IconCloud(props: IconProps) {
+    return (
+        <svg {...svgProps(props)}>
+            <path d="M17.5 19H8a5 5 0 1 1 .9-9.92A6 6 0 0 1 20 11.5a3.5 3.5 0 0 1-2.5 7.5Z" />
+        </svg>
+    )
+}
+
+export function IconUpload(props: IconProps) {
+    return (
+        <svg {...svgProps(props)}>
+            <path d="M12 15V3" />
+            <path d="m8 7 4-4 4 4" />
+            <path d="M5 21h14" />
+            <path d="M5 15v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2" />
+        </svg>
+    )
+}
+
+export function IconPlus(props: IconProps) {
+    return (
+        <svg {...svgProps(props)}>
+            <path d="M12 5v14" />
+            <path d="M5 12h14" />
+        </svg>
+    )
+}
+
+export function IconAlert(props: IconProps) {
+    return (
+        <svg {...svgProps(props)}>
+            <circle cx="12" cy="12" r="9" />
+            <path d="M12 8v4" />
+            <path d="M12 16h.01" />
+        </svg>
+    )
+}
+
+export function IconArrowRight(props: IconProps) {
+    return (
+        <svg {...svgProps(props)}>
+            <path d="M5 12h14" />
+            <path d="m13 6 6 6-6 6" />
+        </svg>
+    )
+}
+
+export function IconChevronLeft(props: IconProps) {
+    return (
+        <svg {...svgProps(props)}>
+            <path d="m15 18-6-6 6-6" />
+        </svg>
+    )
+}
+
+export function IconChevronRight(props: IconProps) {
+    return (
+        <svg {...svgProps(props)}>
+            <path d="m9 18 6-6-6-6" />
+        </svg>
+    )
+}
+
+export function IconPause(props: IconProps) {
+    return (
+        <svg {...svgProps(props)}>
+            <path d="M8 5v14" />
+            <path d="M16 5v14" />
+        </svg>
+    )
+}
+
+export function IconCompare(props: IconProps) {
+    return (
+        <svg {...svgProps(props)}>
+            <rect x="3" y="4" width="18" height="16" rx="2" />
+            <path d="M12 4v16" />
+            <path d="M3 12h9" strokeDasharray="2 2" />
+        </svg>
+    )
+}
+
+export function IconCopy(props: IconProps) {
+    return (
+        <svg {...svgProps(props)}>
+            <rect x="8" y="8" width="12" height="12" rx="2" />
+            <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" />
+        </svg>
+    )
+}

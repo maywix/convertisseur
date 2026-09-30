@@ -52,7 +52,7 @@ export interface ExtraFilter {
     removeTolerance: number // 0..100
 }
 
-const DEFAULT_FILTER: ExtraFilter = {
+export const DEFAULT_FILTER: ExtraFilter = {
     brightness: 0, contrast: 1, saturation: 1,
     temperature: 0, tint: 0,
     hueDeg: 0,
@@ -88,7 +88,7 @@ function hexToRgb(hex: string): { r: number; g: number; b: number } {
 }
 
 // Chromatic aberration pre-pass: writes shifted R and B channels from src to dst.
-function applyChromatic(src: Uint8ClampedArray, dst: Uint8ClampedArray, w: number, h: number, px: number) {
+export function applyChromatic(src: Uint8ClampedArray, dst: Uint8ClampedArray, w: number, h: number, px: number) {
     if (px <= 0) { dst.set(src); return }
     const shift = Math.round(px)
     for (let y = 0; y < h; y++) {
@@ -105,7 +105,7 @@ function applyChromatic(src: Uint8ClampedArray, dst: Uint8ClampedArray, w: numbe
 }
 
 // Single-pass full pipeline (steps 2-11 from header comment).
-function applyPost(data: Uint8ClampedArray, w: number, h: number, f: ExtraFilter) {
+export function applyPost(data: Uint8ClampedArray, w: number, h: number, f: ExtraFilter) {
     // ── Pre-compute coefficients ──
     const briAdd = f.brightness * 255
     const con = f.contrast
@@ -301,7 +301,7 @@ function applyPost(data: Uint8ClampedArray, w: number, h: number, f: ExtraFilter
 }
 
 // Glow: blur composite using canvas filter.
-function applyGlow(canvas: HTMLCanvasElement, intensity: number) {
+export function applyGlow(canvas: HTMLCanvasElement, intensity: number) {
     if (intensity <= 0) return
     const ctx = canvas.getContext('2d')!
     const blurAmount = 4 + (intensity / 100) * 16
@@ -321,6 +321,100 @@ function applyGlow(canvas: HTMLCanvasElement, intensity: number) {
     ctx.restore()
 }
 
+function needsPixelOps(lut: Lut3D | null, f: ExtraFilter): boolean {
+    return !!lut ||
+        f.chromatic > 0 ||
+        f.removeEnabled ||
+        !!f.brightness ||
+        f.contrast !== 1 ||
+        f.saturation !== 1 ||
+        Math.abs(f.temperature) > 0.001 ||
+        Math.abs(f.tint) > 0.001 ||
+        Math.abs(f.hueDeg) > 0.5 ||
+        !!(f.highlights || f.shadows || f.whites || f.blacks) ||
+        f.liftColor.toLowerCase() !== '#808080' ||
+        f.gammaColor.toLowerCase() !== '#808080' ||
+        f.gainColor.toLowerCase() !== '#808080' ||
+        f.vignette > 0 ||
+        f.grain > 0
+}
+
+/** Unsharp mask (amount > 0) or soften (amount < 0) with a 3x3 box blur. */
+function applySharpness(data: Uint8ClampedArray, w: number, h: number, amount: number) {
+    if (!amount || w < 3 || h < 3) return
+    const src = new Uint8ClampedArray(data)
+    const row = w * 4
+    for (let y = 1; y < h - 1; y++) {
+        for (let x = 1; x < w - 1; x++) {
+            const i = y * row + x * 4
+            for (let c = 0; c < 3; c++) {
+                const k = i + c
+                const blur = (
+                    src[k - row - 4] + src[k - row] + src[k - row + 4] +
+                    src[k - 4] + src[k] + src[k + 4] +
+                    src[k + row - 4] + src[k + row] + src[k + row + 4]
+                ) / 9
+                data[k] = src[k] + (src[k] - blur) * amount
+            }
+        }
+    }
+}
+
+/**
+ * Grade whatever is currently drawn on the canvas, in place. Shared by the
+ * live video preview, the still-image preview and the in-browser image
+ * export, so what you see is exactly what you get.
+ */
+export function gradeCanvas(
+    canvas: HTMLCanvasElement,
+    lut: Lut3D | null,
+    f: ExtraFilter,
+    sharpness = 0,
+): void {
+    const ctx = canvas.getContext('2d', { willReadFrequently: true })
+    if (!ctx) return
+    const w = canvas.width
+    const h = canvas.height
+    if (needsPixelOps(lut, f) || sharpness) {
+        const imageData = ctx.getImageData(0, 0, w, h)
+        if (f.chromatic > 0) {
+            const tmp = new Uint8ClampedArray(imageData.data.length)
+            applyChromatic(imageData.data, tmp, w, h, f.chromatic)
+            imageData.data.set(tmp)
+        }
+        if (lut) applyLutInPlace(imageData.data, lut)
+        applyPost(imageData.data, w, h, f)
+        if (sharpness) applySharpness(imageData.data, w, h, (sharpness / 100) * 1.5)
+        ctx.putImageData(imageData, 0, 0)
+    }
+    if (f.glow > 0) applyGlow(canvas, f.glow)
+}
+
+/** Draw `source` into `canvas` (fitting maxSide, 0 = full size) and grade it. */
+export function renderStill(
+    source: CanvasImageSource,
+    srcW: number,
+    srcH: number,
+    canvas: HTMLCanvasElement,
+    lut: Lut3D | null,
+    f: ExtraFilter,
+    sharpness = 0,
+    maxSide = 0,
+): void {
+    const scale = maxSide > 0 ? Math.min(1, maxSide / Math.max(srcW, srcH)) : 1
+    const w = Math.max(1, Math.round(srcW * scale))
+    const h = Math.max(1, Math.round(srcH * scale))
+    if (canvas.width !== w || canvas.height !== h) {
+        canvas.width = w
+        canvas.height = h
+    }
+    const ctx = canvas.getContext('2d', { willReadFrequently: true })
+    if (!ctx) return
+    ctx.clearRect(0, 0, w, h)
+    ctx.drawImage(source, 0, 0, w, h)
+    gradeCanvas(canvas, lut, f, sharpness)
+}
+
 export function createCanvas2DLutRenderer(
     canvas: HTMLCanvasElement,
     video: HTMLVideoElement,
@@ -329,12 +423,15 @@ export function createCanvas2DLutRenderer(
     if (!ctx) {
         return { setLut() { }, setExtraFilter() { }, setBypass() { }, start() { }, stop() { } }
     }
+    const context: CanvasRenderingContext2D = ctx
 
     let lut: Lut3D | null = null
     let extra: ExtraFilter = { ...DEFAULT_FILTER }
     let bypassed = false
     let rafId = 0
     let lastFrameTs = 0
+    let lastMediaTime = -1
+    let dirty = true
     let running = false
     const MAX_W = 1024              // smaller buffer = faster pixel ops, still sharp on most screens
     const TARGET_FRAME_MS = 33      // ~30 fps cap; avoids hogging the main thread
@@ -352,72 +449,33 @@ export function createCanvas2DLutRenderer(
 
     function render(now: number = 0) {
         if (!running) return
-        // 30 fps cap — pixel pipeline can't sustain 60 fps anyway, so we skip
-        // frames to avoid blocking the main thread.
-        if (now - lastFrameTs < TARGET_FRAME_MS) {
-            rafId = requestAnimationFrame(render)
-            return
-        }
+        rafId = requestAnimationFrame(render)
+        if (now - lastFrameTs < TARGET_FRAME_MS) return
+        // Paused video with unchanged settings: nothing new to draw.
+        if (video.paused && !dirty && video.currentTime === lastMediaTime) return
         lastFrameTs = now
         try {
             if (video.readyState >= 2 && video.videoWidth > 0) {
                 ensureSize()
-                ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-
-                if (bypassed) {
-                    // Just paint the raw frame and bail out.
-                    rafId = requestAnimationFrame(render)
-                    return
-                }
-
-                const needsPixelOps =
-                    lut ||
-                    extra.chromatic > 0 ||
-                    extra.removeEnabled ||
-                    extra.brightness ||
-                    extra.contrast !== 1 ||
-                    extra.saturation !== 1 ||
-                    Math.abs(extra.temperature) > 0.001 ||
-                    Math.abs(extra.tint) > 0.001 ||
-                    Math.abs(extra.hueDeg) > 0.5 ||
-                    extra.highlights || extra.shadows || extra.whites || extra.blacks ||
-                    extra.liftColor.toLowerCase() !== '#808080' ||
-                    extra.gammaColor.toLowerCase() !== '#808080' ||
-                    extra.gainColor.toLowerCase() !== '#808080' ||
-                    extra.vignette > 0 ||
-                    extra.grain > 0
-
-                if (needsPixelOps) {
-                    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
-
-                    if (extra.chromatic > 0) {
-                        const tmp = new Uint8ClampedArray(imageData.data.length)
-                        applyChromatic(imageData.data, tmp, canvas.width, canvas.height, extra.chromatic)
-                        imageData.data.set(tmp)
-                    }
-
-                    if (lut) applyLutInPlace(imageData.data, lut)
-                    applyPost(imageData.data, canvas.width, canvas.height, extra)
-
-                    ctx.putImageData(imageData, 0, 0)
-                }
-
-                if (extra.glow > 0) applyGlow(canvas, extra.glow)
+                context.drawImage(video, 0, 0, canvas.width, canvas.height)
+                lastMediaTime = video.currentTime
+                dirty = false
+                if (!bypassed) gradeCanvas(canvas, lut, extra)
             }
         } catch (e) {
             console.warn('[lut-canvas] frame skipped:', e)
         }
-        rafId = requestAnimationFrame(render)
     }
 
     return {
-        setLut(l) { lut = l },
-        setExtraFilter(f) { extra = { ...extra, ...f } },
-        setBypass(b) { bypassed = b },
+        setLut(l) { lut = l; dirty = true },
+        setExtraFilter(f) { extra = { ...extra, ...f }; dirty = true },
+        setBypass(b) { bypassed = b; dirty = true },
         start() {
             if (running) return
             running = true
-            render()
+            dirty = true
+            rafId = requestAnimationFrame(render)
         },
         stop() {
             running = false

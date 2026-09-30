@@ -1,355 +1,237 @@
-import { useEffect, useState } from 'react'
-import { ColorLab, type Grade } from '@/components/ColorLab'
-import { ConfigPanel, VideoColorSampler } from '@/components/ConfigPanel'
-import { FileQueue } from '@/components/FileQueue'
-import { MemeStudio } from '@/components/MemeStudio'
-import { SimpleConverter } from '@/components/SimpleConverter'
-import { TotalProgress } from '@/components/TotalProgress'
-import { IconMenu, IconMoon, IconSun, IconX } from '@/components/icons'
-import { useConverter } from '@/hooks/useConverter'
-import { getFileType } from '@/types'
+import { Suspense, lazy, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { ConvertPage } from '@/components/ConvertPage'
+import { DropOverlay } from '@/components/DropZone'
+import { IconCloud, IconSettings, IconWand } from '@/components/icons'
+import { Button, Popover, Segmented, Select, Toggle } from '@/components/ui'
+import { useQueue } from '@/hooks/useQueue'
+import { useWindowDrop } from '@/hooks/useWindowDrop'
+import { FALLBACK_CONFIG, fetchConfig, type ServerConfig } from '@/lib/api'
+import { INITIAL_LAB_STATE, type LabState } from '@/lib/labState'
+import { useSettings, type ProcessingPreference, type Settings, type ThemePreference } from '@/lib/settings'
+import { cn } from '@/lib/utils'
+import { isActive } from '@/types'
 
-const LS_THEME = 'converter_theme'
-const LS_PROC_MODE = 'converter_processing_mode'
+const ColorLab = lazy(() => import('@/components/ColorLab').then((m) => ({ default: m.ColorLab })))
 
-export type ProcessingMode = 'frontend' | 'backend'
+type Tab = 'convert' | 'lab'
+const TAB_KEY = 'convertisseur_tab'
+const MB = 1024 * 1024
 
 function App() {
-  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
-    try {
-      const stored = localStorage.getItem(LS_THEME)
-      if (stored === 'light' || stored === 'dark') return stored
-      return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
-    } catch {
-      return 'light'
+    const [settings, updateSettings] = useSettings()
+    const [config, setConfig] = useState<ServerConfig>(FALLBACK_CONFIG)
+    const [tab, setTabState] = useState<Tab>(() => {
+        try { return localStorage.getItem(TAB_KEY) === 'lab' ? 'lab' : 'convert' } catch { return 'convert' }
+    })
+    const [lab, setLab] = useState<LabState>(INITIAL_LAB_STATE)
+
+    useEffect(() => {
+        fetchConfig().then(setConfig).catch(() => undefined)
+    }, [])
+
+    const setTab = (t: Tab) => {
+        setTabState(t)
+        try { localStorage.setItem(TAB_KEY, t) } catch { /* ignore */ }
     }
-  })
 
-  const [processingMode, setProcessingModeState] = useState<ProcessingMode>(() => {
-    try {
-      const stored = localStorage.getItem(LS_PROC_MODE)
-      return stored === 'backend' ? 'backend' : 'frontend'
-    } catch {
-      return 'frontend'
-    }
-  })
+    const limitMbps = config.tunnel ? (settings.tunnelLimitMbps ?? config.tunnel_rate_limit_mbps) : 0
+    const queue = useQueue(config, limitMbps > 0 ? limitMbps * MB : 0, settings.autoDownload)
+    const { items } = queue
 
-  const setProcessingMode = (m: ProcessingMode) => {
-    try { localStorage.setItem(LS_PROC_MODE, m) } catch { void 0 }
-    setProcessingModeState(m)
-  }
+    const dragging = useWindowDrop((files) => { queue.add(files) })
 
-  useEffect(() => {
-    document.documentElement.classList.toggle('dark', theme === 'dark')
-    try { localStorage.setItem(LS_THEME, theme) } catch { void 0 }
-  }, [theme])
+    // Progress in the tab title, and a warning before closing mid-transfer.
+    const summary = useMemo(() => {
+        const running = items.filter((it) => isActive(it.status))
+        const done = items.filter((it) => it.status === 'done').length
+        const inBrowser = items.some((it) => it.status === 'uploading' || (it.local && it.status === 'processing'))
+        return { running: running.length, done, inBrowser }
+    }, [items])
 
-  const {
-    queue,
-    currentAction,
-    convertSettings,
-    compressSettings,
-    isProcessing,
-    hasStarted,
-    completedCount,
-    totalCount,
-    hasCompletedFiles,
-    canStart,
-    detectedTypes,
-    outputMode,
-    exportMode,
-    uiMode,
-    backgroundEnabled,
-    autoDownloadEnabled,
-    addFiles,
-    removeFile,
-    clearAll,
-    startProcessing,
-    setOutputMode,
-    setExportMode,
-    setUiMode,
-    setBackgroundEnabled,
-    setAutoDownloadEnabled,
-    setCurrentAction,
-    setCategory,
-    setFormat,
-    setSimpleFormat,
-    setItemTargetFormat,
-    setItemCustomAction,
-    setItemCustomCompressSettings,
-    setItemOutputMode,
-    applyGlobalFormatToAll,
-    requeueItem,
-    setConvertSettings,
-    setCompressSettings,
-    applySuggestedConvert,
-    applySuggestedCompress,
-    exportCompletedFiles,
-  } = useConverter()
+    useEffect(() => {
+        document.title = summary.running
+            ? `(${summary.done}/${summary.done + summary.running}) Conversion… — Convertisseur`
+            : 'Convertisseur Studio'
+    }, [summary])
 
-  // Reflect conversion progress in the browser tab title (e.g. "1/3 · 60% — …")
-  useEffect(() => {
-    const base = 'Convertisseur Studio'
-    const anyActive = queue.some(
-      (item) =>
-        item.status === 'uploading' ||
-        item.status === 'queued' ||
-        item.status === 'processing',
-    )
-    if (!anyActive) {
-      document.title = base
-      return
-    }
-    const total = queue.length
-    const overall = Math.round(
-      queue.reduce((sum, item) => {
-        if (item.status === 'done') return sum + 100
-        if (item.status === 'processing') return sum + (item.progress ?? 0)
-        return sum
-      }, 0) / Math.max(1, total),
-    )
-    document.title = `${completedCount}/${total} · ${overall}% — ${base}`
-  }, [queue, completedCount])
+    useEffect(() => {
+        if (!summary.inBrowser) return
+        const warn = (e: BeforeUnloadEvent) => { e.preventDefault() }
+        window.addEventListener('beforeunload', warn)
+        return () => window.removeEventListener('beforeunload', warn)
+    }, [summary.inBrowser])
 
-  const showProgress = hasStarted && totalCount > 0
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
-  // Color Lab state lifted here so it survives mode switches (Simple ↔ Pro ↔ Color Lab).
-  const [colorLabGrades, setColorLabGrades] = useState<Record<string, Grade>>({})
-  const [colorLabLutScope, setColorLabLutScope] = useState<'global' | 'per-file'>('global')
-  const [colorLabGlobalLutFile, setColorLabGlobalLutFile] = useState<File | null>(null)
-  const colorPickerVideoFile =
-    queue.find((item) => {
-      const kind = item.mediaKind || getFileType(item.file.name)
-      return kind === 'video' && item.file.size > 0
-    })?.file || null
-  const showVideoColorSampler =
-    convertSettings.colorRemoveEnabled &&
-    (convertSettings.category === 'video' || convertSettings.category === 'sequence')
+    const labCount = items.filter((it) => (it.kind === 'image' || it.kind === 'video') && it.file).length
 
-  return (
-    <div className="min-h-screen bg-background text-foreground">
-      {showProgress && (
-        <TotalProgress
-          completed={completedCount}
-          total={totalCount}
-          isProcessing={isProcessing}
-        />
-      )}
+    return (
+        <div className="min-h-screen bg-background text-foreground">
+            <header className="sticky top-0 z-40 border-b border-border bg-background/85 backdrop-blur-xl">
+                <div className="mx-auto flex h-14 max-w-[1600px] items-center gap-3 px-4 lg:px-6">
+                    <div className="flex items-center gap-2.5">
+                        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-sm font-bold text-primary-foreground shadow-sm">C</div>
+                        <span className="hidden text-[15px] font-semibold tracking-tight sm:inline">Convertisseur</span>
+                    </div>
 
-      <header className="sticky top-0 z-40 border-b border-border/80 bg-background/90 backdrop-blur-xl">
-        <div className="mx-auto max-w-[1500px] px-3 sm:px-4 lg:px-6 py-2.5 flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2.5 min-w-0">
-            <div className="w-9 h-9 shrink-0 rounded-lg bg-foreground flex items-center justify-center text-background font-bold text-sm shadow-sm">C</div>
-            <div className="min-w-0">
-              <h1 className="text-[15px] font-semibold tracking-tight leading-none truncate">Convertisseur Studio</h1>
-              <p className="hidden xs:block text-xs text-muted-foreground leading-none mt-1">Vidéo · Audio · Image · Document · 3D</p>
-            </div>
-          </div>
+                    <nav className="ml-1 flex items-center gap-1 rounded-xl bg-muted p-1 sm:ml-4" aria-label="Espaces">
+                        <TabButton active={tab === 'convert'} onClick={() => setTab('convert')}>
+                            Convertir
+                            {items.length > 0 && <Count n={items.length} active={tab === 'convert'} />}
+                        </TabButton>
+                        <TabButton active={tab === 'lab'} onClick={() => setTab('lab')}>
+                            <IconWand size={14} className="hidden sm:block" />
+                            Color Lab
+                            {labCount > 0 && <Count n={labCount} active={tab === 'lab'} />}
+                        </TabButton>
+                    </nav>
 
-          {/* ── Desktop controls (md+) ── */}
-          <div className="hidden md:flex items-center gap-2 text-xs text-muted-foreground">
-            <div
-              className="inline-flex items-center gap-2 rounded-lg border border-border bg-card px-2 py-1 shadow-sm"
-              title={processingMode === 'frontend'
-                ? "Conversion en local dans le navigateur"
-                : "Conversion sur le serveur avec FFmpeg / Pillow"}
-            >
-              <span className={`text-[10px] font-semibold uppercase ${processingMode === 'frontend' ? 'text-primary' : 'text-muted-foreground'}`}>Front</span>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={processingMode === 'backend'}
-                onClick={() => setProcessingMode(processingMode === 'frontend' ? 'backend' : 'frontend')}
-                className="relative inline-flex h-5 w-9 items-center rounded-full bg-muted transition-colors"
-              >
-                <span className={`inline-block h-4 w-4 transform rounded-full bg-background shadow transition-transform ${processingMode === 'backend' ? 'translate-x-4' : 'translate-x-0.5'}`} />
-              </button>
-              <span className={`text-[10px] font-semibold uppercase ${processingMode === 'backend' ? 'text-primary' : 'text-muted-foreground'}`}>Back</span>
-            </div>
-
-            <div className="inline-flex items-center rounded-lg border border-border bg-card p-0.5 shadow-sm">
-              <button type="button" onClick={() => setUiMode('simple')} className={`inline-flex h-8 items-center rounded-md px-3 text-xs font-semibold transition-colors ${uiMode === 'simple' ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground'}`}>Simple</button>
-              <button type="button" onClick={() => setUiMode('pro')} className={`inline-flex h-8 items-center rounded-md px-3 text-xs font-semibold transition-colors ${uiMode === 'pro' ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground'}`}>Pro</button>
-              <button type="button" onClick={() => setUiMode('color-lab')} className={`inline-flex h-8 items-center rounded-md px-3 text-xs font-semibold transition-colors ${uiMode === 'color-lab' ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground'}`}>Color Lab</button>
-              <button type="button" onClick={() => setUiMode('meme')} className={`inline-flex h-8 items-center rounded-md px-3 text-xs font-semibold transition-colors ${uiMode === 'meme' ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground'}`}>Meme</button>
-            </div>
-            <button
-              type="button"
-              onClick={() => setTheme((value) => value === 'dark' ? 'light' : 'dark')}
-              className="inline-flex h-9 items-center gap-2 rounded-lg border border-border bg-card px-3 text-xs font-medium text-foreground shadow-sm transition-colors hover:bg-muted"
-              aria-label={theme === 'dark' ? 'Passer au thème clair' : 'Passer au thème sombre'}
-            >
-              {theme === 'dark' ? <IconSun size={15} /> : <IconMoon size={15} />}
-              <span className="hidden lg:inline">{theme === 'dark' ? 'Clair' : 'Sombre'}</span>
-            </button>
-          </div>
-
-          {/* ── Mobile hamburger ── */}
-          <button
-            type="button"
-            onClick={() => setMobileMenuOpen((v) => !v)}
-            className="md:hidden inline-flex h-9 w-9 items-center justify-center rounded-lg border border-border bg-card text-foreground shadow-sm hover:bg-muted"
-            aria-label={mobileMenuOpen ? 'Fermer le menu' : 'Ouvrir le menu'}
-            aria-expanded={mobileMenuOpen}
-          >
-            {mobileMenuOpen ? <IconX size={18} /> : <IconMenu size={18} />}
-          </button>
-        </div>
-
-        {/* ── Mobile menu panel ── */}
-        {mobileMenuOpen && (
-          <div className="md:hidden border-t border-border bg-background/95 backdrop-blur-xl animate-in fade-in slide-in-from-top-2 duration-200">
-            <div className="px-4 py-4 space-y-3">
-              <div>
-                <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Mode d'affichage</p>
-                <div className="grid grid-cols-4 gap-1 rounded-lg border border-border bg-card p-0.5 shadow-sm">
-                  {(['simple','pro','color-lab','meme'] as const).map((m) => (
-                    <button
-                      key={m}
-                      type="button"
-                      onClick={() => { setUiMode(m); setMobileMenuOpen(false) }}
-                      className={`h-9 rounded-md text-xs font-semibold transition-colors ${uiMode === m ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground'}`}
-                    >
-                      {m === 'simple' ? 'Simple' : m === 'pro' ? 'Pro' : m === 'color-lab' ? 'Color' : 'Meme'}
-                    </button>
-                  ))}
+                    <div className="ml-auto flex items-center gap-2">
+                        {config.tunnel && (
+                            <span
+                                className="hidden items-center gap-1.5 rounded-full border border-border bg-card px-2.5 py-1 text-xs text-muted-foreground md:inline-flex"
+                                title="Connexion via Cloudflare Tunnel : envois découpés en petits morceaux, reprise automatique et débit limité."
+                            >
+                                <IconCloud size={14} className="text-primary" />
+                                Tunnel · {limitMbps > 0 ? `${limitMbps} Mo/s` : 'illimité'}
+                            </span>
+                        )}
+                        <SettingsMenu settings={settings} update={updateSettings} config={config} />
+                    </div>
                 </div>
-              </div>
+            </header>
 
-              <div>
-                <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Lieu de conversion</p>
-                <div className="grid grid-cols-2 gap-1 rounded-lg border border-border bg-card p-0.5 shadow-sm">
-                  <button type="button" onClick={() => { setProcessingMode('frontend'); setMobileMenuOpen(false) }} className={`h-9 rounded-md text-xs font-semibold transition-colors ${processingMode === 'frontend' ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:text-foreground'}`}>Front (navigateur)</button>
-                  <button type="button" onClick={() => { setProcessingMode('backend'); setMobileMenuOpen(false) }} className={`h-9 rounded-md text-xs font-semibold transition-colors ${processingMode === 'backend' ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:text-foreground'}`}>Back (serveur)</button>
-                </div>
-              </div>
-
-              <button
-                type="button"
-                onClick={() => { setTheme((v) => v === 'dark' ? 'light' : 'dark'); setMobileMenuOpen(false) }}
-                className="flex w-full items-center justify-between rounded-lg border border-border bg-card px-3 py-2 text-xs font-medium text-foreground shadow-sm"
-              >
-                <span>Thème</span>
-                <span className="inline-flex items-center gap-1.5">
-                  {theme === 'dark' ? <IconSun size={14} /> : <IconMoon size={14} />}
-                  {theme === 'dark' ? 'Clair' : 'Sombre'}
-                </span>
-              </button>
-            </div>
-          </div>
-        )}
-      </header>
-
-      {uiMode === 'meme' ? (
-        <div key="meme" className={`animate-in fade-in duration-300 ease-out fill-mode-both ${showProgress ? 'pb-24' : ''}`}>
-          <MemeStudio />
-        </div>
-      ) : uiMode === 'color-lab' ? (
-        <div key="color-lab" className={`animate-in fade-in duration-300 ease-out fill-mode-both ${showProgress ? 'pb-24' : ''}`}>
-          <ColorLab
-            processingMode={processingMode}
-            queue={queue}
-            onFilesAdded={addFiles}
-            onRemove={removeFile}
-            onClearAll={clearAll}
-            gradesMap={colorLabGrades}
-            setGradesMap={setColorLabGrades}
-            lutScope={colorLabLutScope}
-            setLutScope={setColorLabLutScope}
-            globalLutFile={colorLabGlobalLutFile}
-            setGlobalLutFile={setColorLabGlobalLutFile}
-          />
-        </div>
-      ) : uiMode === 'simple' ? (
-        <div key="simple" className={`animate-in fade-in slide-in-from-bottom-3 duration-300 ease-out fill-mode-both ${showProgress ? 'pb-24' : ''}`}>
-          <SimpleConverter
-            queue={queue}
-            canStart={canStart}
-            isProcessing={isProcessing}
-            currentAction={currentAction}
-            onFilesAdded={addFiles}
-            onRemove={removeFile}
-            onRequeue={requeueItem}
-            onClearAll={clearAll}
-            onStart={startProcessing}
-            onSetFormat={setSimpleFormat}
-            onSetCurrentAction={setCurrentAction}
-            onSetCompressSettings={setCompressSettings}
-            onExportCompleted={exportCompletedFiles}
-          />
-        </div>
-      ) : (
-      <div key="pro" className={`max-w-[1600px] mx-auto px-4 lg:px-8 py-6 ${showProgress ? 'pb-24' : ''}`}>
-        <div className="grid lg:grid-cols-[440px_minmax(0,1fr)] gap-8 items-start">
-          <div className="order-2 lg:order-1 animate-in fade-in slide-in-from-left-6 duration-500 ease-out fill-mode-both">
-            <ConfigPanel
-              currentAction={currentAction}
-              onActionChange={setCurrentAction}
-              convertSettings={convertSettings}
-              compressSettings={compressSettings}
-              onConvertSettingsChange={setConvertSettings}
-              onCompressSettingsChange={setCompressSettings}
-              onCategoryChange={setCategory}
-              onFormatChange={setFormat}
-              detectedTypes={detectedTypes}
-              outputMode={outputMode}
-              onOutputModeChange={setOutputMode}
-              backgroundEnabled={backgroundEnabled}
-              onBackgroundEnabledChange={setBackgroundEnabled}
-              autoDownloadEnabled={autoDownloadEnabled}
-              onAutoDownloadEnabledChange={setAutoDownloadEnabled}
-              exportMode={exportMode}
-              onExportModeChange={setExportMode}
-              onApplySuggestedConvert={applySuggestedConvert}
-              onApplySuggestedCompress={applySuggestedCompress}
-              canStart={canStart}
-              isProcessing={isProcessing}
-              onStart={startProcessing}
-            />
-          </div>
-
-          <div className="order-1 lg:order-2 lg:sticky lg:top-[76px] lg:h-[calc(100vh-6rem)] flex flex-col gap-4 min-h-0 animate-in fade-in slide-in-from-right-6 duration-500 delay-100 ease-out fill-mode-both">
-            {showVideoColorSampler && (
-              <VideoColorSampler
-                file={colorPickerVideoFile}
-                color={convertSettings.colorRemoveColor}
-                onColorPicked={(pickedColor) =>
-                  setConvertSettings({ ...convertSettings, colorRemoveColor: pickedColor })
-                }
-                className="bg-card p-4 shadow-sm"
-              />
+            {tab === 'convert' ? (
+                <ConvertPage
+                    queue={queue}
+                    processing={settings.processing}
+                    retentionHours={Math.round(config.retention_seconds / 3600)}
+                />
+            ) : (
+                <Suspense fallback={<div className="p-10 text-center text-sm text-muted-foreground">Chargement du Color Lab…</div>}>
+                    <ColorLab queue={queue} processing={settings.processing} lab={lab} setLab={setLab} />
+                </Suspense>
             )}
-            <FileQueue
-              queue={queue}
-              currentAction={currentAction}
-              outputMode={outputMode}
-              defaultFormat={convertSettings.format}
-              onFilesAdded={addFiles}
-              onRemove={removeFile}
-              onClearAll={clearAll}
-              onSetItemTargetFormat={setItemTargetFormat}
-              onSetItemCustomAction={setItemCustomAction}
-              onSetItemCustomCompressSettings={setItemCustomCompressSettings}
-              onSetItemOutputMode={setItemOutputMode}
-              onApplyGlobalOutput={applyGlobalFormatToAll}
-              onRequeue={requeueItem}
-              hasCompletedFiles={hasCompletedFiles}
-              exportMode={exportMode}
-              onExportCompleted={exportCompletedFiles}
-            />
-          </div>
-        </div>
-      </div>
-      )}
 
-      {backgroundEnabled && (
-        <div className={`fixed right-4 z-[60] flex items-center gap-1.5 rounded-full border border-border bg-card/95 px-3 py-1.5 text-xs text-muted-foreground shadow-lg backdrop-blur ${showProgress ? 'bottom-24' : 'bottom-4'}`}>
-          <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
-          Arrière-plan actif
+            <DropOverlay visible={dragging} label={tab === 'lab' ? 'Dépose tes photos et vidéos' : 'Dépose tes fichiers'} />
         </div>
-      )}
-    </div>
-  )
+    )
+}
+
+function TabButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }) {
+    return (
+        <button
+            type="button"
+            onClick={onClick}
+            aria-current={active ? 'page' : undefined}
+            className={cn(
+                'inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-sm font-medium transition-colors',
+                active ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
+            )}
+        >
+            {children}
+        </button>
+    )
+}
+
+function Count({ n, active }: { n: number; active: boolean }) {
+    return (
+        <span className={cn('rounded-full px-1.5 text-[11px] font-semibold tabular-nums', active ? 'bg-primary/12 text-primary' : 'bg-background/70')}>
+            {n}
+        </span>
+    )
+}
+
+const PROCESSING_HELP: Record<ProcessingPreference, string> = {
+    auto: "Les images que le navigateur sait traiter restent sur ton appareil (rien n'est envoyé). Tout le reste passe par le serveur.",
+    server: 'Tout est converti par le serveur (FFmpeg, Pillow, LibreOffice). Le plus fiable.',
+    browser: "Essaie aussi les vidéos dans le navigateur (lent, fichiers < 700 Mo). Bascule sur le serveur en cas d'échec.",
+}
+
+function SettingsMenu({ settings, update, config }: { settings: Settings; update: (p: Partial<Settings>) => void; config: ServerConfig }) {
+    const rateValue = settings.tunnelLimitMbps === null ? 'default' : String(settings.tunnelLimitMbps)
+    return (
+        <Popover
+            className="w-[min(92vw,360px)] p-4"
+            trigger={({ open, toggle }) => (
+                <Button variant={open ? 'secondary' : 'ghost'} size="icon" onClick={toggle} aria-label="Réglages" aria-expanded={open}>
+                    <IconSettings size={18} />
+                </Button>
+            )}
+        >
+            <div className="space-y-5">
+                <div className="space-y-2">
+                    <p className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">Où convertir</p>
+                    <Segmented<ProcessingPreference>
+                        className="w-full"
+                        size="sm"
+                        value={settings.processing}
+                        onChange={(v) => update({ processing: v })}
+                        options={[
+                            { value: 'auto', label: 'Auto' },
+                            { value: 'server', label: 'Serveur' },
+                            { value: 'browser', label: 'Navigateur' },
+                        ]}
+                    />
+                    <p className="text-xs leading-relaxed text-muted-foreground">{PROCESSING_HELP[settings.processing]}</p>
+                </div>
+
+                <div className="space-y-2">
+                    <p className="flex items-center gap-2 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+                        <IconCloud size={14} /> Tunnel Cloudflare
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                        {config.tunnel
+                            ? 'Connexion via le tunnel détectée : envois en morceaux de 8 Mo avec reprise automatique.'
+                            : "Connexion directe : aucune limite appliquée. Ces réglages s'activent quand tu passes par le tunnel."}
+                    </p>
+                    <div className="space-y-1.5">
+                        <span className="text-sm">Débit max (envoi et téléchargement)</span>
+                        <Select
+                            size="sm"
+                            className="w-full"
+                            value={rateValue}
+                            ariaLabel="Débit maximum via le tunnel"
+                            onChange={(v) => update({ tunnelLimitMbps: v === 'default' ? null : parseFloat(v) })}
+                            options={[
+                                { value: 'default', label: `Défaut (${config.tunnel_rate_limit_mbps} Mo/s)` },
+                                { value: '1', label: '1 Mo/s' },
+                                { value: '2', label: '2 Mo/s' },
+                                { value: '5', label: '5 Mo/s' },
+                                { value: '10', label: '10 Mo/s' },
+                                { value: '20', label: '20 Mo/s' },
+                                { value: '50', label: '50 Mo/s' },
+                                { value: '0', label: 'Illimité' },
+                            ]}
+                        />
+                    </div>
+                </div>
+
+                <div className="space-y-1">
+                    <p className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">Téléchargement</p>
+                    <Toggle
+                        checked={settings.autoDownload}
+                        onChange={(v) => update({ autoDownload: v })}
+                        label="Télécharger automatiquement"
+                        description="Quand un lot est terminé (ZIP s'il y a plusieurs fichiers)."
+                    />
+                </div>
+
+                <div className="space-y-2">
+                    <p className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">Thème</p>
+                    <Segmented<ThemePreference>
+                        className="w-full"
+                        size="sm"
+                        value={settings.theme}
+                        onChange={(v) => update({ theme: v })}
+                        options={[
+                            { value: 'system', label: 'Système' },
+                            { value: 'light', label: 'Clair' },
+                            { value: 'dark', label: 'Sombre' },
+                        ]}
+                    />
+                </div>
+            </div>
+        </Popover>
+    )
 }
 
 export default App

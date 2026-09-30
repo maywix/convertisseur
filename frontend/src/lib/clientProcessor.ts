@@ -1,334 +1,84 @@
 // ──────────────────────────────────────────────────────────
-// Client-side image processor — runs everything in the browser via Canvas
-// without uploading to the server. Implements the same Lightroom-style
-// adjustments + effects we have on the backend, with comparable maths.
-//
-// Limitations:
-//   - Works on images only (no video — that needs ffmpeg.wasm, too heavy here).
-//   - Single CPU thread; large images (>20 MP) can take a few hundred ms.
+// In-browser image conversion: decode -> (optional grade + LUT) -> encode.
+// Uses the same pixel pipeline as the Color Lab preview, so a graded
+// export matches what was on screen. Anything the browser can't do
+// (HEIC/RAW input, AVIF encode on some browsers, huge canvases) throws, and
+// the caller falls back to the server.
 // ──────────────────────────────────────────────────────────
+import type { Lut3D } from './cubeLut'
+import { DEFAULT_FILTER, renderStill, type ExtraFilter } from './lutCanvas2D'
 
-export interface ClientGrade {
-    exposure: number       // -2..+2 EV
-    contrast: number       // -100..+100
-    highlights: number     // -100..+100
-    shadows: number        // -100..+100
-    whites: number         // -100..+100
-    blacks: number         // -100..+100
-    saturation: number     // -100..+100
-    temperature: number    // -100..+100 cool/warm
-    tint: number           // -100..+100 green/magenta
-    hue?: number           // -180..180 (image: skipped, but accepted to share Grade)
-    sharpness: number      // -100..+100
-    vignette: number       // 0..100
-    grain: number          // 0..100
-    chromatic: number      // 0..20 px
-    glow: number           // 0..100
-    // DaVinci-style color wheels
-    liftColor?: string     // hex
-    liftAmount?: number    // 0..2
-    gammaColor?: string
-    gammaAmount?: number
-    gainColor?: string
-    gainAmount?: number
-    // Color remover
-    removeEnabled: boolean
-    removeColor: string    // hex
-    removeTolerance: number // 0..100
+/** Inputs every current browser decodes. GIF is left to the server (animation). */
+export const BROWSER_DECODABLE = new Set(['jpg', 'jpeg', 'png', 'webp', 'bmp', 'avif'])
+export const BROWSER_ENCODABLE = new Set(['png', 'jpg', 'jpeg', 'webp', 'avif', 'bmp', 'ico', 'tiff', 'tif', 'gif', 'pdf'])
+const OPAQUE_FORMATS = new Set(['jpg', 'jpeg', 'bmp', 'pdf'])
+
+export interface BrowserImageOptions {
+    /** 1-100, lossy formats only. */
+    quality?: number
+    /** Fit inside this many pixels (long side). 0 = keep. */
+    maxSide?: number
+    filter?: ExtraFilter
+    sharpness?: number
+    lut?: Lut3D | null
 }
 
-function loadImage(file: File): Promise<HTMLImageElement> {
-    return new Promise((resolve, reject) => {
-        const img = new Image()
-        const url = URL.createObjectURL(file)
-        img.onload = () => { URL.revokeObjectURL(url); resolve(img) }
-        img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('image load failed')) }
-        img.src = url
-    })
-}
-
-function clamp(v: number, min: number, max: number): number {
-    return v < min ? min : v > max ? max : v
-}
-
-function hexToDelta(hex?: string, amount = 1): [number, number, number] {
-    if (!hex) return [0, 0, 0]
-    const c = hex.replace('#', '')
-    if (c.length !== 6) return [0, 0, 0]
-    const r = parseInt(c.substring(0, 2), 16)
-    const g = parseInt(c.substring(2, 4), 16)
-    const b = parseInt(c.substring(4, 6), 16)
-    return [(r - 128) / 127 * amount, (g - 128) / 127 * amount, (b - 128) / 127 * amount]
-}
-
-// Apply Lightroom-style adjustments to RGBA pixel data in-place.
-function applyAdjustments(data: Uint8ClampedArray, w: number, h: number, g: ClientGrade) {
-    const exposureScale = Math.pow(2, g.exposure)
-    const contrastFactor = 1 + g.contrast / 100
-    const satFactor = 1 + g.saturation / 100
-    const tempR = 1 + (g.temperature / 100) * 0.22
-    const tempG = 1 - (g.temperature / 100) * 0.04
-    const tempB = 1 - (g.temperature / 100) * 0.22
-    const tintR = 1 + (g.tint / 100) * 0.08
-    const tintG = 1 - (g.tint / 100) * 0.18
-    const tintB = 1 + (g.tint / 100) * 0.08
-
-    // DaVinci-style Lift / Gamma / Gain shifts (zone-based).
-    const [liftDr, liftDg, liftDb] = hexToDelta(g.liftColor, g.liftAmount ?? 1)
-    const [gammaDr, gammaDg, gammaDb] = hexToDelta(g.gammaColor, g.gammaAmount ?? 1)
-    const [gainDr, gainDg, gainDb] = hexToDelta(g.gainColor, g.gainAmount ?? 1)
-    const hasLgg = Math.abs(liftDr) + Math.abs(liftDg) + Math.abs(liftDb) +
-                   Math.abs(gammaDr) + Math.abs(gammaDg) + Math.abs(gammaDb) +
-                   Math.abs(gainDr) + Math.abs(gainDg) + Math.abs(gainDb) > 0.001
-
-    // Color remover prep
-    const rmEnabled = g.removeEnabled
-    let rmR = 0, rmG = 0, rmB = 0, rmTolSq = 0
-    if (rmEnabled) {
-        const c = g.removeColor.replace('#', '')
-        if (c.length === 6) {
-            rmR = parseInt(c.substring(0, 2), 16)
-            rmG = parseInt(c.substring(2, 4), 16)
-            rmB = parseInt(c.substring(4, 6), 16)
-            const tol = (g.removeTolerance / 100) * 441.67
-            rmTolSq = tol * tol
-        }
-    }
-
-    for (let i = 0; i < data.length; i += 4) {
-        let r = data[i]
-        let g_ = data[i + 1]
-        let b = data[i + 2]
-
-        // Color remover: makes matching pixels transparent (before colour adjustments).
-        if (rmEnabled && data[i + 3] > 0) {
-            const dr = r - rmR
-            const dg = g_ - rmG
-            const db = b - rmB
-            if (dr * dr + dg * dg + db * db <= rmTolSq) {
-                data[i + 3] = 0
-                continue
-            }
-        }
-
-        // Temperature + tint (linear scaling per channel).
-        r *= tempR * tintR
-        g_ *= tempG * tintG
-        b *= tempB * tintB
-
-        // Exposure (multiplicative).
-        r *= exposureScale
-        g_ *= exposureScale
-        b *= exposureScale
-
-        // Highlights / shadows / whites / blacks based on luma.
-        const lumaPre = (0.2126 * r + 0.7152 * g_ + 0.0722 * b) / 255
-
-        if (g.highlights || g.shadows || g.whites || g.blacks) {
-            const hMask = clamp((lumaPre - 0.55) / 0.45, 0, 1)
-            const sMask = clamp((0.45 - lumaPre) / 0.45, 0, 1)
-            const wMask = clamp((lumaPre - 0.80) / 0.20, 0, 1)
-            const bMask = clamp((0.25 - lumaPre) / 0.25, 0, 1)
-
-            const apply = (delta: number, mask: number, brighten: boolean) => {
-                if (delta === 0 || mask === 0) return
-                const amount = Math.abs(delta) / 100 * mask
-                if (delta > 0) {
-                    if (brighten) { r += (255 - r) * amount; g_ += (255 - g_) * amount; b += (255 - b) * amount }
-                    else { r -= r * amount; g_ -= g_ * amount; b -= b * amount }
-                } else {
-                    if (brighten) { r -= r * amount; g_ -= g_ * amount; b -= b * amount }
-                    else { r += (255 - r) * amount; g_ += (255 - g_) * amount; b += (255 - b) * amount }
-                }
-            }
-            apply(g.highlights, hMask, true)
-            apply(g.shadows, sMask, true)
-            apply(g.whites, wMask, true)
-            apply(g.blacks, bMask, false)
-        }
-
-        // DaVinci Lift / Gamma / Gain — additive shift by zone (luma).
-        if (hasLgg) {
-            const lumaPost = (0.2126 * r + 0.7152 * g_ + 0.0722 * b) / 255
-            const sZone = clamp((0.5 - lumaPost) / 0.5, 0, 1)
-            const mZone = 1 - Math.abs(lumaPost - 0.5) * 2
-            const hZone = clamp((lumaPost - 0.5) / 0.5, 0, 1)
-            const lScale = 128 * sZone
-            const mScale = 128 * mZone
-            const hScale = 128 * hZone
-            r += liftDr * lScale + gammaDr * mScale + gainDr * hScale
-            g_ += liftDg * lScale + gammaDg * mScale + gainDg * hScale
-            b += liftDb * lScale + gammaDb * mScale + gainDb * hScale
-        }
-
-        // Contrast around 0.5 (midpoint).
-        if (contrastFactor !== 1) {
-            r = (r - 128) * contrastFactor + 128
-            g_ = (g_ - 128) * contrastFactor + 128
-            b = (b - 128) * contrastFactor + 128
-        }
-
-        // Saturation in HSL-ish (simple): mix toward luma.
-        if (satFactor !== 1) {
-            const luma = 0.2126 * r + 0.7152 * g_ + 0.0722 * b
-            r = luma + (r - luma) * satFactor
-            g_ = luma + (g_ - luma) * satFactor
-            b = luma + (b - luma) * satFactor
-        }
-
-        data[i] = clamp(r, 0, 255)
-        data[i + 1] = clamp(g_, 0, 255)
-        data[i + 2] = clamp(b, 0, 255)
-    }
-}
-
-// Vignette: darken pixels by distance to centre.
-function applyVignette(data: Uint8ClampedArray, w: number, h: number, intensity: number) {
-    if (intensity <= 0) return
-    const cx = w / 2
-    const cy = h / 2
-    const maxDist = Math.sqrt(cx * cx + cy * cy)
-    const strength = intensity / 100
-    for (let y = 0; y < h; y++) {
-        for (let x = 0; x < w; x++) {
-            const dx = x - cx
-            const dy = y - cy
-            const dist = Math.sqrt(dx * dx + dy * dy) / maxDist
-            const dim = 1 - clamp((dist - 0.4) / 0.6, 0, 1) * strength * 0.85
-            const i = (y * w + x) * 4
-            data[i] = data[i] * dim
-            data[i + 1] = data[i + 1] * dim
-            data[i + 2] = data[i + 2] * dim
-        }
-    }
-}
-
-// Film grain: per-pixel additive noise.
-function applyGrain(data: Uint8ClampedArray, intensity: number) {
-    if (intensity <= 0) return
-    const amount = intensity / 100 * 40   // 0..40
-    for (let i = 0; i < data.length; i += 4) {
-        const n = (Math.random() - 0.5) * amount
-        data[i] = clamp(data[i] + n, 0, 255)
-        data[i + 1] = clamp(data[i + 1] + n, 0, 255)
-        data[i + 2] = clamp(data[i + 2] + n, 0, 255)
-    }
-}
-
-// Chromatic aberration: shift R and B channels horizontally.
-function applyChromatic(src: Uint8ClampedArray, dst: Uint8ClampedArray, w: number, h: number, px: number) {
-    if (px <= 0) {
-        dst.set(src)
-        return
-    }
-    const shift = Math.round(px)
-    for (let y = 0; y < h; y++) {
-        for (let x = 0; x < w; x++) {
-            const di = (y * w + x) * 4
-            const srcR = clamp(x - shift, 0, w - 1)
-            const srcB = clamp(x + shift, 0, w - 1)
-            dst[di]     = src[(y * w + srcR) * 4]
-            dst[di + 1] = src[(y * w + x) * 4 + 1]
-            dst[di + 2] = src[(y * w + srcB) * 4 + 2]
-            dst[di + 3] = src[(y * w + x) * 4 + 3]
-        }
-    }
-}
-
-// Glow: Gaussian blur of original, then screen-blend at low opacity.
-async function applyGlow(canvas: HTMLCanvasElement, intensity: number) {
-    if (intensity <= 0) return
-    const ctx = canvas.getContext('2d')!
-    const blurAmount = 4 + (intensity / 100) * 16  // 4..20 px
-    const opacity = (intensity / 100) * 0.5
-
-    const blurCanvas = document.createElement('canvas')
-    blurCanvas.width = canvas.width
-    blurCanvas.height = canvas.height
-    const blurCtx = blurCanvas.getContext('2d')!
-    blurCtx.filter = `blur(${blurAmount}px)`
-    blurCtx.drawImage(canvas, 0, 0)
-
-    ctx.save()
-    ctx.globalCompositeOperation = 'screen'
-    ctx.globalAlpha = opacity
-    ctx.drawImage(blurCanvas, 0, 0)
-    ctx.restore()
-}
-
-export async function processImageClientSide(
-    file: File,
-    grade: ClientGrade,
-    outputFormat: string,
-    onProgress?: (msg: string) => void,
-    lutFile?: File | null,
-): Promise<{ blob: Blob; filename: string }> {
-    onProgress?.('Décodage…')
-    const img = await loadImage(file)
-    const w = img.naturalWidth
-    const h = img.naturalHeight
-
-    const canvas = document.createElement('canvas')
-    canvas.width = w
-    canvas.height = h
-    const ctx = canvas.getContext('2d', { willReadFrequently: true })!
-    ctx.drawImage(img, 0, 0)
-
-    onProgress?.('Lecture des pixels…')
-    const imageData = ctx.getImageData(0, 0, w, h)
-
-    // Stage 0: LUT (.cube) — applied first so subsequent edits work in the
-    // graded colour space.
-    if (lutFile) {
+export async function decodeImage(file: Blob): Promise<{ source: CanvasImageSource; width: number; height: number; close: () => void }> {
+    if (typeof createImageBitmap === 'function') {
         try {
-            onProgress?.('Application LUT…')
-            const { loadLutFromFile, applyLutInPlace } = await import('@/lib/cubeLut')
-            const lut = await loadLutFromFile(lutFile)
-            applyLutInPlace(imageData.data, lut)
-        } catch (e) {
-            console.warn('[lut] échec — on continue sans :', e)
+            const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' })
+            return { source: bmp, width: bmp.width, height: bmp.height, close: () => bmp.close() }
+        } catch {
+            // fall through to <img>
         }
     }
-
-    // Stage 1: chromatic aberration (operates on a copy)
-    if (grade.chromatic > 0) {
-        const tmp = new Uint8ClampedArray(imageData.data.length)
-        applyChromatic(imageData.data, tmp, w, h, grade.chromatic)
-        imageData.data.set(tmp)
+    const url = URL.createObjectURL(file)
+    try {
+        const img = new Image()
+        img.decoding = 'async'
+        img.src = url
+        await img.decode()
+        return { source: img, width: img.naturalWidth, height: img.naturalHeight, close: () => undefined }
+    } catch {
+        throw new Error('image illisible par le navigateur')
+    } finally {
+        URL.revokeObjectURL(url)
     }
+}
 
-    onProgress?.('Application des ajustements…')
-    applyAdjustments(imageData.data, w, h, grade)
-
-    if (grade.vignette > 0) {
-        onProgress?.('Vignette…')
-        applyVignette(imageData.data, w, h, grade.vignette)
+export async function processImageInBrowser(
+    file: File,
+    outputFormat: string,
+    opts: BrowserImageOptions = {},
+): Promise<{ blob: Blob; filename: string }> {
+    const fmt = outputFormat.toLowerCase()
+    if (!BROWSER_ENCODABLE.has(fmt)) throw new Error(`format ${fmt} non géré par le navigateur`)
+    const img = await decodeImage(file)
+    try {
+        const canvas = document.createElement('canvas')
+        renderStill(
+            img.source, img.width, img.height, canvas,
+            opts.lut ?? null, opts.filter ?? DEFAULT_FILTER, opts.sharpness ?? 0, opts.maxSide ?? 0,
+        )
+        if (canvas.width === 0 || canvas.height === 0) throw new Error('image trop grande pour le navigateur')
+        if (OPAQUE_FORMATS.has(fmt)) flattenOnWhite(canvas)
+        const blob = await encodeCanvas(canvas, fmt, opts.quality ?? 92)
+        if (!blob.size) throw new Error('encodage vide')
+        const base = file.name.replace(/\.[^.]+$/, '')
+        return { blob, filename: `${base}.${fmt === 'jpeg' ? 'jpg' : fmt}` }
+    } finally {
+        img.close()
     }
+}
 
-    if (grade.grain > 0) {
-        onProgress?.('Grain…')
-        applyGrain(imageData.data, grade.grain)
-    }
-
-    ctx.putImageData(imageData, 0, 0)
-
-    if (grade.glow > 0) {
-        onProgress?.('Glow…')
-        await applyGlow(canvas, grade.glow)
-    }
-
-    // Sharpness via canvas filter (approx).
-    if (grade.sharpness !== 0) {
-        // No native sharpen — skip for the client side (would need conv kernel).
-    }
-
-    onProgress?.('Encodage…')
-    const blob = await encodeCanvas(canvas, outputFormat)
-
-    const base = file.name.replace(/\.[^.]+$/, '')
-    const ext = outputFormat === 'jpeg' ? 'jpg' : outputFormat
-    const filename = `${base}.${ext}`
-    return { blob, filename }
+function flattenOnWhite(canvas: HTMLCanvasElement) {
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    ctx.save()
+    ctx.globalCompositeOperation = 'destination-over'
+    ctx.fillStyle = '#ffffff'
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    ctx.restore()
 }
 
 // ──────────────────────────────────────────────────────────
@@ -336,7 +86,7 @@ export async function processImageClientSide(
 // Native via canvas.toBlob: png, jpg, webp, avif.
 // Extra via libs: gif (gifenc), tiff (utif), pdf (jspdf), bmp & ico hand-rolled.
 // ──────────────────────────────────────────────────────────
-async function encodeCanvas(canvas: HTMLCanvasElement, format: string): Promise<Blob> {
+async function encodeCanvas(canvas: HTMLCanvasElement, format: string, quality: number): Promise<Blob> {
     const fmt = format.toLowerCase()
 
     // Native browser encoders.
@@ -346,10 +96,12 @@ async function encodeCanvas(canvas: HTMLCanvasElement, format: string): Promise<
             fmt === 'webp' ? 'image/webp' :
             fmt === 'avif' ? 'image/avif' :
             'image/png'
-        const quality = mime === 'image/png' ? undefined : 0.92
-        return new Promise<Blob>((resolve, reject) => {
-            canvas.toBlob((b) => b ? resolve(b) : reject(new Error('encode failed')), mime, quality)
-        })
+        const q = mime === 'image/png' ? undefined : Math.max(0.1, Math.min(1, quality / 100))
+        const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, mime, q))
+        // Browsers silently fall back to PNG for types they can't encode
+        // (AVIF on Chrome, WebP on older Safari): never ship a mislabelled file.
+        if (!blob || blob.type !== mime) throw new Error(`encodage ${fmt} non supporté par ce navigateur`)
+        return blob
     }
 
     if (fmt === 'bmp') return encodeBmp(canvas)
@@ -410,7 +162,8 @@ async function encodeIco(canvas: HTMLCanvasElement): Promise<Blob> {
     const tmp = document.createElement('canvas')
     tmp.width = w; tmp.height = h
     tmp.getContext('2d')!.drawImage(canvas, 0, 0, w, h)
-    const pngBlob = await new Promise<Blob>((r) => tmp.toBlob((b) => r(b!), 'image/png'))
+    const pngBlob = await new Promise<Blob | null>((r) => tmp.toBlob(r, 'image/png'))
+    if (!pngBlob) throw new Error('encodage ICO impossible')
     const pngBytes = new Uint8Array(await pngBlob.arrayBuffer())
 
     // ICO header (6 bytes) + 1 directory entry (16 bytes) + PNG data
@@ -434,16 +187,16 @@ async function encodeIco(canvas: HTMLCanvasElement): Promise<Blob> {
 
 // ── TIFF via utif ──
 async function encodeTiff(canvas: HTMLCanvasElement): Promise<Blob> {
-    const UTIF: any = (await import('utif')).default
+    const UTIF = (await import('utif')).default
     const ctx = canvas.getContext('2d')!
     const { data, width, height } = ctx.getImageData(0, 0, canvas.width, canvas.height)
-    const tiff = UTIF.encodeImage(data.buffer, width, height)
+    const tiff: ArrayBuffer = UTIF.encodeImage(data.buffer, width, height)
     return new Blob([tiff], { type: 'image/tiff' })
 }
 
 // ── GIF (single frame, adaptive palette via gifenc) ──
 async function encodeGifStatic(canvas: HTMLCanvasElement): Promise<Blob> {
-    const { GIFEncoder, quantize, applyPalette }: any = await import('gifenc')
+    const { GIFEncoder, quantize, applyPalette } = await import('gifenc')
     const ctx = canvas.getContext('2d')!
     const { data, width, height } = ctx.getImageData(0, 0, canvas.width, canvas.height)
     const gif = GIFEncoder()
@@ -451,12 +204,12 @@ async function encodeGifStatic(canvas: HTMLCanvasElement): Promise<Blob> {
     const index = applyPalette(data, palette)
     gif.writeFrame(index, width, height, { palette })
     gif.finish()
-    return new Blob([gif.bytes()], { type: 'image/gif' })
+    return new Blob([new Uint8Array(gif.bytes())], { type: 'image/gif' })
 }
 
 // ── PDF via jspdf ──
 async function encodePdf(canvas: HTMLCanvasElement): Promise<Blob> {
-    const { jsPDF }: any = await import('jspdf')
+    const { jsPDF } = await import('jspdf')
     const png = canvas.toDataURL('image/png')
     // Use point units; convert pixel size to points (1 px = 0.75 pt).
     const pt = (px: number) => px * 0.75
@@ -469,7 +222,3 @@ async function encodePdf(canvas: HTMLCanvasElement): Promise<Blob> {
     return pdf.output('blob')
 }
 
-export function isClientSupportedFormat(format: string): boolean {
-    return ['png', 'jpg', 'jpeg', 'webp', 'avif', 'bmp', 'ico', 'tiff', 'tif', 'gif', 'pdf']
-        .includes(format.toLowerCase())
-}

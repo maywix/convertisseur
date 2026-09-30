@@ -18,7 +18,7 @@ export interface Lut3D {
 }
 
 export function parseCubeLut(text: string): Lut3D {
-    const lines = text.split(/\r?\n/)
+    const lines = text.replace(/^\uFEFF/, '').split(/\r?\n/)
     let size = 0
     const domainMin: [number, number, number] = [0, 0, 0]
     const domainMax: [number, number, number] = [1, 1, 1]
@@ -47,6 +47,15 @@ export function parseCubeLut(text: string): Lut3D {
             domainMax[0] = parts[0] ?? 1
             domainMax[1] = parts[1] ?? 1
             domainMax[2] = parts[2] ?? 1
+            continue
+        }
+        if (line.startsWith('LUT_3D_INPUT_RANGE')) {
+            // DaVinci Resolve: one range for all three channels.
+            const [lo, hi] = line.split(/\s+/).slice(1).map(parseFloat)
+            if (Number.isFinite(lo) && Number.isFinite(hi)) {
+                domainMin[0] = domainMin[1] = domainMin[2] = lo
+                domainMax[0] = domainMax[1] = domainMax[2] = hi
+            }
             continue
         }
         // Skip any other unknown header lines that start with a letter.
@@ -147,4 +156,18 @@ export function applyLutInPlace(rgba: Uint8ClampedArray, lut: Lut3D): void {
 export async function loadLutFromFile(file: File): Promise<Lut3D> {
     const text = await file.text()
     return parseCubeLut(text)
+}
+
+/** Re-emit a LUT in the minimal .cube subset FFmpeg's lut3d parser accepts. */
+export function serializeCubeLut(lut: Lut3D): string {
+    const out: string[] = [
+        `LUT_3D_SIZE ${lut.size}`,
+        `DOMAIN_MIN ${lut.domainMin.map((v) => v.toFixed(6)).join(' ')}`,
+        `DOMAIN_MAX ${lut.domainMax.map((v) => v.toFixed(6)).join(' ')}`,
+    ]
+    const d = lut.data
+    for (let i = 0; i < d.length; i += 3) {
+        out.push(`${d[i].toFixed(6)} ${d[i + 1].toFixed(6)} ${d[i + 2].toFixed(6)}`)
+    }
+    return out.join('\n') + '\n'
 }

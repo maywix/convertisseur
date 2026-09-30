@@ -43,8 +43,8 @@ export async function buildZipFromBlobs(
     const { time, date } = dosDateTime(now)
     const encoder = new TextEncoder()
 
-    const localParts: Uint8Array[] = []
-    const centralParts: Uint8Array[] = []
+    const localParts: Uint8Array<ArrayBuffer>[] = []
+    const centralParts: Uint8Array<ArrayBuffer>[] = []
     let offset = 0
     let count = 0
 

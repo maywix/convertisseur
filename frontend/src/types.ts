@@ -1,314 +1,134 @@
-// Types for the converter application
+// ──────────────────────────────────────────────────────────
+// Shared types + the media/format catalogue.
+// ──────────────────────────────────────────────────────────
+
+export type MediaKind = 'video' | 'audio' | 'image' | 'pdf' | 'document' | '3d'
+
+export type ItemStatus = 'pending' | 'uploading' | 'queued' | 'processing' | 'done' | 'error'
 
 export interface QueueItem {
-  id: string;
-  file: File;
-  extraFiles?: File[];
-  mediaKind?: "video" | "audio" | "image" | "sequence" | "document" | "3d";
-  relativePath: string;
-  status: "pending" | "uploading" | "queued" | "processing" | "done" | "error";
-  jobId: string | null;
-  downloadUrl: string | null;
-  outputFilename: string | null;
-  error: string | null;
-  action: "convert" | "compress" | "convert_compress";
-  targetFormat: string | null;
-  outputMode: "global" | "custom";
-  customAction: "convert" | "compress" | "convert_compress" | null;
-  customConvertSettings: ConvertSettings | null;
-  customCompressSettings: CompressSettings | null;
-  progress?: number; // 0-100, only available for video/audio jobs
+    id: string
+    /** null when the item was restored from a previous visit (only the result exists). */
+    file: File | null
+    name: string
+    size: number
+    kind: MediaKind | 'sequence' | 'unknown'
+    relativePath: string
+    targetFormat: string
+    status: ItemStatus
+    /** 0-100 within the current phase (upload or processing). */
+    progress: number
+    jobId: string | null
+    /** Processed in the browser: downloadUrl is a blob: URL. */
+    local: boolean
+    downloadUrl: string | null
+    outputName: string | null
+    outputSize: number | null
+    error: string | null
+    /** Images of an "images → vidéo" slideshow (the first one is `file`). */
+    extraFiles?: File[]
 }
 
-export type OutputMode = "global" | "per-file";
-
-export type ExportMode = "zip" | "files";
-
-export interface JobResponse {
-  id: string;
-  status: "queued" | "processing" | "done" | "error";
-  error: string | null;
-  download_url: string | null;
-  output_filename: string | null;
-  media_type: string | null;
-  original_filename?: string;
-  action?: "convert" | "compress" | "convert_compress";
-  target_format?: string | null;
-  progress?: number;
+const EXT: Record<MediaKind, string[]> = {
+    video: [
+        'mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'flv', 'm4v', 'mpeg', 'mpg', '3gp', '3g2', 'ts', 'mts',
+        'm2ts', 'vob', 'ogv', 'divx', 'xvid', 'asf', 'rm', 'rmvb', 'f4v',
+    ],
+    audio: [
+        'mp3', 'wav', 'm4a', 'flac', 'aac', 'ogg', 'wma', 'aiff', 'aif', 'opus', 'ac3', 'eac3', 'dts', 'amr',
+        'ape', 'mka', 'mpa', 'au', 'ra', 'mid', 'midi',
+    ],
+    image: [
+        'png', 'jpg', 'jpeg', 'gif', 'tiff', 'tif', 'bmp', 'psd', 'heic', 'heif', 'webp', 'avif', 'ico', 'jp2',
+        'j2k', 'jpf', 'jpm', 'raw', 'cr2', 'nef', 'arw', 'dng', 'orf', 'rw2', 'pef', 'tga', 'sgi', 'qtif',
+        'pict', 'icns', 'svg',
+    ],
+    pdf: ['pdf'],
+    document: ['docx', 'doc', 'odt', 'rtf', 'xlsx', 'xls', 'ods', 'csv', 'pptx', 'ppt', 'odp'],
+    '3d': ['obj', 'stl', 'ply', 'glb', 'gltf', '3mf', 'off'],
 }
 
-export type MediaCategory = "video" | "audio" | "image" | "sequence" | "document" | "3d" | null;
-
-export interface ConvertSettings {
-  category: MediaCategory;
-  format: string;
-  // GIF settings
-  gifSpeed: string;
-  gifFps: string;
-  gifResolution: string;
-  gifColors: string;
-  gifDither: string;
-  gifLoop: string;
-  // Audio settings
-  audioBitrate: string;
-  audioCodec: string;
-  audioVolume: string;       // gain in dB (e.g. "3" = +3dB)
-  audioNormalize: boolean;
-  // Image settings
-  imageQuality: string;
-  imageMaxSize: string;
-  imageResizeMode: "none" | "dimension" | "percent";
-  imageResizePercent: string;
-  icoSize: string;
-  photoExposure: string;
-  photoContrast: string;
-  photoHighlights: string;
-  photoShadows: string;
-  photoWhites: string;
-  photoBlacks: string;
-  photoTemperature: string;
-  photoTint: string;
-  photoSaturation: string;
-  photoSharpness: string;
-  // Video encoding
-  videoCodec: string;        // e.g. "libx264", "libx265", "libvpx-vp9", "libaom-av1"
-  videoPreset: string;       // e.g. "fast", "medium", "slow"
-  videoCrf: string;          // quality level 0-51
-  videoFps: string;          // output FPS ("original" or number)
-  // Video transforms
-  videoResizeWidth: string;
-  videoResizeHeight: string;
-  videoRotate: "none" | "90" | "180" | "270" | "hflip" | "vflip";
-  videoCropTop: string;
-  videoCropBottom: string;
-  videoCropLeft: string;
-  videoCropRight: string;
-  videoDenoise: "none" | "light" | "medium" | "strong";
-  videoHDRtoSDR: boolean;
-  videoRemoveAudio: boolean;
-  // Video color grading (FFmpeg eq + colortemperature + hue)
-  videoExposure: string;     // -2 to +2 (EV)
-  videoContrast: string;     // -100 to +100 (%)
-  videoSaturation: string;   // -100 to +100 (%)
-  videoTemperature: string;  // -100 to +100 (cool/warm)
-  videoHue: string;          // -180 to +180 (degrees)
-  // Image upscaler (Lanczos): "1" / "2" / "3" / "4"
-  imageUpscale: string;
-  // Mini video editor
-  videoTrimStart: string;
-  videoTrimEnd: string;
-  overlayText: string;
-  overlayTextX: string;
-  overlayTextY: string;
-  sequenceFps: string;
-  // LUT colorimetric filter
-  lutFile: File | null;
-  // Color remover (chroma key)
-  colorRemoveEnabled: boolean;
-  colorRemoveColor: string;     // hex, e.g. "#ffffff"
-  colorRemoveTolerance: string; // 0-100
+const KIND_BY_EXT = new Map<string, MediaKind>()
+for (const [kind, exts] of Object.entries(EXT) as [MediaKind, string[]][]) {
+    for (const ext of exts) KIND_BY_EXT.set(ext, kind)
 }
 
-export interface CompressSettings {
-  mode: "crf" | "size" | "percent" | "res";
-  crfLevel: "low" | "medium" | "high";
-  targetSizeMb: string;
-  percentReduction: string;
-  resolution: string;
-  // Advanced
-  advancedEnabled: boolean;
-  fps: string;
-  preset: string;
-  videoCodec: string;
-  videoProfile: string;
-  videoTune: string;
-  qualityMode: "auto" | "crf" | "bitrate";
-  videoCrf: string;
-  videoBitrateK: string;
-  videoPixelFormat: string;
-  twoPass: boolean;
-  faststart: boolean;
-  deinterlace: boolean;
-  audioBitrate: string;
-  audioCodec: string;
-  audioChannels: string;
-  audioSampleRate: string;
-  // Image
-  imageMaxSize: string;
-  videoResizeWidth: string;
-  videoResizeHeight: string;
+export const ACCEPT_ATTR = Object.values(EXT).flat().map((e) => `.${e}`).join(',')
+
+export function extOf(name: string): string {
+    const dot = name.lastIndexOf('.')
+    return dot > 0 ? name.slice(dot + 1).toLowerCase() : ''
 }
 
-export const VIDEO_FORMATS = [
-  "mp4",
-  "webm",
-  "mkv",
-  "mov",
-  "avi",
-  "wmv",
-  "flv",
-  "m4v",
-  "mpeg",
-  "mpg",
-  "ogv",
-  "gif",
-  "zip",
-  "ts",
-];
-export const AUDIO_FORMATS = [
-  "mp3",
-  "aac",
-  "m4a",
-  "opus",
-  "ogg",
-  "flac",
-  "wav",
-  "wma",
-  "ac3",
-  "eac3",
-  "aiff",
-];
-export const IMAGE_FORMATS = [
-  "png",
-  "jpg",
-  "jpeg",
-  "gif",
-  "webp",
-  "avif",
-  "bmp",
-  "tiff",
-  "ico",
-  "pdf",
-];
+export function kindOf(name: string): MediaKind | 'unknown' {
+    return KIND_BY_EXT.get(extOf(name)) ?? 'unknown'
+}
 
-export const OFFICE_FORMATS = ["pdf"];
-export const MODEL_3D_FORMATS = ["glb", "obj", "stl", "ply", "3mf", "off"];
+export interface FormatOption {
+    value: string
+    label: string
+    group?: string
+}
 
-export const OFFICE_EXTENSIONS = [
-  "docx", "doc", "odt", "rtf",
-  "xlsx", "xls", "ods", "csv",
-  "pptx", "ppt", "odp",
-];
+const opt = (value: string, label = value.toUpperCase(), group?: string): FormatOption => ({ value, label, group })
 
-export const MODEL_3D_EXTENSIONS = [
-  "obj", "stl", "ply", "glb", "gltf", "3mf", "off",
-];
+export const FORMATS: Record<MediaKind, FormatOption[]> = {
+    video: [
+        opt('mp4', 'MP4', 'Vidéo'), opt('webm', 'WebM', 'Vidéo'), opt('mov', 'MOV', 'Vidéo'),
+        opt('mkv', 'MKV', 'Vidéo'), opt('avi', 'AVI', 'Vidéo'), opt('m4v', 'M4V', 'Vidéo'),
+        opt('wmv', 'WMV', 'Vidéo'), opt('flv', 'FLV', 'Vidéo'), opt('mpeg', 'MPEG', 'Vidéo'),
+        opt('ogv', 'OGV', 'Vidéo'), opt('ts', 'TS', 'Vidéo'),
+        opt('gif', 'GIF animé', 'Animation'),
+        opt('mp3', 'MP3', 'Son seul'), opt('m4a', 'M4A', 'Son seul'), opt('wav', 'WAV', 'Son seul'),
+        opt('flac', 'FLAC', 'Son seul'), opt('ogg', 'OGG', 'Son seul'), opt('opus', 'Opus', 'Son seul'),
+        opt('zip', 'PNG (zip)', 'Images'),
+    ],
+    audio: [
+        opt('mp3', 'MP3'), opt('m4a', 'M4A'), opt('aac', 'AAC'), opt('wav', 'WAV'), opt('flac', 'FLAC'),
+        opt('ogg', 'OGG'), opt('opus', 'Opus'), opt('aiff', 'AIFF'), opt('wma', 'WMA'), opt('ac3', 'AC3'),
+    ],
+    image: [
+        opt('jpg', 'JPG'), opt('png', 'PNG'), opt('webp', 'WebP'), opt('avif', 'AVIF'), opt('gif', 'GIF'),
+        opt('bmp', 'BMP'), opt('tiff', 'TIFF'), opt('ico', 'ICO'), opt('pdf', 'PDF'),
+    ],
+    pdf: [opt('pdf', 'PDF compressé'), opt('txt', 'Texte (TXT)')],
+    document: [opt('pdf', 'PDF')],
+    '3d': [opt('glb', 'GLB'), opt('obj', 'OBJ'), opt('stl', 'STL'), opt('ply', 'PLY'), opt('3mf', '3MF'), opt('off', 'OFF')],
+}
 
-export const VIDEO_EXTENSIONS = [
-  "mp4",
-  "mov",
-  "avi",
-  "mkv",
-  "webm",
-  "wmv",
-  "flv",
-  "m4v",
-  "mpeg",
-  "mpg",
-  "3gp",
-  "3g2",
-  "ts",
-  "mts",
-  "m2ts",
-  "vob",
-  "ogv",
-  "divx",
-  "xvid",
-  "asf",
-  "rm",
-  "rmvb",
-  "f4v",
-  "mxf",
-  "dv",
-  "tod",
-  "nsv",
-  "amv",
-];
+export const DEFAULT_FORMAT: Record<MediaKind, string> = {
+    video: 'mp4',
+    audio: 'mp3',
+    image: 'jpg',
+    pdf: 'pdf',
+    document: 'pdf',
+    '3d': 'glb',
+}
 
-export const AUDIO_EXTENSIONS = [
-  "mp3",
-  "wav",
-  "m4a",
-  "flac",
-  "aac",
-  "ogg",
-  "wma",
-  "aiff",
-  "aif",
-  "opus",
-  "ac3",
-  "dts",
-  "amr",
-  "ape",
-  "mka",
-  "mpa",
-  "au",
-  "ra",
-  "mid",
-  "midi",
-  "eac3",
-  "tta",
-  "spx",
-  "wv",
-  "aifc",
-];
+export const KIND_LABEL: Record<MediaKind, string> = {
+    video: 'Vidéos',
+    audio: 'Audio',
+    image: 'Images',
+    pdf: 'PDF',
+    document: 'Documents',
+    '3d': 'Modèles 3D',
+}
 
-export const IMAGE_EXTENSIONS = [
-  "png",
-  "jpg",
-  "jpeg",
-  "gif",
-  "tiff",
-  "tif",
-  "bmp",
-  "psd",
-  "heic",
-  "heif",
-  "webp",
-  "ico",
-  "jp2",
-  "j2k",
-  "jpf",
-  "jpm",
-  "raw",
-  "cr2",
-  "nef",
-  "arw",
-  "dng",
-  "orf",
-  "rw2",
-  "pef",
-  "tga",
-  "sgi",
-  "qtif",
-  "pict",
-  "icns",
-  "avif",
-  "jxl",
-  "ppm",
-  "pgm",
-  "pbm",
-  "pnm",
-  "svg",
-];
+export const AUDIO_FORMATS = new Set(['mp3', 'aac', 'm4a', 'opus', 'ogg', 'flac', 'wav', 'wma', 'ac3', 'eac3', 'aiff'])
 
-export function getFileType(
-  filename: string,
-): "video" | "audio" | "image" | "document" | "3d" | "unknown" {
-  if (!filename) return "unknown";
-  const ext = filename.split(".").pop()?.toLowerCase() || "";
-  if (IMAGE_EXTENSIONS.includes(ext)) return "image";
-  if (VIDEO_EXTENSIONS.includes(ext)) return "video";
-  if (AUDIO_EXTENSIONS.includes(ext)) return "audio";
-  if (OFFICE_EXTENSIONS.includes(ext)) return "document";
-  if (MODEL_3D_EXTENSIONS.includes(ext)) return "3d";
-  return "unknown";
+export function formatLabel(kind: QueueItem['kind'], value: string): string {
+    const list = kind === 'sequence' ? FORMATS.video : kind === 'unknown' ? [] : FORMATS[kind]
+    return list.find((f) => f.value === value)?.label ?? value.toUpperCase()
 }
 
 export function formatSize(bytes: number): string {
-  if (bytes === 0) return "0 B";
-  const k = 1024;
-  const sizes = ["B", "KB", "MB", "GB"];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
+    if (!bytes) return '0 o'
+    const units = ['o', 'Ko', 'Mo', 'Go']
+    const i = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)))
+    const value = bytes / 1024 ** i
+    return `${value.toLocaleString('fr-FR', { maximumFractionDigits: value < 10 && i > 0 ? 1 : 0 })} ${units[i]}`
+}
+
+export function isActive(status: ItemStatus): boolean {
+    return status === 'uploading' || status === 'queued' || status === 'processing'
 }
