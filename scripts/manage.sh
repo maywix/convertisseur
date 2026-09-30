@@ -56,6 +56,15 @@ build_frontend() {
         log "Frontend: no changes detected, skipping build"
         return
     fi
+    # A previous build run as root (e.g. inside Docker) leaves dist/ files the
+    # current user cannot delete: take them back before vite empties the folder.
+    if [[ -d dist ]] && find dist ! -writable -print -quit 2>/dev/null | grep -q .; then
+        log "frontend/dist n'est pas modifiable (fichiers root) : correction des droits…"
+        sudo chown -R "$(id -u):$(id -g)" dist 2>/dev/null || sudo rm -rf dist || {
+            log "Impossible de corriger dist/. Lance : sudo chown -R \$USER: frontend/dist"
+            return 1
+        }
+    fi
     if command -v bun >/dev/null 2>&1 && bun --version >/dev/null 2>&1; then
         [[ -d node_modules ]] || bun install
         bun run build
