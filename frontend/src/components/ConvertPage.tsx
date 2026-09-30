@@ -1,18 +1,19 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
-    ActionPicker, CategoryPicker, CompressFields, DetailSwitch, FormatChips, FormatSelect, OptionGroups, StepTitle,
+    ActionPicker, CategoryPicker, CompressFields, FormatChips, FormatSelect, OptionGroups, StepTitle,
 } from '@/components/ConvertOptionsPanel'
 import { DropCard } from '@/components/DropZone'
 import { FileRow } from '@/components/FileRow'
 import { JobLogDialog } from '@/components/JobLogDialog'
-import { IconDownload, IconPlay, IconPlus, IconTrash } from '@/components/icons'
+import { IconArrowDown, IconAudio, IconDownload, IconImage, IconPlay, IconPlus, IconTrash, IconVideo, IconWand } from '@/components/icons'
 import { Button, Label, ProgressBar, Select, Toggle } from '@/components/ui'
 import type { QueueApi } from '@/hooks/useQueue'
 import {
     CATEGORY_FORMATS, CATEGORY_KINDS, DEFAULT_CONVERT_OPTIONS, categoryOfItem, groupsFor, groupsForKinds, inferCategory, planForItem,
-    type Category, type ConvertOptions,
+    type Category, type CompressLevel, type ConvertOptions,
 } from '@/lib/convertPlan'
 import type { ProcessingPreference } from '@/lib/settings'
+import { cn } from '@/lib/utils'
 import { AUDIO_FORMATS, FORMATS, KIND_LABEL, formatSize, isActive, type MediaKind, type QueueItem } from '@/types'
 
 const OPTIONS_KEY = 'convertisseur_convert_options_v3'
@@ -25,8 +26,8 @@ function loadOptions(): ConvertOptions {
             const o = { ...DEFAULT_CONVERT_OPTIONS, ...saved } as ConvertOptions & Record<string, unknown>
             // Earlier versions kept compression targets in the video quality.
             if (saved.videoQuality === 'size' || saved.videoQuality === 'percent') o.videoQuality = 'balanced'
-            if (typeof saved.advanced === 'boolean' && saved.detail === undefined) o.detail = saved.advanced ? 'advanced' : 'simple'
             delete o.advanced
+            delete o.detail
             delete o.videoTargetMb
             delete o.videoPercent
             // Action, type, cuts and text are per-batch choices: never restored.
@@ -52,6 +53,54 @@ function categoryFormat(cat: Category, kindFormats: Record<MediaKind, string>, o
     }
 }
 
+// ── Simple mode: one click presets ──
+
+type PresetId = 'auto' | 'mp4' | 'gif' | 'mp3' | 'jpg' | 'png' | 'webp' | 'compress'
+
+interface Preset {
+    id: PresetId
+    label: string
+    icon: ReactNode
+    hint: string
+    /** Output type shown in Pro mode (undefined: unchanged). */
+    category?: Category | null
+    formats: Partial<Record<MediaKind, string>>
+}
+
+const PRESETS: Preset[] = [
+    {
+        id: 'auto', label: 'Auto', icon: <IconWand size={14} />, category: null,
+        hint: 'Le format le plus pratique pour chaque fichier : vidéos en MP4, sons en MP3, images en JPG, documents en PDF, 3D en GLB.',
+        formats: { video: 'mp4', audio: 'mp3', image: 'jpg', pdf: 'pdf', document: 'pdf', '3d': 'glb' },
+    },
+    { id: 'mp4', label: 'Vidéo → MP4', icon: <IconVideo size={14} />, category: 'video', hint: 'Toutes les vidéos en MP4 (H.264), lisible partout.', formats: { video: 'mp4' } },
+    { id: 'gif', label: 'Vidéo → GIF', icon: <IconImage size={14} />, category: 'video', hint: 'Les vidéos deviennent des GIF animés (480 px, 15 images/s).', formats: { video: 'gif' } },
+    { id: 'mp3', label: 'Extraire le son', icon: <IconAudio size={14} />, category: 'audio', hint: 'Le son des vidéos (et les fichiers audio) en MP3.', formats: { video: 'mp3', audio: 'mp3' } },
+    { id: 'jpg', label: 'Image → JPG', icon: <IconImage size={14} />, category: 'image', hint: 'Photos en JPG, le format le plus compatible (HEIC, RAW, PNG…).', formats: { image: 'jpg' } },
+    { id: 'png', label: 'Image → PNG', icon: <IconImage size={14} />, category: 'image', hint: 'Images en PNG : sans perte, garde la transparence.', formats: { image: 'png' } },
+    { id: 'webp', label: 'Image → WebP', icon: <IconImage size={14} />, category: 'image', hint: 'Images en WebP : plus léger que le JPG, pour le web.', formats: { image: 'webp' } },
+    { id: 'compress', label: 'Réduire le poids', icon: <IconArrowDown size={14} />, hint: 'Même format, fichier plus léger : vidéos, sons, images et PDF.', formats: {} },
+]
+
+const LEVELS: [CompressLevel, string][] = [['low', 'Légère'], ['medium', 'Moyenne'], ['high', 'Forte']]
+
+function Pill({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }) {
+    return (
+        <button
+            type="button"
+            role="radio"
+            aria-checked={active}
+            onClick={onClick}
+            className={cn(
+                'inline-flex items-center gap-2 rounded-[4px] border px-4 py-2.5 text-[13px] transition-colors',
+                active ? 'border-foreground bg-foreground/[0.06] font-semibold text-foreground' : 'border-border text-muted-foreground hover:border-input hover:text-foreground',
+            )}
+        >
+            {children}
+        </button>
+    )
+}
+
 function Step({ n, title, aside, children }: { n: number; title: string; aside?: ReactNode; children: ReactNode }) {
     return (
         <section>
@@ -71,7 +120,10 @@ export function ConvertPage({
     onExportMode,
     background,
     onBackground,
+    mode,
 }: {
+    /** simple: presets and a list. pro: every setting, step by step. */
+    mode: 'simple' | 'pro'
     queue: QueueApi
     processing: ProcessingPreference
     retentionHours: number
@@ -99,6 +151,7 @@ export function ConvertPage({
     const optionsFor = useCallback((it: QueueItem) => overrides[it.id] ?? options, [overrides, options])
 
     const [logItem, setLogItem] = useState<QueueItem | null>(null)
+    const [preset, setPreset] = useState<PresetId>('auto')
 
     // Step 2 preselects a type from the files until one is picked.
     const category = options.category ?? inferCategory(items)
@@ -131,12 +184,20 @@ export function ConvertPage({
         }
     }, [items])
 
-    const slideshow = category === 'slideshow' && options.action !== 'compress' && stats.pendingImages > 0
+    const slideshow = mode === 'pro' && category === 'slideshow' && options.action !== 'compress' && stats.pendingImages > 0
 
     const applyFormat = useCallback((cat: Category, fmt: string) => {
         if (cat === 'slideshow') return setOptions({ slideshowFormat: fmt as ConvertOptions['slideshowFormat'] })
         for (const kind of CATEGORY_KINDS[cat]) queue.setFormatForKind(kind, kind === 'pdf' ? 'pdf' : fmt)
     }, [queue, setOptions])
+
+    const applyPreset = (p: Preset) => {
+        setPreset(p.id)
+        setOptions(p.id === 'compress'
+            ? { action: 'compress' }
+            : { action: 'convert', ...(p.category !== undefined ? { category: p.category } : {}) })
+        for (const [kind, fmt] of Object.entries(p.formats)) queue.setFormatForKind(kind as MediaKind, fmt)
+    }
 
     const pickCategory = (cat: Category) => {
         setOptions({ category: cat })
@@ -204,7 +265,7 @@ export function ConvertPage({
     }, [start, stats.pending.length])
 
     // ── Settings column ──
-    const o: ConvertOptions = editing ? { ...(overrides[editing.id] ?? options), detail: options.detail } : options
+    const o: ConvertOptions = editing ? overrides[editing.id] ?? options : options
     const set = editing ? setEditedOptions : setOptions
     const compressing = o.action !== 'convert'
     const covered = category ? CATEGORY_KINDS[category] : []
@@ -227,9 +288,8 @@ export function ConvertPage({
             <div className="flex items-start justify-between gap-3 border-b border-border px-5 py-4">
                 <div className="min-w-0">
                     <h2 className="text-[15px] font-bold">Réglages</h2>
-                    <p className="mt-0.5 text-[11px] text-faint">Simple par défaut, complet si nécessaire.</p>
+                    <p className="mt-0.5 text-[11px] text-faint">Tous les paramètres, étape par étape.</p>
                 </div>
-                <DetailSwitch value={options.detail} onChange={(v) => setOptions({ detail: v })} />
             </div>
 
             {editing && (
@@ -300,7 +360,7 @@ export function ConvertPage({
                 )}
 
                 {groups.length > 0 ? (
-                    <Step n={step++} title="Options" aside={options.detail === 'simple' ? 'Avancé : tous les réglages' : undefined}>
+                    <Step n={step++} title="Options">
                         <OptionGroups
                             o={o}
                             set={set}
@@ -341,7 +401,158 @@ export function ConvertPage({
         </div>
     )
 
-    // ── Queue column ──
+    // ── Shared blocks ──
+    const doneCard = allFinished && stats.done.length > 0 && (
+        <div className="fade-up flex flex-wrap items-center gap-3.5 rounded-[4px] border border-success/25 bg-success/[0.06] px-5 py-4">
+            <span className="text-lg text-success">✓</span>
+            <div className="min-w-0 flex-1">
+                <p className="text-[13px] font-semibold">Terminé</p>
+                <p className="truncate text-[11px] text-faint">
+                    {stats.done.length} fichier{stats.done.length > 1 ? 's' : ''}{stats.doneBytes ? ` · ${formatSize(stats.doneBytes)}` : ''}
+                    {stats.errors ? ` · ${stats.errors} en erreur` : ''}
+                </p>
+            </div>
+            <button
+                type="button"
+                onClick={() => void queue.downloadMany(stats.done)}
+                className="rounded-[3px] bg-success px-4 py-2 text-xs font-bold text-black transition-opacity hover:opacity-85"
+            >
+                {stats.done.length > 1 ? (exportMode === 'zip' ? 'Tout sauvegarder (.zip)' : `Tout sauvegarder (${stats.done.length})`) : 'Sauvegarder'}
+            </button>
+        </div>
+    )
+
+    const pro = mode === 'pro'
+    const queueCard = (
+        <div className="overflow-hidden rounded-[4px] border border-border bg-card">
+            <div className="flex items-center gap-1 border-b border-border px-4 py-3">
+                <h2 className="mr-auto text-[14px] font-bold">
+                    File d'attente <span className="font-normal text-faint tabular-nums">({items.length})</span>
+                </h2>
+                <Button size="sm" variant="ghost" disabled={stats.done.length === 0} onClick={() => void queue.downloadMany(stats.done)}>
+                    <IconDownload size={14} /> <span className="hidden sm:inline">Exporter les fichiers</span><span className="sm:hidden">Exporter</span>
+                </Button>
+                <Button size="sm" variant="ghost" disabled={items.length === 0} onClick={() => { setEditingId(null); setOverrides({}); void queue.clear() }}>
+                    <IconTrash size={14} /> Vider
+                </Button>
+            </div>
+
+            {stats.running.length > 0 && (
+                <div className="border-b border-border px-4 py-3">
+                    <div className="mb-2 flex items-center justify-between text-[12px]">
+                        <span>
+                            {stats.running.some((it) => it.status === 'uploading') ? 'Envoi et conversion' : 'Conversion'} · {stats.done.length}/{stats.done.length + stats.running.length}
+                            {stats.errors ? ` · ${stats.errors} en erreur` : ''}
+                        </span>
+                        <span className="font-bold tabular-nums">{stats.overall}%</span>
+                    </div>
+                    <ProgressBar value={stats.overall} />
+                    <p className="mt-2 text-[11px] text-faint">
+                        {stats.running.some((it) => it.status === 'uploading') ? 'Garde la page ouverte pendant l’envoi.'
+                            : stats.running.some((it) => it.local) ? 'Garde la page ouverte : conversion dans ton navigateur.'
+                                : background ? 'Tu peux fermer la page : le serveur continue.'
+                                    : 'Garde la page ouverte (arrière-plan désactivé).'}
+                    </p>
+                </div>
+            )}
+
+            {items.length === 0 ? (
+                <div className="flex flex-col items-center px-6 py-14 text-center">
+                    <span className="flex h-11 w-11 items-center justify-center rounded-[4px] border border-input text-muted-foreground"><IconPlus size={18} /></span>
+                    <p className="mt-4 text-[13px] font-semibold">Aucun fichier dans la file</p>
+                    <p className="mt-1 text-[12px] text-faint">Glisse-dépose ou clique sur « Choisir les fichiers ».</p>
+                </div>
+            ) : (
+                <div className="scroll-thin max-h-[640px] divide-y divide-border overflow-y-auto">
+                    {items.map((it) => {
+                        const itemAction = optionsFor(it).action
+                        return (
+                            <FileRow
+                                key={it.id}
+                                item={it}
+                                custom={pro && !!overrides[it.id]}
+                                editing={pro && editingId === it.id}
+                                onFormat={onFormat}
+                                onRemove={queue.remove}
+                                onRetry={retry}
+                                onDownload={queue.download}
+                                onShowLog={pro ? setLogItem : undefined}
+                                onEdit={pro ? onEdit : undefined}
+                                formatNote={
+                                    it.status === 'pending' && itemAction === 'compress' && it.kind !== 'document' && it.kind !== '3d'
+                                        ? 'compressé · même format'
+                                        : it.status === 'pending' && slideshow && it.kind === 'image' ? 'dans le diaporama' : undefined
+                                }
+                            />
+                        )
+                    })}
+                </div>
+            )}
+        </div>
+    )
+
+    const retention = (
+        <p className="text-center text-[11px] text-faint">
+            Les fichiers envoyés au serveur sont supprimés automatiquement après {retentionHours} h.
+        </p>
+    )
+
+    // ── Simple mode ──
+    if (!pro) {
+        const current = PRESETS.find((p) => p.id === preset) ?? PRESETS[0]
+        const doing = options.action === 'compress' ? 'Compresser' : 'Convertir'
+        return (
+            <>
+                <section>
+                    <p className="mb-3 text-[10px] font-bold tracking-[0.1em] text-faint uppercase">Que veux-tu faire ?</p>
+                    <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Que veux-tu faire ?">
+                        {PRESETS.map((p) => (
+                            <Pill key={p.id} active={preset === p.id} onClick={() => applyPreset(p)}>
+                                <span className={preset === p.id ? 'text-foreground' : 'text-faint'}>{p.icon}</span>
+                                {p.label}
+                            </Pill>
+                        ))}
+                    </div>
+                    <p className="mt-3 text-[12px] text-muted-foreground">{current.hint}</p>
+                    {preset === 'compress' && (
+                        <div className="mt-3 flex flex-wrap items-center gap-2" role="radiogroup" aria-label="Niveau de compression">
+                            <span className="mr-1 text-[12px] text-faint">Niveau</span>
+                            {LEVELS.map(([v, label]) => (
+                                <Pill key={v} active={options.compressMode === 'level' && options.compressLevel === v}
+                                    onClick={() => setOptions({ compressMode: 'level', compressLevel: v })}>
+                                    {label}
+                                </Pill>
+                            ))}
+                        </div>
+                    )}
+                </section>
+
+                <DropCard onFiles={addFiles} compact={items.length > 0} />
+                {doneCard}
+
+                {items.length > 0 && (
+                    <>
+                        {queueCard}
+                        <div className="space-y-3">
+                            <Button variant="primary" size="lg" className="w-full" disabled={startCount === 0} onClick={start} title="Ctrl + Entrée">
+                                {startCount > 0
+                                    ? `${doing} ${startCount > 1 ? `${startCount} fichiers` : 'le fichier'}`
+                                    : allFinished && stats.done.length > 0 ? 'Tout est prêt' : 'Conversion en cours…'}
+                            </Button>
+                            <label className="flex cursor-pointer items-center justify-center gap-2 text-[12px] text-muted-foreground select-none">
+                                <input type="checkbox" checked={autoDownload} onChange={(e) => onAutoDownload(e.target.checked)} className="h-[14px] w-[14px] accent-primary" />
+                                Télécharger automatiquement à la fin
+                            </label>
+                        </div>
+                        {retention}
+                    </>
+                )}
+                {items.length === 0 && <Compat />}
+            </>
+        )
+    }
+
+    // ── Pro mode ──
     return (
         <>
             <div className="grid items-start gap-5 lg:grid-cols-[390px_minmax(0,1fr)] lg:gap-6">
@@ -349,96 +560,9 @@ export function ConvertPage({
 
                 <div className="order-1 min-w-0 space-y-5 lg:order-2">
                     <DropCard onFiles={addFiles} compact={items.length > 0} />
-
-                    {allFinished && stats.done.length > 0 && (
-                        <div className="fade-up flex flex-wrap items-center gap-3.5 rounded-[4px] border border-success/25 bg-success/[0.06] px-5 py-4">
-                            <span className="text-lg text-success">✓</span>
-                            <div className="min-w-0 flex-1">
-                                <p className="text-[13px] font-semibold">Terminé</p>
-                                <p className="truncate text-[11px] text-faint">
-                                    {stats.done.length} fichier{stats.done.length > 1 ? 's' : ''}{stats.doneBytes ? ` · ${formatSize(stats.doneBytes)}` : ''}
-                                    {stats.errors ? ` · ${stats.errors} en erreur` : ''}
-                                </p>
-                            </div>
-                            <button
-                                type="button"
-                                onClick={() => void queue.downloadMany(stats.done)}
-                                className="rounded-[3px] bg-success px-4 py-2 text-xs font-bold text-black transition-opacity hover:opacity-85"
-                            >
-                                {stats.done.length > 1 ? (exportMode === 'zip' ? 'Tout sauvegarder (.zip)' : `Tout sauvegarder (${stats.done.length})`) : 'Sauvegarder'}
-                            </button>
-                        </div>
-                    )}
-
-                    <div className="overflow-hidden rounded-[4px] border border-border bg-card">
-                        <div className="flex items-center gap-1 border-b border-border px-4 py-3">
-                            <h2 className="mr-auto text-[14px] font-bold">
-                                File d'attente <span className="font-normal text-faint tabular-nums">({items.length})</span>
-                            </h2>
-                            <Button size="sm" variant="ghost" disabled={stats.done.length === 0} onClick={() => void queue.downloadMany(stats.done)}>
-                                <IconDownload size={14} /> <span className="hidden sm:inline">Exporter les fichiers</span><span className="sm:hidden">Exporter</span>
-                            </Button>
-                            <Button size="sm" variant="ghost" disabled={items.length === 0} onClick={() => { setEditingId(null); setOverrides({}); void queue.clear() }}>
-                                <IconTrash size={14} /> Vider
-                            </Button>
-                        </div>
-
-                        {stats.running.length > 0 && (
-                            <div className="border-b border-border px-4 py-3">
-                                <div className="mb-2 flex items-center justify-between text-[12px]">
-                                    <span>
-                                        {stats.running.some((it) => it.status === 'uploading') ? 'Envoi et conversion' : 'Conversion'} · {stats.done.length}/{stats.done.length + stats.running.length}
-                                        {stats.errors ? ` · ${stats.errors} en erreur` : ''}
-                                    </span>
-                                    <span className="font-bold tabular-nums">{stats.overall}%</span>
-                                </div>
-                                <ProgressBar value={stats.overall} />
-                                <p className="mt-2 text-[11px] text-faint">
-                                    {stats.running.some((it) => it.status === 'uploading') ? 'Garde la page ouverte pendant l’envoi.'
-                                        : stats.running.some((it) => it.local) ? 'Garde la page ouverte : conversion dans ton navigateur.'
-                                            : background ? 'Tu peux fermer la page : le serveur continue.'
-                                                : 'Garde la page ouverte (arrière-plan désactivé).'}
-                                </p>
-                            </div>
-                        )}
-
-                        {items.length === 0 ? (
-                            <div className="flex flex-col items-center px-6 py-14 text-center">
-                                <span className="flex h-11 w-11 items-center justify-center rounded-[4px] border border-input text-muted-foreground"><IconPlus size={18} /></span>
-                                <p className="mt-4 text-[13px] font-semibold">Aucun fichier dans la file</p>
-                                <p className="mt-1 text-[12px] text-faint">Glisse-dépose ou clique sur « Choisir les fichiers ».</p>
-                            </div>
-                        ) : (
-                            <div className="scroll-thin max-h-[640px] divide-y divide-border overflow-y-auto">
-                                {items.map((it) => {
-                                    const itemAction = optionsFor(it).action
-                                    return (
-                                        <FileRow
-                                            key={it.id}
-                                            item={it}
-                                            custom={!!overrides[it.id]}
-                                            editing={editingId === it.id}
-                                            onFormat={onFormat}
-                                            onRemove={queue.remove}
-                                            onRetry={retry}
-                                            onDownload={queue.download}
-                                            onShowLog={setLogItem}
-                                            onEdit={onEdit}
-                                            formatNote={
-                                                it.status === 'pending' && itemAction === 'compress' && it.kind !== 'document' && it.kind !== '3d'
-                                                    ? 'compressé · même format'
-                                                    : it.status === 'pending' && slideshow && it.kind === 'image' ? 'dans le diaporama' : undefined
-                                            }
-                                        />
-                                    )
-                                })}
-                            </div>
-                        )}
-                    </div>
-
-                    <p className="text-center text-[11px] text-faint">
-                        Les fichiers envoyés au serveur sont supprimés automatiquement après {retentionHours} h.
-                    </p>
+                    {doneCard}
+                    {queueCard}
+                    {retention}
                 </div>
             </div>
 

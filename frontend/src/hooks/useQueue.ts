@@ -10,6 +10,7 @@ import {
     type ServerConfig,
 } from '@/lib/api'
 import { releaseObjectUrl } from '@/lib/objectUrl'
+import { releaseThumbnail } from '@/lib/thumbnails'
 import { DEFAULT_FORMAT, isActive, kindOf, type MediaKind, type QueueItem } from '@/types'
 
 export interface ServerPlan {
@@ -39,6 +40,8 @@ interface Transfer {
 }
 
 const STORAGE_KEY = 'convertisseur_jobs_v2'
+/** Files uploaded / converted at the same time (outside a rate-limited tunnel). */
+const PARALLEL_TASKS = 3
 
 interface StoredJob {
     jobId: string
@@ -77,6 +80,7 @@ function releaseResult(it: QueueItem) {
 function releaseItem(it: QueueItem) {
     releaseResult(it)
     releaseObjectUrl(it.file)
+    releaseThumbnail(it.file)
 }
 
 export interface QueueOptions {
@@ -113,7 +117,7 @@ export function useQueue(config: ServerConfig, queueOptions: QueueOptions) {
     const transferRef = useLatest(transfer)
 
     const tasksRef = useRef<{ id: string; plan: JobPlan }[]>([])
-    const pumpingRef = useRef(false)
+    const activeRef = useRef(0)
     const controllersRef = useRef(new Map<string, AbortController>())
     const batchesRef = useRef<Batch[]>([])
     const autoDownloadRef = useLatest(autoDownload)
@@ -254,30 +258,36 @@ export function useQueue(config: ServerConfig, queueOptions: QueueOptions) {
         patch(item.id, { status: 'queued', progress: 0, jobId })
     }, [patch, setProgress, transferRef])
 
-    const pump = useCallback(async () => {
-        if (pumpingRef.current) return
-        pumpingRef.current = true
-        try {
-            while (tasksRef.current.length) {
-                const task = tasksRef.current.shift()!
-                const item = itemsRef.current.find((i) => i.id === task.id)
-                if (!item) continue
-                const ctrl = new AbortController()
-                controllersRef.current.set(item.id, ctrl)
-                try {
-                    await execute(item, task.plan, ctrl.signal)
-                } catch (e) {
-                    if (!ctrl.signal.aborted && !isAbort(e)) {
-                        patch(item.id, { status: 'error', error: errorMessage(e) })
+    // Several files at once: while one uploads, another is sent or converted.
+    // Through a rate-limited tunnel, one at a time so the limit holds.
+    const pump = useCallback(() => {
+        const worker = async () => {
+            activeRef.current++
+            try {
+                while (tasksRef.current.length) {
+                    const task = tasksRef.current.shift()!
+                    const item = itemsRef.current.find((i) => i.id === task.id)
+                    if (!item) continue
+                    const ctrl = new AbortController()
+                    controllersRef.current.set(item.id, ctrl)
+                    try {
+                        await execute(item, task.plan, ctrl.signal)
+                    } catch (e) {
+                        if (!ctrl.signal.aborted && !isAbort(e)) {
+                            patch(item.id, { status: 'error', error: errorMessage(e) })
+                        }
+                    } finally {
+                        controllersRef.current.delete(item.id)
                     }
-                } finally {
-                    controllersRef.current.delete(item.id)
                 }
+            } finally {
+                activeRef.current--
             }
-        } finally {
-            pumpingRef.current = false
         }
-    }, [execute, patch, itemsRef])
+        const limit = transferRef.current.rateLimit > 0 ? 1 : PARALLEL_TASKS
+        const spawn = Math.min(limit - activeRef.current, tasksRef.current.length)
+        for (let i = 0; i < spawn; i++) void worker()
+    }, [execute, patch, itemsRef, transferRef])
 
     /** Queue items for processing. Re-running a finished item replaces its result. */
     const run = useCallback((entries: { id: string; plan: JobPlan }[], opts: { autoDownload?: boolean } = {}) => {
@@ -297,7 +307,7 @@ export function useQueue(config: ServerConfig, queueOptions: QueueOptions) {
         batchesRef.current = batchesRef.current.filter((b) => b.ids.size > 0)
         batchesRef.current.push({ ids, autoDownload: !!opts.autoDownload })
         // Let React commit the "queued" state before the engine reads items.
-        window.setTimeout(() => { void pump() }, 0)
+        window.setTimeout(pump, 0)
     }, [pump, itemsRef])
 
     // ── Polling server jobs ───────────────────────────────
@@ -358,16 +368,22 @@ export function useQueue(config: ServerConfig, queueOptions: QueueOptions) {
     })
     const [restoring, setRestoring] = useState(savedJobs.length > 0 && background)
 
+    // Progress ticks re-render often: only write when the saved list changes.
+    const lastSavedRef = useRef<string | null>(null)
     useEffect(() => {
         if (restoring) return
         if (!background) {
             try { localStorage.removeItem(STORAGE_KEY) } catch { /* ignore */ }
+            lastSavedRef.current = null
             return
         }
         const stored: StoredJob[] = items
             .filter((it) => it.jobId && !it.local && it.status !== 'error')
             .map((it) => ({ jobId: it.jobId!, name: it.name, size: it.size, kind: it.kind, targetFormat: it.targetFormat }))
-        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(stored)) } catch { /* ignore */ }
+        const json = JSON.stringify(stored)
+        if (json === lastSavedRef.current) return
+        lastSavedRef.current = json
+        try { localStorage.setItem(STORAGE_KEY, json) } catch { /* ignore */ }
     }, [items, restoring, background])
 
     const backgroundAtStart = useRef(background)

@@ -86,29 +86,6 @@ export function FormatSelect({ value, options, onChange, label }: { value: strin
 
 // ── Steps ────────────────────────────────────────────────
 
-/** "Simple | Avancé" pill. */
-export function DetailSwitch({ value, onChange }: { value: ConvertOptions['detail']; onChange: (v: ConvertOptions['detail']) => void }) {
-    return (
-        <div className="inline-flex rounded-[4px] border border-input p-0.5" role="radiogroup" aria-label="Niveau de détail">
-            {([['simple', 'Simple'], ['advanced', 'Avancé']] as const).map(([v, label]) => (
-                <button
-                    key={v}
-                    type="button"
-                    role="radio"
-                    aria-checked={value === v}
-                    onClick={() => onChange(v)}
-                    className={cn(
-                        'h-7 rounded-[3px] px-3 text-xs font-semibold transition-colors',
-                        value === v ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground',
-                    )}
-                >
-                    {label}
-                </button>
-            ))}
-        </div>
-    )
-}
-
 const ACTIONS: [Action, string][] = [['convert', 'Convertir'], ['compress', 'Compresser'], ['convert_compress', 'Convertir + compresser']]
 
 export function ActionPicker({ value, onChange }: { value: Action; onChange: (a: Action) => void }) {
@@ -225,8 +202,7 @@ export function CompressFields({ o, set }: { o: ConvertOptions; set: Set_ }) {
 
 // ── Option groups ────────────────────────────────────────
 
-const QUALITIES_SIMPLE = opts(['high', 'Haute'], ['balanced', 'Équilibrée'], ['small', 'Légère'])
-const QUALITIES_ADVANCED = [...QUALITIES_SIMPLE, ...opts(['crf', 'CRF (qualité constante)'], ['bitrate', 'Débit fixe (kb/s)'])]
+const QUALITIES = opts(['high', 'Haute'], ['balanced', 'Équilibrée'], ['small', 'Légère'], ['crf', 'CRF (qualité constante)'], ['bitrate', 'Débit fixe (kb/s)'])
 const RESOLUTIONS = opts(
     ['', 'Originale'], ['4320', '4320p (8K)'], ['2160', '2160p (4K)'], ['1440', '1440p'], ['1080', '1080p (Full HD)'],
     ['720', '720p (HD)'], ['540', '540p'], ['480', '480p'], ['360', '360p'], ['240', '240p'],
@@ -298,9 +274,8 @@ function SubTitle({ children }: { children: ReactNode }) {
 }
 
 /**
- * The options of the chosen output type, as dropdowns. `simple` keeps the
- * everyday ones; `advanced` shows every parameter the server understands.
- * While compressing, the quality settings are replaced by the compression target.
+ * Every option of the chosen output type, as dropdowns. While compressing,
+ * the quality settings give way to the compression target.
  */
 export function OptionGroups({
     o, set, groups, compressing, videoTargets = [], imageTargets = [],
@@ -312,7 +287,6 @@ export function OptionGroups({
     videoTargets?: string[]
     imageTargets?: string[]
 }) {
-    const adv = o.detail === 'advanced'
     const audioTrack = o.removeAudio ? 'remove' : o.audioCopy ? 'copy' : 'encode'
     const misfits = videoTargets.filter((t) => !codecFits(o.videoCodec, t))
     const imageSize = o.imageResizeMode === 'percent' ? `%${o.imagePercent}` : o.imageMaxSize
@@ -322,7 +296,7 @@ export function OptionGroups({
             <Group title={GROUP_TITLES.video}>
                 <Grid>
                     {!compressing && (
-                        <Pick label="Qualité" value={o.videoQuality} options={withCurrent(adv ? QUALITIES_ADVANCED : QUALITIES_SIMPLE, o.videoQuality)}
+                        <Pick label="Qualité" value={o.videoQuality} options={withCurrent(QUALITIES, o.videoQuality)}
                             onChange={(v) => set({ videoQuality: v as VideoQuality })} />
                     )}
                     {!compressing && o.videoQuality === 'crf' && (
@@ -335,7 +309,7 @@ export function OptionGroups({
                         </>
                     )}
                     <Pick label="Résolution max" value={o.resizeMode === 'exact' ? 'exact' : o.videoMaxHeight}
-                        options={withCurrent(adv || o.resizeMode === 'exact' ? [...RESOLUTIONS, { value: 'exact', label: 'Taille exacte…' }] : RESOLUTIONS, o.videoMaxHeight, `${o.videoMaxHeight}p`)}
+                        options={withCurrent([...RESOLUTIONS, { value: 'exact', label: 'Taille exacte…' }], o.videoMaxHeight, `${o.videoMaxHeight}p`)}
                         onChange={(v) => set(v === 'exact' ? { resizeMode: 'exact' } : { resizeMode: 'max', videoMaxHeight: v })} />
                     {o.resizeMode === 'exact' && (
                         <>
@@ -344,47 +318,39 @@ export function OptionGroups({
                         </>
                     )}
                     <Pick label="Piste son" value={audioTrack} options={AUDIO_TRACK} onChange={(v) => set({ removeAudio: v === 'remove', audioCopy: v === 'copy' })} />
-                    {adv && (
-                        <>
-                            <Pick label="Codec" value={o.videoCodec} options={CODECS} onChange={(v) => set({ videoCodec: v as VideoCodec })} />
-                            <Pick label="Images / s" value={o.videoFps} options={withCurrent(VIDEO_FPS, o.videoFps)} onChange={(v) => set({ videoFps: v })} />
-                            <Pick label="Rotation" value={o.rotate} options={ROTATIONS} onChange={(v) => set({ rotate: v as Rotate })} />
-                        </>
+                    <Pick label="Codec" value={o.videoCodec} options={CODECS} onChange={(v) => set({ videoCodec: v as VideoCodec })} />
+                    <Pick label="Images / s" value={o.videoFps} options={withCurrent(VIDEO_FPS, o.videoFps)} onChange={(v) => set({ videoFps: v })} />
+                    <Pick label="Rotation" value={o.rotate} options={ROTATIONS} onChange={(v) => set({ rotate: v as Rotate })} />
+                </Grid>
+                <SubTitle>Encodage</SubTitle>
+                <Grid>
+                    <Pick label="Preset" value={o.videoPreset} options={PRESETS} onChange={(v) => set({ videoPreset: v })} />
+                    <Pick label="Tune" value={o.videoTune} options={TUNES} onChange={(v) => set({ videoTune: v })} />
+                    {o.videoCodec === 'libx264' && (
+                        <Pick label="Profil" value={o.videoProfile} options={PROFILES} onChange={(v) => set({ videoProfile: v as ConvertOptions['videoProfile'] })} />
+                    )}
+                    <Pick label="Pixels" value={o.pixelFormat} options={withCurrent(PIXELS, o.pixelFormat)} onChange={(v) => set({ pixelFormat: v as ConvertOptions['pixelFormat'] })} />
+                </Grid>
+                <SubTitle>Image</SubTitle>
+                <Grid>
+                    <Pick label="Débruitage" value={o.denoise} options={DENOISE} onChange={(v) => set({ denoise: v as ConvertOptions['denoise'] })} />
+                    <Pick label="HDR → SDR" value={o.hdr} options={HDR} onChange={(v) => set({ hdr: v as ConvertOptions['hdr'] })} />
+                    <Pick label="Désentrelacer" value={o.deinterlace ? '1' : '0'} options={YES_NO} onChange={(v) => set({ deinterlace: v === '1' })} />
+                </Grid>
+                <SubTitle>Rogner (pixels retirés)</SubTitle>
+                <div className="grid grid-cols-4 gap-1.5">
+                    {([['cropTop', 'Haut'], ['cropBottom', 'Bas'], ['cropLeft', 'Gauche'], ['cropRight', 'Droite']] as const).map(([key, label]) => (
+                        <TextInput key={key} value={o[key]} onChange={(v) => set({ [key]: digits(v) } as Partial<ConvertOptions>)} placeholder={label} inputMode="numeric" ariaLabel={`Rogner ${label}`} className="px-2 text-xs" />
+                    ))}
+                </div>
+                <Grid>
+                    <TextField label="Texte incrusté" value={o.overlayText} onChange={(v) => set({ overlayText: v })} placeholder="Optionnel" wide />
+                    {o.overlayText.trim() && (
+                        <Pick label="Position du texte" value={o.overlayPosition} options={TEXT_POSITIONS} onChange={(v) => set({ overlayPosition: v as TextPosition })} wide />
                     )}
                 </Grid>
-                {adv && (
-                    <>
-                        <SubTitle>Encodage</SubTitle>
-                        <Grid>
-                            <Pick label="Preset" value={o.videoPreset} options={PRESETS} onChange={(v) => set({ videoPreset: v })} />
-                            <Pick label="Tune" value={o.videoTune} options={TUNES} onChange={(v) => set({ videoTune: v })} />
-                            {o.videoCodec === 'libx264' && (
-                                <Pick label="Profil" value={o.videoProfile} options={PROFILES} onChange={(v) => set({ videoProfile: v as ConvertOptions['videoProfile'] })} />
-                            )}
-                            <Pick label="Pixels" value={o.pixelFormat} options={withCurrent(PIXELS, o.pixelFormat)} onChange={(v) => set({ pixelFormat: v as ConvertOptions['pixelFormat'] })} />
-                        </Grid>
-                        <SubTitle>Image</SubTitle>
-                        <Grid>
-                            <Pick label="Débruitage" value={o.denoise} options={DENOISE} onChange={(v) => set({ denoise: v as ConvertOptions['denoise'] })} />
-                            <Pick label="HDR → SDR" value={o.hdr} options={HDR} onChange={(v) => set({ hdr: v as ConvertOptions['hdr'] })} />
-                            <Pick label="Désentrelacer" value={o.deinterlace ? '1' : '0'} options={YES_NO} onChange={(v) => set({ deinterlace: v === '1' })} />
-                        </Grid>
-                        <SubTitle>Rogner (pixels retirés)</SubTitle>
-                        <div className="grid grid-cols-4 gap-1.5">
-                            {([['cropTop', 'Haut'], ['cropBottom', 'Bas'], ['cropLeft', 'Gauche'], ['cropRight', 'Droite']] as const).map(([key, label]) => (
-                                <TextInput key={key} value={o[key]} onChange={(v) => set({ [key]: digits(v) } as Partial<ConvertOptions>)} placeholder={label} inputMode="numeric" ariaLabel={`Rogner ${label}`} className="px-2 text-xs" />
-                            ))}
-                        </div>
-                        <Grid>
-                            <TextField label="Texte incrusté" value={o.overlayText} onChange={(v) => set({ overlayText: v })} placeholder="Optionnel" wide />
-                            {o.overlayText.trim() && (
-                                <Pick label="Position du texte" value={o.overlayPosition} options={TEXT_POSITIONS} onChange={(v) => set({ overlayPosition: v as TextPosition })} wide />
-                            )}
-                        </Grid>
-                        {o.pixelFormat !== 'auto' && o.pixelFormat !== 'yuv420p' && (
-                            <Note>En 10 bits, 4:2:2 ou 4:4:4, beaucoup de lecteurs (navigateurs, iPhone, Windows) ne liront pas la vidéo.</Note>
-                        )}
-                    </>
+                {o.pixelFormat !== 'auto' && o.pixelFormat !== 'yuv420p' && (
+                    <Note>En 10 bits, 4:2:2 ou 4:4:4, beaucoup de lecteurs (navigateurs, iPhone, Windows) ne liront pas la vidéo.</Note>
                 )}
                 {misfits.length > 0 && (
                     <Note>{CODECS.find((c) => c.value === o.videoCodec)?.label} ne va pas dans {misfits.map((t) => t.toUpperCase()).join(', ')} : le codec habituel du format sera utilisé.</Note>
@@ -398,12 +364,8 @@ export function OptionGroups({
                     <Pick label="Images / s" value={o.gifFps} options={withCurrent(GIF_FPS, o.gifFps)} onChange={(v) => set({ gifFps: v })} />
                     <Pick label="Vitesse" value={o.gifSpeed} options={withCurrent(GIF_SPEEDS, o.gifSpeed)} onChange={(v) => set({ gifSpeed: v })} />
                     <Pick label="Lecture" value={o.gifLoop} options={withCurrent(GIF_LOOP, o.gifLoop)} onChange={(v) => set({ gifLoop: v })} />
-                    {adv && (
-                        <>
-                            <Pick label="Couleurs" value={String(o.gifColors)} options={withCurrent(GIF_COLORS, String(o.gifColors))} onChange={(v) => set({ gifColors: parseInt(v, 10) })} />
-                            <Pick label="Tramage" value={o.gifDither} options={GIF_DITHER} onChange={(v) => set({ gifDither: v })} />
-                        </>
-                    )}
+                    <Pick label="Couleurs" value={String(o.gifColors)} options={withCurrent(GIF_COLORS, String(o.gifColors))} onChange={(v) => set({ gifColors: parseInt(v, 10) })} />
+                    <Pick label="Tramage" value={o.gifDither} options={GIF_DITHER} onChange={(v) => set({ gifDither: v })} />
                 </Grid>
             </Group>
         ),
@@ -425,19 +387,15 @@ export function OptionGroups({
                     <Pick label="Taille max" value={imageSize}
                         options={withCurrent(IMAGE_SIZES, imageSize, imageSize.startsWith('%') ? `${imageSize.slice(1)} %` : `${imageSize} px`)}
                         onChange={(v) => set(v.startsWith('%') ? { imageResizeMode: 'percent', imagePercent: parseInt(v.slice(1), 10) } : { imageResizeMode: 'max', imageMaxSize: v })} />
-                    {adv && (
-                        <>
-                            <Pick label="Agrandir" value={o.imageUpscale} options={UPSCALES} onChange={(v) => set({ imageUpscale: v })} />
-                            {!compressing && (
-                                <TextField label="Poids visé (Mo)" value={o.imageTargetMb} onChange={(v) => set({ imageTargetMb: decimal(v) })} inputMode="decimal" placeholder="—" />
-                            )}
-                            {imageTargets.includes('webp') && (
-                                <Pick label="WebP" value={o.imageLossless ? '1' : '0'} options={opts(['0', 'Avec perte'], ['1', 'Sans perte'])} onChange={(v) => set({ imageLossless: v === '1' })} />
-                            )}
-                            {imageTargets.includes('ico') && (
-                                <Pick label="Taille de l'icône" value={o.icoSize} options={ICO_SIZES} onChange={(v) => set({ icoSize: v })} />
-                            )}
-                        </>
+                    <Pick label="Agrandir" value={o.imageUpscale} options={UPSCALES} onChange={(v) => set({ imageUpscale: v })} />
+                    {!compressing && (
+                        <TextField label="Poids visé (Mo)" value={o.imageTargetMb} onChange={(v) => set({ imageTargetMb: decimal(v) })} inputMode="decimal" placeholder="—" />
+                    )}
+                    {imageTargets.includes('webp') && (
+                        <Pick label="WebP" value={o.imageLossless ? '1' : '0'} options={opts(['0', 'Avec perte'], ['1', 'Sans perte'])} onChange={(v) => set({ imageLossless: v === '1' })} />
+                    )}
+                    {imageTargets.includes('ico') && (
+                        <Pick label="Taille de l'icône" value={o.icoSize} options={ICO_SIZES} onChange={(v) => set({ icoSize: v })} />
                     )}
                 </Grid>
                 <Note>Qualité : JPG, WebP, AVIF. Taille max : côté le plus long, sans agrandir. Lumière, couleurs et LUT : Color Lab.</Note>
@@ -452,12 +410,8 @@ export function OptionGroups({
                     <Pick label="Volume" value={o.audioNormalize ? 'norm' : String(o.audioVolume)}
                         options={withCurrent(VOLUMES, String(o.audioVolume), `${o.audioVolume > 0 ? '+ ' : ''}${o.audioVolume} dB`)}
                         onChange={(v) => set(v === 'norm' ? { audioNormalize: true, audioVolume: 0 } : { audioNormalize: false, audioVolume: parseFloat(v) })} />
-                    {adv && (
-                        <>
-                            <Pick label="Fréquence" value={o.audioSampleRate} options={withCurrent(SAMPLE_RATES, o.audioSampleRate, `${o.audioSampleRate} Hz`)} onChange={(v) => set({ audioSampleRate: v })} />
-                            <Pick label="Canaux" value={o.audioChannels} options={withCurrent(CHANNELS, o.audioChannels)} onChange={(v) => set({ audioChannels: v })} />
-                        </>
-                    )}
+                    <Pick label="Fréquence" value={o.audioSampleRate} options={withCurrent(SAMPLE_RATES, o.audioSampleRate, `${o.audioSampleRate} Hz`)} onChange={(v) => set({ audioSampleRate: v })} />
+                    <Pick label="Canaux" value={o.audioChannels} options={withCurrent(CHANNELS, o.audioChannels)} onChange={(v) => set({ audioChannels: v })} />
                 </Grid>
             </Group>
         ),

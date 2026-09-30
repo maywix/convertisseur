@@ -2,9 +2,9 @@
 // "Convertir" page: options model and the per-file job plan (where to run it
 // and which parameters the server gets).
 //
-// The settings column works in steps: action (convertir / compresser / les
-// deux), output type, output format, then the options of that type as
-// dropdowns ("Simple" shows the everyday ones, "Avancé" all of them).
+// "Simple" mode applies a one-click preset; "Pro" mode works in steps:
+// action (convertir / compresser / les deux), output type, output format,
+// then every option of that type as dropdowns.
 // ──────────────────────────────────────────────────────────
 import type { JobPlan } from '@/hooks/useQueue'
 import { BROWSER_DECODABLE, BROWSER_ENCODABLE, processImageInBrowser } from '@/lib/clientProcessor'
@@ -24,8 +24,6 @@ export type TextPosition = 'bottom' | 'top' | 'center' | 'bottom-left' | 'bottom
 export interface ConvertOptions {
     action: Action
     category: Category | null
-    /** "Simple" shows the everyday options, "Avancé" every parameter. */
-    detail: 'simple' | 'advanced'
     // ── Compression (Compresser / Convertir + compresser)
     compressMode: CompressMode
     compressLevel: CompressLevel
@@ -93,7 +91,6 @@ export interface ConvertOptions {
 export const DEFAULT_CONVERT_OPTIONS: ConvertOptions = {
     action: 'convert',
     category: null,
-    detail: 'simple',
     compressMode: 'level',
     compressLevel: 'medium',
     compressTargetMb: '25',

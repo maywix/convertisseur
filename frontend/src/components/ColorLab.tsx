@@ -14,6 +14,7 @@ import { BROWSER_DECODABLE, BROWSER_ENCODABLE, decodeImage, processImageInBrowse
 import { parseCubeLut, type Lut3D } from '@/lib/cubeLut'
 import { DEFAULT_GRADE, NEUTRAL, gradeToFilter, gradeToServerFields, isNeutral, lookOf, type Grade } from '@/lib/grade'
 import { createCanvas2DLutRenderer, renderStill, type Canvas2DLutRenderer, type ExtraFilter } from '@/lib/lutCanvas2D'
+import { useThumbnail } from '@/hooks/useThumbnail'
 import { objectUrlFor } from '@/lib/objectUrl'
 import type { LabState } from '@/lib/labState'
 import type { ProcessingPreference } from '@/lib/settings'
@@ -518,13 +519,12 @@ function FilmThumb({
     onSelect: () => void
     onRemove: () => void
 }) {
-    const [failed, setFailed] = useState(false)
-    const url = item.kind === 'image' && item.file && !failed ? objectUrlFor(item.file) : null
+    const url = useThumbnail(item.kind === 'image' ? item.file : null, 224)
     return (
         <div className={cn('group relative w-28 shrink-0 overflow-hidden rounded-[4px] border bg-card transition-colors', active ? 'border-foreground' : 'border-border hover:border-input')}>
             <button type="button" onClick={onSelect} className="block w-full text-left" aria-current={active}>
                 <div className="flex h-16 items-center justify-center bg-muted text-faint">
-                    {url ? <img src={url} alt="" loading="lazy" className="h-full w-full object-cover" onError={() => setFailed(true)} /> : <KindIcon kind={item.kind} size={20} />}
+                    {url ? <img src={url} alt="" loading="lazy" className="h-full w-full object-cover" /> : <KindIcon kind={item.kind} size={20} />}
                 </div>
                 <div className="px-2 py-1.5">
                     <p className="truncate text-[11px] font-semibold">{item.name}</p>

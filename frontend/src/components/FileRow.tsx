@@ -1,10 +1,10 @@
-import { memo, useState, type ReactNode } from 'react'
+import { memo, type ReactNode } from 'react'
 import {
     IconAlert, IconAudio, IconCube, IconDocument, IconDownload, IconFolder, IconImage,
     IconRefresh, IconSequence, IconSliders, IconTerminal, IconVideo, IconX,
 } from '@/components/icons'
 import { ProgressBar, Select } from '@/components/ui'
-import { objectUrlFor } from '@/lib/objectUrl'
+import { useThumbnail } from '@/hooks/useThumbnail'
 import { cn } from '@/lib/utils'
 import { FORMATS, formatLabel, formatSize, isActive, type QueueItem } from '@/types'
 
@@ -18,12 +18,11 @@ function KindIcon({ kind, size = 18 }: { kind: QueueItem['kind']; size?: number 
 }
 
 function Thumb({ item }: { item: QueueItem }) {
-    const [failed, setFailed] = useState(false)
-    const url = item.kind === 'image' && item.file && !failed ? objectUrlFor(item.file) : null
+    const url = useThumbnail(item.kind === 'image' ? item.file : null, 96)
     return (
         <div className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-[3px] bg-muted text-faint">
             {url ? (
-                <img src={url} alt="" loading="lazy" decoding="async" className="h-full w-full object-cover" onError={() => setFailed(true)} />
+                <img src={url} alt="" loading="lazy" decoding="async" className="h-full w-full object-cover" />
             ) : (
                 <KindIcon kind={item.kind} />
             )}
@@ -132,7 +131,7 @@ export const FileRow = memo(function FileRow({
     )
 
     return (
-        <div className={cn('group flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-3 transition-colors hover:bg-foreground/[0.03]', editing && 'bg-foreground/[0.05]')}>
+        <div className={cn('group flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-3 transition-colors [contain-intrinsic-size:auto_72px] [content-visibility:auto] hover:bg-foreground/[0.03]', editing && 'bg-foreground/[0.05]')}>
             <Thumb item={item} />
             <div className="min-w-0 flex-1">
                 <p className="truncate text-[13px] font-semibold text-foreground" title={item.relativePath || item.name}>

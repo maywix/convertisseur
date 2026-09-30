@@ -23,9 +23,15 @@ Pensé pour tourner chez soi et être utilisé à distance via un **Cloudflare T
 
 ## L'interface
 
-Même style que Eclypse Downloader (fond noir, badge d'état du serveur en bas à droite). Deux espaces, **Convertir** et **Color Lab · étalonnage**, qui partagent la même liste de fichiers.
+Même style que Eclypse Downloader (fond noir, badge d'état du serveur en bas à droite). Trois onglets, qui partagent la même liste de fichiers :
 
-La page **Convertir** reprend l'organisation d'origine : la colonne **Réglages** à gauche, la zone d'ajout et la **file d'attente** à droite.
+| Onglet | Pour qui |
+|---|---|
+| **Simple** (par défaut) | Un clic sur ce que tu veux faire, dépôt des fichiers, **Convertir**. Choix rapides : Auto, Vidéo → MP4, Vidéo → GIF, Extraire le son, Image → JPG / PNG / WebP, Réduire le poids (légère / moyenne / forte). Chaque fichier garde son menu « en [format] ». |
+| **Pro** | Tous les réglages, étape par étape (ci-dessous). |
+| **Color Lab · étalonnage** | LUT, lumière, couleurs, effets, avec aperçu en direct. |
+
+Le mode **Pro** reprend l'organisation d'origine : la colonne **Réglages** à gauche, la zone d'ajout et la **file d'attente** à droite.
 
 | Étape | Choix |
 |---|---|
@@ -33,13 +39,13 @@ La page **Convertir** reprend l'organisation d'origine : la colonne **Réglages*
 | **2 · Type de média** | Vidéo, Audio, Image, Images → Vidéo (diaporama), Document Office, Modèle 3D. Présélectionné d'après les fichiers déposés. **Audio** transforme aussi les vidéos en fichiers son. |
 | **3 · Format de sortie** | Les formats du type choisi. Les fichiers d'un autre type ont leur propre menu (« Images en [JPG] »…). |
 | **Compression** | Niveau (légère / moyenne / forte), poids cible en Mo ou réduction en %. |
-| **Options** | En menus déroulants. **Simple** montre l'essentiel, **Avancé** tous les paramètres. |
+| **Options** | Tous les paramètres du type choisi, en menus déroulants. |
 
 En bas de la colonne : **Export** (un ZIP ou fichiers séparés), **Traitement en arrière-plan**, **Téléchargement auto** et **Démarrer la conversion**. À droite, chaque fichier a son menu « en [format] », ses boutons Sauvegarder, ⚙ et Journal ; la file a **Exporter les fichiers** et **Vider**.
 
-**Réglages d'un seul fichier** : le bouton ⚙ d'une ligne ouvre ses propres réglages (format, qualité, résolution…). Le fichier est marqué « Réglages perso » ; « Réglages communs » annule.
+**Réglages d'un seul fichier** (Pro) : le bouton ⚙ d'une ligne ouvre ses propres réglages (format, qualité, résolution…). Le fichier est marqué « Réglages perso » ; « Réglages communs » annule.
 
-En mode **Avancé**, tous les paramètres du serveur sont accessibles :
+Paramètres disponibles en mode Pro :
 
 - **Vidéo** : qualité (préréglage, CRF, débit fixe en 1 ou 2 passes), résolution max ou taille exacte, codec (H.264, H.265, VP9, AV1), images/s, rotation / miroir, piste son (garder, copier sans réencoder, supprimer). Les vidéos HDR (iPhone…) sont ramenées en SDR automatiquement pour ne pas sortir grises. On peut aussi extraire le son d'une vidéo (MP3, M4A, WAV…).
 - **Vidéo (suite)** : preset, tune, profil, format de pixels, débruitage, HDR → SDR, désentrelacement, rognage, texte incrusté avec position.
@@ -68,6 +74,8 @@ Le menu **Réglages** (roue dentée) regroupe : où convertir, téléchargement 
 Si un traitement dans le navigateur échoue (format que le navigateur ne sait pas encoder, fichier trop gros…), l'app **bascule automatiquement sur le serveur**. Un résultat vide n'est jamais proposé au téléchargement, ni côté navigateur ni côté serveur.
 
 Le moteur ffmpeg.wasm (~32 Mo) est servi par ton propre serveur, sans CDN externe, et n'est téléchargé que si le mode Navigateur est utilisé.
+
+**Performances** : jusqu'à 3 fichiers sont envoyés et convertis en même temps (un seul à la fois via le tunnel, pour respecter la limite de débit). Les miniatures des photos sont réduites avant affichage, et les lignes hors écran ne sont pas dessinées : un dossier de plusieurs centaines de photos reste fluide.
 
 ---
 
