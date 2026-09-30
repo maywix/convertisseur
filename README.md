@@ -23,9 +23,12 @@ Pensé pour tourner chez soi et être utilisé à distance via un **Cloudflare T
 
 ## L'interface
 
-Même style que Eclypse Downloader (fond noir, badge d'état du serveur en bas à droite). Deux onglets de même largeur, qui partagent la même liste de fichiers : **Convertir** et **Color Lab · étalonnage**.
+Même style que Eclypse Downloader (fond noir, badge d'état du serveur en bas à droite). Deux onglets de même largeur (**Convertir** et **Color Lab · étalonnage**), qui partagent la même liste de fichiers : **Convertir** et **Color Lab · étalonnage**.
 
-**Convertir** est une seule page, de haut en bas : choix rapides (Auto, Vidéo → MP4, Vidéo → GIF, Extraire le son, Image → JPG / PNG / WebP, Réduire le poids avec niveau), zone d'ajout, file d'attente (menu « en [format] » par fichier), bouton **Convertir**, puis en bas le bloc repliable **Réglages avancés** avec tous les réglages, étape par étape :
+Dans **Convertir**, un sélecteur **Simple | Avancé** (au-dessus de la page, mémorisé) donne deux pages, avec la même largeur et la même file d'attente :
+
+- **Simple** : choix rapides (Auto, Vidéo → MP4, Vidéo → GIF, Extraire le son, Image → JPG / PNG / WebP, Réduire le poids avec niveau), zone d'ajout, file d'attente (menu « en [format] » par fichier), bouton **Convertir**.
+- **Avancé** : la colonne **Réglages** à gauche, avec tous les réglages étape par étape, et la zone d'ajout + la file d'attente à droite :
 
 | Étape | Choix |
 |---|---|
@@ -37,9 +40,9 @@ Même style que Eclypse Downloader (fond noir, badge d'état du serveur en bas �
 
 En bas de la colonne : **Export** (un ZIP ou fichiers séparés), **Traitement en arrière-plan**, **Téléchargement auto** et **Démarrer la conversion**. À droite, chaque fichier a son menu « en [format] », ses boutons Sauvegarder, ⚙ et Journal ; la file a **Exporter les fichiers** et **Vider**.
 
-**Réglages d'un seul fichier** (dans Réglages avancés) : le bouton ⚙ d'une ligne ouvre ses propres réglages (format, qualité, résolution…). Le fichier est marqué « Réglages perso » ; « Réglages communs » annule.
+**Réglages d'un seul fichier** (page Avancé) : le bouton ⚙ d'une ligne ouvre ses propres réglages (format, qualité, résolution…). Le fichier est marqué « Réglages perso » ; « Réglages communs » annule.
 
-Paramètres disponibles dans Réglages avancés :
+Paramètres disponibles dans la page Avancé :
 
 - **Vidéo** : qualité (préréglage, CRF, débit fixe en 1 ou 2 passes), résolution max ou taille exacte, codec (H.264, H.265, VP9, AV1), images/s, rotation / miroir, piste son (garder, copier sans réencoder, supprimer). Les vidéos HDR (iPhone…) sont ramenées en SDR automatiquement pour ne pas sortir grises. On peut aussi extraire le son d'une vidéo (MP3, M4A, WAV…).
 - **Vidéo (suite)** : preset, tune, profil, format de pixels, débruitage, HDR → SDR, désentrelacement, rognage, texte incrusté avec position.

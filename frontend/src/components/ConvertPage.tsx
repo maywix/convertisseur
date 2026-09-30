@@ -149,7 +149,13 @@ export function ConvertPage({
 
     const [logItem, setLogItem] = useState<QueueItem | null>(null)
     const [preset, setPreset] = useState<PresetId>('auto')
-    const [advancedOpen, setAdvancedOpen] = useState(false)
+    const [sub, setSubState] = useState<'simple' | 'advanced'>(() => {
+        try { return localStorage.getItem('convertisseur_sub') === 'advanced' ? 'advanced' : 'simple' } catch { return 'simple' }
+    })
+    const setSub = (v: 'simple' | 'advanced') => {
+        setSubState(v)
+        try { localStorage.setItem('convertisseur_sub', v) } catch { /* ignore */ }
+    }
 
     // Step 2 preselects a type from the files until one is picked.
     const category = options.category ?? inferCategory(items)
@@ -281,11 +287,11 @@ export function ConvertPage({
     const allFinished = stats.running.length === 0 && pendingCount === 0
 
     const settings = (
-        <div className="fade-up overflow-hidden rounded-[4px] border border-border bg-card">
+        <div className="fade-up flex flex-col overflow-hidden rounded-[4px] border border-border bg-card lg:max-h-[calc(100vh-32px)]">
             <div className="flex items-start justify-between gap-3 border-b border-border px-5 py-4">
                 <div className="min-w-0">
                     <h2 className="text-[15px] font-bold">Réglages</h2>
-                    <p className="mt-0.5 text-[11px] text-faint">Tous les paramètres, étape par étape (s'appliquent à la file ci-dessus).</p>
+                    <p className="mt-0.5 text-[11px] text-faint">Tous les paramètres, étape par étape.</p>
                 </div>
             </div>
 
@@ -306,7 +312,7 @@ export function ConvertPage({
                 </div>
             )}
 
-            <div className="space-y-7 px-5 py-5 lg:grid lg:grid-cols-2 lg:items-start lg:gap-x-10 lg:gap-y-7 lg:space-y-0">
+            <div className="scroll-thin min-h-0 flex-1 space-y-7 overflow-y-auto px-5 py-5">
                 <Step n={step++} title="Action">
                     <ActionPicker value={o.action} onChange={(a) => set({ action: a })} />
                 </Step>
@@ -375,17 +381,17 @@ export function ConvertPage({
             <div className="border-t border-border px-5 py-4">
                 <div className="flex items-center justify-between gap-3 pb-1">
                     <span className="text-[13px]">Export</span>
-                    <Select
-                        size="sm"
-                        className="w-[160px]"
-                        ariaLabel="Export de plusieurs fichiers"
-                        value={exportMode}
+                    <Select size="sm" className="w-[160px]" ariaLabel="Export de plusieurs fichiers" value={exportMode}
                         onChange={(v) => onExportMode(v as 'zip' | 'files')}
-                        options={[{ value: 'zip', label: 'Un ZIP' }, { value: 'files', label: 'Fichiers séparés' }]}
-                    />
+                        options={[{ value: 'zip', label: 'Un ZIP' }, { value: 'files', label: 'Fichiers séparés' }]} />
                 </div>
                 <Toggle checked={background} onChange={onBackground} label="Traitement en arrière-plan" />
                 <Toggle checked={autoDownload} onChange={onAutoDownload} label="Téléchargement auto" />
+                <Button variant="primary" size="lg" className="mt-3 w-full" disabled={startCount === 0} onClick={start} title="Ctrl + Entrée">
+                    {startCount > 0
+                        ? `Démarrer la ${options.action === 'compress' ? 'compression' : 'conversion'}${startCount > 1 ? ` (${startCount})` : ''}`
+                        : allFinished && stats.done.length > 0 ? 'Tout est converti' : stats.running.length ? 'Conversion en cours…' : 'Ajoute des fichiers'}
+                </Button>
             </div>
         </div>
     )
@@ -411,7 +417,7 @@ export function ConvertPage({
         </div>
     )
 
-    const pro = true
+    const pro = sub === 'advanced'
     const queueCard = (
         <div className="overflow-hidden rounded-[4px] border border-border bg-card">
             <div className="flex items-center gap-1 border-b border-border px-4 py-3">
@@ -489,9 +495,38 @@ export function ConvertPage({
     // ── One page: presets, files, Convertir, then the full settings below ──
     const current = PRESETS.find((p) => p.id === preset) ?? PRESETS[0]
     const doing = options.action === 'compress' ? 'Compresser' : 'Convertir'
-    const showAdvanced = advancedOpen || !!editing
+    const subSwitch = (
+        <div className="inline-flex rounded-[4px] border border-input p-0.5" role="radiogroup" aria-label="Mode de conversion">
+            {([['simple', 'Simple'], ['advanced', 'Avancé']] as const).map(([v, label]) => (
+                <button key={v} type="button" role="radio" aria-checked={sub === v} onClick={() => setSub(v)}
+                    className={cn('h-8 rounded-[3px] px-4 text-[13px] font-semibold transition-colors',
+                        sub === v ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground')}>
+                    {label}
+                </button>
+            ))}
+        </div>
+    )
+
+    if (pro) {
+        return (
+            <>
+                <div>{subSwitch}</div>
+                <div className="grid items-start gap-5 lg:grid-cols-[390px_minmax(0,1fr)] lg:gap-6">
+                    <aside className="order-2 min-w-0 lg:sticky lg:top-4 lg:order-1">{settings}</aside>
+                    <div className="order-1 min-w-0 space-y-5 lg:order-2">
+                        <DropCard onFiles={addFiles} compact={items.length > 0} />
+                        {doneCard}
+                        {queueCard}
+                        {retention}
+                    </div>
+                </div>
+                {logItem && <JobLogDialog item={logItem} onClose={() => setLogItem(null)} />}
+            </>
+        )
+    }
     return (
         <>
+            <div>{subSwitch}</div>
             <section>
                 <p className="mb-3 text-[10px] font-bold tracking-[0.1em] text-faint uppercase">Que veux-tu faire ?</p>
                 <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Que veux-tu faire ?">
@@ -548,23 +583,6 @@ export function ConvertPage({
                     {retention}
                 </>
             )}
-
-            {/* Pro settings, at the bottom of the same page */}
-            <section>
-                <button
-                    type="button"
-                    onClick={() => { setAdvancedOpen((v) => !v); if (editing) setEditingId(null) }}
-                    aria-expanded={showAdvanced}
-                    className="flex w-full items-center justify-between rounded-[4px] border border-border px-5 py-3.5 text-left text-[13px] font-bold transition-colors hover:border-input"
-                >
-                    <span>
-                        Réglages avancés
-                        <span className="ml-2 text-[11px] font-normal text-faint">action, type, format, compression, codecs, rognage, son…</span>
-                    </span>
-                    <span className={cn('text-muted-foreground transition-transform', showAdvanced && 'rotate-180')}>▾</span>
-                </button>
-                {showAdvanced && <div className="mt-3">{settings}</div>}
-            </section>
 
             {items.length === 0 && <Compat />}
             {logItem && <JobLogDialog item={logItem} onClose={() => setLogItem(null)} />}
