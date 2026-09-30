@@ -29,7 +29,6 @@ HEALTH_URL="http://localhost:${HOST_PORT}/health"
 # Base Docker images we want pre-pulled to avoid surprise downloads during build.
 BASE_IMAGES=(
     "python:3.12-slim"
-    "alpine:latest"
 )
 
 # ───────────────────────────── helpers
@@ -93,6 +92,8 @@ start_container() {
         -e CLEANUP_INTERVAL_SECONDS=300 \
         -e MAX_ENQUEUED_JOBS=50 \
         -e LOG_LEVEL=INFO \
+        -e TUNNEL_MODE="${TUNNEL_MODE:-auto}" \
+        -e TUNNEL_RATE_LIMIT_MBPS="${TUNNEL_RATE_LIMIT_MBPS:-5}" \
         --restart unless-stopped \
         "${IMAGE}" >/dev/null
 }

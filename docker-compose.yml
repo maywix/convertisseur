@@ -17,6 +17,10 @@ services:
       - MAX_ENQUEUED_JOBS=50
       # Logging level (DEBUG, INFO, WARNING, ERROR)
       - LOG_LEVEL=INFO
+      # Cloudflare Tunnel detection: auto (CF-* headers), on, off
+      - TUNNEL_MODE=auto
+      # Default speed limit (MB/s) proposed to browsers coming through the tunnel
+      - TUNNEL_RATE_LIMIT_MBPS=5
     restart: unless-stopped
 
 volumes:

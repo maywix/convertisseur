@@ -15,3 +15,7 @@ node_modules
 # Frontend dev dependencies (not needed in Docker - old template still works)
 frontend/node_modules
 frontend/.git
+tests
+scripts/*.log
+frontend/src
+frontend/public
