@@ -402,3 +402,42 @@ export function IconCopy(props: IconProps) {
         </svg>
     )
 }
+
+export function IconEye(props: IconProps) {
+    return (
+        <svg {...svgProps(props)}>
+            <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" />
+            <circle cx="12" cy="12" r="3" />
+        </svg>
+    )
+}
+
+export function IconStop(props: IconProps) {
+    return (
+        <svg {...svgProps(props)}>
+            <rect x="6" y="6" width="12" height="12" rx="1.5" />
+        </svg>
+    )
+}
+
+export function IconBroom(props: IconProps) {
+    return (
+        <svg {...svgProps(props)}>
+            <path d="m14 4 6 6" />
+            <path d="M17 7 9.5 14.5" />
+            <path d="M9.5 14.5 4 20h6l3.5-3.5" />
+            <path d="M7 17l2 2" />
+        </svg>
+    )
+}
+
+export function IconZoom(props: IconProps) {
+    return (
+        <svg {...svgProps(props)}>
+            <circle cx="11" cy="11" r="6" />
+            <path d="m20 20-4.5-4.5" />
+            <path d="M11 8v6" />
+            <path d="M8 11h6" />
+        </svg>
+    )
+}

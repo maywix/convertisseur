@@ -248,13 +248,16 @@ const AUDIO_BITRATES = opts(['64k', '64 kb/s'], ['96k', '96 kb/s'], ['128k', '12
 const SAMPLE_RATES = opts(['', 'Originale'], ['22050', '22,05 kHz'], ['44100', '44,1 kHz'], ['48000', '48 kHz'], ['96000', '96 kHz'])
 const CHANNELS = opts(['', 'Originaux'], ['1', 'Mono'], ['2', 'Stéréo'])
 const VOLUMES = opts(['norm', 'Normaliser (EBU R128)'], ['0', 'Inchangé'], ['-10', '− 10 dB'], ['-6', '− 6 dB'], ['-3', '− 3 dB'], ['3', '+ 3 dB'], ['6', '+ 6 dB'], ['10', '+ 10 dB'])
+const SPEEDS = opts(['0.25', '× 0,25 (ralenti)'], ['0.5', '× 0,5'], ['0.75', '× 0,75'], ['1', 'Normale'], ['1.25', '× 1,25'], ['1.5', '× 1,5'], ['2', '× 2'], ['3', '× 3'], ['4', '× 4 (accéléré)'])
+const ASPECTS = opts(['', 'Original'], ['16:9', '16:9 · paysage'], ['9:16', '9:16 · Reels / TikTok'], ['1:1', '1:1 · carré'], ['4:5', '4:5 · Instagram'], ['4:3', '4:3'], ['3:4', '3:4'], ['21:9', '21:9 · cinéma'])
 const FRAME_FPS = opts(['0.2', '1 toutes les 5 s'], ['0.5', '1 toutes les 2 s'], ['1', '1 par seconde'], ['5', '5 par seconde'], ['10', '10 par seconde'], ['24', '24 par seconde'], ['30', '30 par seconde'])
 
 const digits = (v: string) => v.replace(/[^\d]/g, '')
 const decimal = (v: string) => v.replace(',', '.').replace(/[^\d.]/g, '')
 
 const GROUP_TITLES: Record<GroupKey, string> = {
-    video: 'Vidéo', gif: 'GIF animé', frames: 'Images extraites', image: 'Images', audio: 'Son', slideshow: 'Diaporama', trim: 'Découper',
+    video: 'Vidéo', gif: 'GIF animé', frames: 'Images extraites', capture: 'Capture', image: 'Images', audio: 'Son',
+    slideshow: 'Diaporama', trim: 'Découper', timing: 'Découper et vitesse',
 }
 
 function Group({ title, aside, children }: { title: string; aside?: ReactNode; children: ReactNode }) {
@@ -321,7 +324,9 @@ export function OptionGroups({
                     <Pick label="Codec" value={o.videoCodec} options={CODECS} onChange={(v) => set({ videoCodec: v as VideoCodec })} />
                     <Pick label="Images / s" value={o.videoFps} options={withCurrent(VIDEO_FPS, o.videoFps)} onChange={(v) => set({ videoFps: v })} />
                     <Pick label="Rotation" value={o.rotate} options={ROTATIONS} onChange={(v) => set({ rotate: v as Rotate })} />
+                    <Pick label="Format d'image" value={o.aspect} options={withCurrent(ASPECTS, o.aspect)} onChange={(v) => set({ aspect: v })} wide />
                 </Grid>
+                {o.aspect && <Note>Recadrage au centre : les bords qui dépassent sont coupés.</Note>}
                 <SubTitle>Encodage</SubTitle>
                 <Grid>
                     <Pick label="Preset" value={o.videoPreset} options={PRESETS} onChange={(v) => set({ videoPreset: v })} />
@@ -366,6 +371,7 @@ export function OptionGroups({
                     <Pick label="Lecture" value={o.gifLoop} options={withCurrent(GIF_LOOP, o.gifLoop)} onChange={(v) => set({ gifLoop: v })} />
                     <Pick label="Couleurs" value={String(o.gifColors)} options={withCurrent(GIF_COLORS, String(o.gifColors))} onChange={(v) => set({ gifColors: parseInt(v, 10) })} />
                     <Pick label="Tramage" value={o.gifDither} options={GIF_DITHER} onChange={(v) => set({ gifDither: v })} />
+                    <Pick label="Format d'image" value={o.aspect} options={withCurrent(ASPECTS, o.aspect)} onChange={(v) => set({ aspect: v })} wide />
                 </Grid>
             </Group>
         ),
@@ -375,6 +381,17 @@ export function OptionGroups({
                     <Pick label="Fréquence" value={o.frameFps} options={withCurrent(FRAME_FPS, o.frameFps)} onChange={(v) => set({ frameFps: v })} wide />
                 </Grid>
                 <Note>La vidéo devient une suite d’images PNG, dans un ZIP.</Note>
+            </Group>
+        ),
+        capture: () => (
+            <Group title={GROUP_TITLES.capture}>
+                <Grid>
+                    <TextField label="Instant" value={o.captureAt} onChange={(v) => set({ captureAt: v })} placeholder="auto" inputMode="decimal" />
+                    <Pick label="Taille max" value={o.videoMaxHeight} options={withCurrent(RESOLUTIONS, o.videoMaxHeight, `${o.videoMaxHeight}p`)}
+                        onChange={(v) => set({ videoMaxHeight: v === 'exact' ? '' : v })} />
+                    <Pick label="Format d'image" value={o.aspect} options={withCurrent(ASPECTS, o.aspect)} onChange={(v) => set({ aspect: v })} wide />
+                </Grid>
+                <Note>Une seule image, prise à l’instant choisi (secondes ou h:mm:ss). Vide : un peu après le début, pour éviter l’écran noir.</Note>
             </Group>
         ),
         image: () => (
@@ -429,6 +446,16 @@ export function OptionGroups({
                     <TextField label="Début" value={o.trimStart} onChange={(v) => set({ trimStart: v })} placeholder="0:05" inputMode="decimal" />
                     <TextField label="Fin" value={o.trimEnd} onChange={(v) => set({ trimEnd: v })} placeholder="1:30" inputMode="decimal" />
                 </Grid>
+            </Group>
+        ),
+        timing: () => (
+            <Group title={GROUP_TITLES.timing} aside="secondes ou h:mm:ss">
+                <Grid>
+                    <TextField label="Début" value={o.trimStart} onChange={(v) => set({ trimStart: v })} placeholder="0:05" inputMode="decimal" />
+                    <TextField label="Fin" value={o.trimEnd} onChange={(v) => set({ trimEnd: v })} placeholder="1:30" inputMode="decimal" />
+                    <Pick label="Vitesse de lecture" value={o.speed} options={withCurrent(SPEEDS, o.speed, `× ${o.speed}`)} onChange={(v) => set({ speed: v })} wide />
+                </Grid>
+                {o.speed !== '1' && <Note>Le son suit la vitesse sans changer de tonalité. Début et fin se lisent sur la vidéo d’origine.</Note>}
             </Group>
         ),
     }

@@ -30,6 +30,9 @@ export interface JobInfo {
     download_url: string | null
     output_filename: string | null
     output_size: number | null
+    input_size: number | null
+    /** "kept": compressing would not have made it lighter, the original is returned. */
+    note: string | null
     original_filename: string
     media_type: string | null
     target_format: string | null
@@ -214,6 +217,12 @@ export async function clearAllJobs(): Promise<void> {
 export function withRate(url: string, rateLimit: number): string {
     if (!rateLimit || url.startsWith('blob:')) return url
     return `${url}${url.includes('?') ? '&' : '?'}rate=${Math.round(rateLimit)}`
+}
+
+/** URL that displays the result in the page (images, video, audio) instead of downloading it. */
+export function inlineUrl(url: string, rateLimit: number): string {
+    if (url.startsWith('blob:')) return url
+    return withRate(`${url}${url.includes('?') ? '&' : '?'}inline=1`, rateLimit)
 }
 
 export function triggerDownload(href: string, filename?: string): void {

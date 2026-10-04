@@ -1,12 +1,12 @@
 import { memo, type ReactNode } from 'react'
 import {
-    IconAlert, IconAudio, IconCube, IconDocument, IconDownload, IconFolder, IconImage,
+    IconAlert, IconAudio, IconCube, IconDocument, IconDownload, IconEye, IconFolder, IconImage,
     IconRefresh, IconSequence, IconSliders, IconTerminal, IconVideo, IconX,
 } from '@/components/icons'
 import { ProgressBar, Select } from '@/components/ui'
 import { useThumbnail } from '@/hooks/useThumbnail'
 import { cn } from '@/lib/utils'
-import { FORMATS, formatLabel, formatSize, isActive, type QueueItem } from '@/types'
+import { FORMATS, formatDuration, formatLabel, formatSize, formatSpeed, isActive, type QueueItem } from '@/types'
 
 function KindIcon({ kind, size = 18 }: { kind: QueueItem['kind']; size?: number }) {
     if (kind === 'video') return <IconVideo size={size} />
@@ -17,16 +17,20 @@ function KindIcon({ kind, size = 18 }: { kind: QueueItem['kind']; size?: number 
     return <IconDocument size={size} />
 }
 
-function Thumb({ item }: { item: QueueItem }) {
+function Thumb({ item, onClick }: { item: QueueItem; onClick?: () => void }) {
     const url = useThumbnail(item.kind === 'image' ? item.file : null, 96)
+    const inner = url ? (
+        <img src={url} alt="" loading="lazy" decoding="async" className="h-full w-full object-cover" />
+    ) : (
+        <KindIcon kind={item.kind} />
+    )
+    const box = 'flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-[3px] bg-muted text-faint'
+    if (!onClick) return <div className={box}>{inner}</div>
     return (
-        <div className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-[3px] bg-muted text-faint">
-            {url ? (
-                <img src={url} alt="" loading="lazy" decoding="async" className="h-full w-full object-cover" />
-            ) : (
-                <KindIcon kind={item.kind} />
-            )}
-        </div>
+        <button type="button" onClick={onClick} className={cn(box, 'group/thumb relative')} aria-label={`Aperçu de ${item.outputName || item.name}`}>
+            {inner}
+            <span className="absolute inset-0 hidden items-center justify-center bg-black/55 text-white group-hover/thumb:flex"><IconEye size={16} /></span>
+        </button>
     )
 }
 
@@ -36,8 +40,15 @@ function StatusLine({ item }: { item: QueueItem }) {
             return <span className="text-faint">Prêt</span>
         case 'queued':
             return <span className="text-muted-foreground">{item.jobId ? 'Dans la file du serveur…' : 'En attente…'}</span>
-        case 'uploading':
-            return <span className="text-foreground">Envoi · {item.progress} %</span>
+        case 'uploading': {
+            const left = item.speed ? (item.size * (1 - item.progress / 100)) / item.speed : 0
+            return (
+                <span className="text-foreground">
+                    Envoi · {item.progress} %
+                    {item.speed ? <span className="text-faint"> · {formatSpeed(item.speed)}{left > 1 ? ` · encore ${formatDuration(left)}` : ''}</span> : null}
+                </span>
+            )
+        }
         case 'processing':
             return (
                 <span className="text-foreground">
@@ -49,7 +60,9 @@ function StatusLine({ item }: { item: QueueItem }) {
             return (
                 <span className="text-success">
                     ✓ Terminé{item.outputSize ? ` · ${formatSize(item.outputSize)}` : ''}
-                    {saved !== null && saved > 1 && ` (−${saved} %)`}
+                    {item.note === 'kept'
+                        ? <span className="text-faint"> · déjà optimisé, gardé tel quel</span>
+                        : saved !== null && saved > 1 && ` (−${saved} %)`}
                     {item.local && <span className="ml-1.5 text-faint">· local</span>}
                 </span>
             )
@@ -88,6 +101,7 @@ export const FileRow = memo(function FileRow({
     onDownload,
     onShowLog,
     onEdit,
+    onPreview,
     formatNote,
 }: {
     item: QueueItem
@@ -103,11 +117,13 @@ export const FileRow = memo(function FileRow({
     onDownload: (item: QueueItem) => void
     onShowLog?: (item: QueueItem) => void
     onEdit?: (item: QueueItem) => void
+    onPreview?: (item: QueueItem) => void
 }) {
     const active = isActive(item.status)
     const options = item.kind === 'sequence' ? FORMATS.video.filter((f) => ['mp4', 'webm', 'gif'].includes(f.value))
         : item.kind === 'unknown' ? [] : FORMATS[item.kind]
     const canPick = !!item.file && !active && options.length > 1
+    const previewable = !!onPreview && item.status === 'done' && !!item.downloadUrl
     const folder = item.relativePath.includes('/') ? item.relativePath.slice(0, item.relativePath.lastIndexOf('/')) : ''
 
     const format = formatNote ? (
@@ -132,7 +148,7 @@ export const FileRow = memo(function FileRow({
 
     return (
         <div className={cn('group flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-3 transition-colors [contain-intrinsic-size:auto_72px] [content-visibility:auto] hover:bg-foreground/[0.03]', editing && 'bg-foreground/[0.05]')}>
-            <Thumb item={item} />
+            <Thumb item={item} onClick={previewable ? () => onPreview!(item) : undefined} />
             <div className="min-w-0 flex-1">
                 <p className="truncate text-[13px] font-semibold text-foreground" title={item.relativePath || item.name}>
                     {item.name}
@@ -155,6 +171,9 @@ export const FileRow = memo(function FileRow({
             {/* Under the name on phones, on the right from sm up. */}
             {format && <div className="order-last w-full pl-14 sm:order-none sm:w-auto sm:shrink-0 sm:pl-0">{format}</div>}
             <div className="flex shrink-0 items-center gap-1">
+                {previewable && (
+                    <IconButton onClick={() => onPreview!(item)} title={`Aperçu de ${item.outputName || item.name}`}><IconEye size={15} /></IconButton>
+                )}
                 {item.status === 'done' && item.downloadUrl && (
                     <button
                         type="button"

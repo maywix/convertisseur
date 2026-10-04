@@ -72,6 +72,7 @@ VIDEO_PROC_TIMEOUT = int(os.environ.get("VIDEO_PROC_TIMEOUT", "21600"))  # ffmpe
 VIDEO_STALL_TIMEOUT = int(os.environ.get("VIDEO_STALL_TIMEOUT", "600"))
 IMAGE_PROC_TIMEOUT = int(os.environ.get("IMAGE_PROC_TIMEOUT", "300"))   # dcraw / image tools
 OFFICE_PROC_TIMEOUT = int(os.environ.get("OFFICE_PROC_TIMEOUT", "300")) # libreoffice
+PDF_PROC_TIMEOUT = int(os.environ.get("PDF_PROC_TIMEOUT", "600"))       # ghostscript
 
 # Cloudflare Tunnel: "auto" detects it from the CF-* headers cloudflared adds.
 APP_VERSION = os.environ.get("APP_VERSION", "dev")
@@ -85,6 +86,9 @@ STAGING_TTL_SECONDS = 6 * 60 * 60
 
 _JOB_ID_RE = _re.compile(r"^[0-9a-f]{32}$")
 _UPLOAD_ID_RE = _JOB_ID_RE
+
+# Served from frontend/dist (PWA manifest); unknown to Python's table.
+mimetypes.add_type("application/manifest+json", ".webmanifest")
 
 app.config["UPLOAD_FOLDER"] = UPLOAD_DIR
 app.config["PROCESSED_FOLDER"] = PROCESSED_DIR
@@ -448,6 +452,126 @@ def _load_image_for_processing(input_path: str) -> Image.Image:
     return loaded
 
 
+# ---------------------------------------------------------------------------
+# Metadata and colour profiles. Photos keep their EXIF (date, camera) and ICC
+# profile (iPhone photos are Display P3: without it colours come out dull).
+# "metadata": keep (everything), nogps (default: drop the location), strip.
+# ---------------------------------------------------------------------------
+
+_METADATA_MODES = {"keep", "nogps", "strip"}
+_EXIF_ORIENTATION = 0x0112
+_EXIF_GPS_IFD = 0x8825
+
+
+def _metadata_mode(params: dict | None) -> str:
+    mode = str((params or {}).get("metadata") or "nogps").strip().lower()
+    return mode if mode in _METADATA_MODES else "nogps"
+
+
+def _image_metadata(img: Image.Image, params: dict | None) -> dict:
+    """Metadata to write back on save (call after exif_transpose)."""
+    meta: dict = {}
+    icc = img.info.get("icc_profile")
+    if icc:
+        meta["icc_profile"] = icc
+    if _metadata_mode(params) == "strip":
+        return meta
+    try:
+        exif = img.getexif()
+        if len(exif):
+            # The pixels are already upright: a leftover tag would rotate them twice.
+            exif.pop(_EXIF_ORIENTATION, None)
+            if _metadata_mode(params) == "nogps":
+                exif.pop(_EXIF_GPS_IFD, None)
+            data = exif.tobytes()
+            if data:
+                meta["exif"] = data
+    except Exception:
+        logging.debug("exif unreadable, dropped", exc_info=True)
+    return meta
+
+
+def _normalize_image_mode(img: Image.Image, meta: dict) -> Image.Image:
+    """Bring exotic modes (CMYK, 16-bit, Lab…) to RGB / RGBA / L, which every
+    encoder accepts. CMYK goes through its ICC profile when it has one."""
+    import numpy as np
+
+    mode = img.mode
+    if mode in {"RGB", "RGBA", "L", "LA"}:
+        return img
+    if mode in {"I;16", "I;16B", "I;16L", "I;16N", "I"}:
+        arr = np.asarray(img).astype(np.float64)
+        peak = float(arr.max()) if arr.size else 0.0
+        # 16-bit data (or 32-bit holding 16-bit values) scaled down to 8 bits.
+        scale = 257.0 if peak > 255 else 1.0
+        return Image.fromarray(np.clip(arr / scale, 0, 255).astype(np.uint8))
+    if mode == "F":
+        arr = np.asarray(img).astype(np.float64)
+        peak = float(arr.max()) if arr.size else 0.0
+        if 0 < peak <= 1.0:
+            arr = arr * 255.0
+        return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
+    if mode == "CMYK":
+        icc = meta.get("icc_profile")
+        if icc:
+            try:
+                from PIL import ImageCms
+
+                src = ImageCms.ImageCmsProfile(io.BytesIO(icc))
+                dst = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB"))
+                converted = ImageCms.profileToProfile(img, src, dst, outputMode="RGB")
+                if converted is not None:
+                    meta.pop("icc_profile", None)  # now plain sRGB
+                    return converted
+            except Exception:
+                logging.debug("cmyk icc conversion failed, naive fallback", exc_info=True)
+        meta.pop("icc_profile", None)  # a CMYK profile no longer matches RGB pixels
+        return img.convert("RGB")
+    if mode in {"P", "PA"}:
+        return img.convert("RGBA" if (mode == "PA" or "transparency" in img.info) else "RGB")
+    if mode == "1":
+        return img.convert("L")
+    if mode == "LAB":
+        meta.pop("icc_profile", None)  # a Lab profile does not describe RGB pixels
+    if mode in {"RGBa", "La"}:
+        return img.convert("RGBA" if mode == "RGBa" else "LA")
+    return img.convert("RGBA" if "A" in img.getbands() else "RGB")
+
+
+def _has_alpha(img: Image.Image) -> bool:
+    return img.mode in ("RGBA", "LA", "PA") or (img.mode == "P" and "transparency" in img.info)
+
+
+def _flatten_alpha(img: Image.Image, background=(255, 255, 255)) -> Image.Image:
+    """Formats without transparency (JPG, BMP, PDF): put transparent pixels on
+    white. A plain convert("RGB") turns them black (logos on a black box)."""
+    if not _has_alpha(img):
+        return img if img.mode in ("RGB", "L") else img.convert("RGB")
+    rgba = img.convert("RGBA")
+    base = Image.new("RGB", rgba.size, background)
+    base.paste(rgba, mask=rgba.getchannel("A"))
+    return base
+
+
+def _save_image(img: Image.Image, dest, fmt: str, meta: dict | None = None, **opts) -> None:
+    """img.save with EXIF / ICC when the format can hold them; retried without
+    them if the encoder refuses (old Pillow, odd profile)."""
+    extra = {}
+    if meta and fmt in {"JPEG", "PNG", "WEBP", "AVIF", "TIFF", "HEIF"}:
+        extra = {k: v for k, v in meta.items() if v}
+    if not extra:
+        img.save(dest, format=fmt, **opts)
+        return
+    try:
+        img.save(dest, format=fmt, **opts, **extra)
+    except (TypeError, ValueError, OSError):
+        logging.info("%s: metadata refused by the encoder, saved without", fmt)
+        if isinstance(dest, io.BytesIO):
+            dest.seek(0)
+            dest.truncate()
+        img.save(dest, format=fmt, **opts)
+
+
 def _apply_color_removal(img: Image.Image, hex_color: str, tolerance_pct: float) -> Image.Image:
     """Make pixels matching hex_color (within tolerance 0-100) fully transparent."""
     import numpy as np
@@ -471,7 +595,7 @@ def _apply_color_removal(img: Image.Image, hex_color: str, tolerance_pct: float)
     tol = max(0.0, min(100.0, tolerance_pct)) / 100.0 * 441.67
     mask = dist_sq <= (tol * tol)
     arr[..., 3][mask] = 0
-    return Image.fromarray(arr, mode="RGBA")
+    return Image.fromarray(arr)
 
 
 # ---------------------------------------------------------------------------
@@ -591,7 +715,7 @@ def _apply_lut_to_image(img: Image.Image, lut: CubeLut) -> Image.Image:
         out = c0 * (1 - fb) + c1 * fb
         arr[y0:y0 + band, :, :3] = np.clip(out * 255.0 + 0.5, 0, 255).astype(np.uint8)
 
-    return Image.fromarray(arr, mode="RGBA" if has_alpha else "RGB")
+    return Image.fromarray(arr)
 
 
 def _apply_photo_adjustments(img: Image.Image, params: dict) -> Image.Image:
@@ -667,9 +791,9 @@ def _apply_photo_adjustments(img: Image.Image, params: dict) -> Image.Image:
     if has_alpha:
         arr[..., :3] = rgb
         arr[..., 3] = np.clip(arr[..., 3], 0.0, 255.0)
-        img = Image.fromarray(arr.astype(np.uint8), mode="RGBA")
+        img = Image.fromarray(arr.astype(np.uint8))
     else:
-        img = Image.fromarray(rgb.astype(np.uint8), mode="RGB")
+        img = Image.fromarray(rgb.astype(np.uint8))
 
     if contrast:
         img = ImageEnhance.Contrast(img).enhance(max(0.0, 1.0 + (contrast / 100.0)))
@@ -786,7 +910,7 @@ def _db_init() -> None:
             conn.execute("ALTER TABLE jobs ADD COLUMN params TEXT;")
         except sqlite3.OperationalError:
             pass
-        for column in ("progress INTEGER DEFAULT 0", "output_size INTEGER", "input_size INTEGER"):
+        for column in ("progress INTEGER DEFAULT 0", "output_size INTEGER", "input_size INTEGER", "note TEXT"):
             try:
                 conn.execute(f"ALTER TABLE jobs ADD COLUMN {column};")
             except sqlite3.OperationalError:
@@ -878,6 +1002,8 @@ def _job_public(r: dict | sqlite3.Row) -> dict:
         "output_size": r.get("output_size"),
         "input_size": r.get("input_size"),
         "progress": 100 if done else (r.get("progress") or 0),
+        # "kept": compression would not have made it lighter, original returned.
+        "note": r.get("note") or None,
         "download_url": f"/download/{r['id']}" if done else None,
     }
 
@@ -893,6 +1019,7 @@ def _db_update_job(
     output_path: str | None = None,
     output_filename: str | None = None,
     output_size: int | None = None,
+    note: str | None = None,
 ) -> None:
     fields: list[str] = []
     values: list[object] = []
@@ -928,6 +1055,10 @@ def _db_update_job(
     if output_size is not None:
         fields.append("output_size = ?")
         values.append(output_size)
+
+    if note is not None:
+        fields.append("note = ?")
+        values.append(note)
 
     if status == "done":
         fields.append("progress = 100")
@@ -1103,17 +1234,43 @@ def _save_session(response):
     return response
 
 
-def _run_capture(cmd: list[str], *, timeout: int) -> subprocess.CompletedProcess:
+def _run_capture(cmd: list[str], *, timeout: int, job_id: str | None = None) -> subprocess.CompletedProcess:
     """Run a command capturing output, turning a timeout into a clean error.
 
     Without this, subprocess.TimeoutExpired surfaces to the user as the full
     command line (internal file paths included); raise a path-free message
     instead, consistent with the rest of the conversion error handling.
+    With a job id the process is registered, so cancelling the job kills it.
     """
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
+        text=True, errors="replace",
+    )
+    if job_id:
+        with _active_procs_lock:
+            _active_procs[job_id] = proc
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=timeout)
+        out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
         raise RuntimeError(f"conversion interrompue : depassement du delai ({timeout}s)")
+    finally:
+        if job_id:
+            with _active_procs_lock:
+                if _active_procs.get(job_id) is proc:
+                    _active_procs.pop(job_id, None)
+    return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+
+
+def _parse_rate(raw: object) -> float:
+    """ffprobe frame rate ("30000/1001") -> float, 0 when unknown."""
+    try:
+        num, _, den = str(raw or "").partition("/")
+        value = float(num) / float(den or 1)
+    except (ValueError, ZeroDivisionError):
+        return 0.0
+    return value if 0 < value < 1000 else 0.0
 
 
 def _get_video_info(path: str) -> dict | None:
@@ -1122,34 +1279,39 @@ def _get_video_info(path: str) -> dict | None:
             "ffprobe",
             "-v",
             "error",
-            "-select_streams",
-            "v:0",
             "-show_entries",
-            "format=duration,bit_rate:stream=width,height,color_transfer",
+            "format=duration,bit_rate:stream=codec_type,width,height,color_transfer,avg_frame_rate"
+            ":stream_disposition=attached_pic",
             "-of",
             "json",
             path,
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=PROBE_TIMEOUT)
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, errors="replace", check=False, timeout=PROBE_TIMEOUT,
+        )
         data = json.loads(result.stdout or "{}")
+        if result.returncode != 0 or not data.get("format"):
+            return None  # unreadable: callers fall back to defaults
 
         duration = float((data.get("format") or {}).get("duration", 0) or 0)
         bitrate = int((data.get("format") or {}).get("bit_rate", 0) or 0)
-        width = 0
-        height = 0
-        transfer = ""
         streams = data.get("streams") or []
-        if streams:
-            width = int(streams[0].get("width", 0) or 0)
-            height = int(streams[0].get("height", 0) or 0)
-            transfer = str(streams[0].get("color_transfer") or "")
+        # Cover art is a "video" stream too: skip it.
+        videos = [
+            s for s in streams
+            if s.get("codec_type") == "video" and not (s.get("disposition") or {}).get("attached_pic")
+        ]
+        video = videos[0] if videos else {}
 
         return {
             "duration": duration,
             "bitrate": bitrate,
-            "width": width,
-            "height": height,
-            "hdr": transfer in {"smpte2084", "arib-std-b67"},
+            "width": int(video.get("width", 0) or 0),
+            "height": int(video.get("height", 0) or 0),
+            "fps": _parse_rate(video.get("avg_frame_rate")),
+            "hdr": str(video.get("color_transfer") or "") in {"smpte2084", "arib-std-b67"},
+            "has_video": bool(videos),
+            "has_audio": any(s.get("codec_type") == "audio" for s in streams),
         }
     except Exception:
         return None
@@ -1189,11 +1351,89 @@ def _trim_input_args(params: dict) -> list[str]:
     return args
 
 
-def _effective_duration_us(duration: float, params: dict) -> int:
+def _effective_duration_us(duration: float, params: dict, speed: float = 1.0) -> int:
+    """Output duration: the trimmed part, played at `speed`."""
     start = _time_to_seconds(_validate_time(params.get("trim_start"))) or 0.0
     end = _time_to_seconds(_validate_time(params.get("trim_end")))
     stop = min(end, duration) if end and duration else (end or duration)
-    return max(0, int((stop - start) * 1_000_000))
+    return max(0, int((stop - start) / speed * 1_000_000))
+
+
+def _playback_speed(params: dict) -> float:
+    """Playback speed of video / audio outputs (×0.25 … ×4, 1 = unchanged)."""
+    speed = _parse_float_range(params.get("speed"), 1.0, 0.25, 4.0)
+    return 1.0 if abs(speed - 1.0) < 0.001 else speed
+
+
+def _atempo_chain(speed: float) -> list[str]:
+    """atempo only takes 0.5-2.0 per instance on older builds: chain them."""
+    parts: list[str] = []
+    remaining = speed
+    while remaining < 0.5:
+        parts.append("atempo=0.5")
+        remaining /= 0.5
+    while remaining > 2.0:
+        parts.append("atempo=2.0")
+        remaining /= 2.0
+    parts.append(f"atempo={remaining:.6f}")
+    return parts
+
+
+# Output aspect ratios (centre crop), e.g. 9:16 for Reels / TikTok.
+_ASPECT_RATIOS = {
+    "16:9": 16 / 9, "9:16": 9 / 16, "1:1": 1.0, "4:5": 4 / 5,
+    "4:3": 4 / 3, "3:4": 3 / 4, "21:9": 21 / 9,
+}
+
+
+def _geometry_filters(params: dict) -> list[str]:
+    """Crop (pixels), rotation / mirror and centre crop to an aspect ratio."""
+    filters: list[str] = []
+    crop_top = _parse_positive_int(params.get("crop_top")) or 0
+    crop_bottom = _parse_positive_int(params.get("crop_bottom")) or 0
+    crop_left = _parse_positive_int(params.get("crop_left")) or 0
+    crop_right = _parse_positive_int(params.get("crop_right")) or 0
+    if any([crop_top, crop_bottom, crop_left, crop_right]):
+        filters.append(
+            f"crop=in_w-{crop_left}-{crop_right}:in_h-{crop_top}-{crop_bottom}:{crop_left}:{crop_top}"
+        )
+
+    rotate_filter = {
+        "90": "transpose=1",
+        "270": "transpose=2",
+        "180": "hflip,vflip",
+        "hflip": "hflip",
+        "vflip": "vflip",
+    }.get(str(params.get("rotate") or "none").strip().lower())
+    if rotate_filter:
+        filters.append(rotate_filter)
+
+    ratio = _ASPECT_RATIOS.get(str(params.get("aspect") or "").strip())
+    if ratio:
+        filters.append(f"crop=w='min(iw,ih*{ratio:.6f})':h='min(ih,iw/{ratio:.6f})'")
+    return filters
+
+
+_HDR_TO_SDR = (
+    "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,"
+    "tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p"
+)
+
+# Location tags written by phones (QuickTime / MP4).
+_LOCATION_TAGS = ("location", "location-eng", "com.apple.quicktime.location.ISO6709")
+
+
+def _ffmpeg_metadata_args(params: dict) -> list[str]:
+    """Output options applying the metadata choice to a video source."""
+    mode = _metadata_mode(params)
+    if mode == "strip":
+        return ["-map_metadata", "-1"]
+    if mode == "nogps":
+        args: list[str] = []
+        for tag in _LOCATION_TAGS:
+            args += ["-metadata", f"{tag}="]  # an empty value deletes the tag
+        return args
+    return []
 
 
 def _process_video_to_gif(
@@ -1226,8 +1466,12 @@ def _process_video_to_gif(
         target_res = _validate_resolution(params.get("gif_resolution"), "480")
         scale = "scale=-1:-1:flags=lanczos" if target_res == "-1" else f"scale=-2:'min(ih,{target_res})':flags=lanczos"
 
+    info = _get_video_info(input_path) or {}
+    # iPhone HDR clips come out grey without tone mapping; crops / rotation
+    # and aspect ratio apply to GIFs too.
+    pre = ([_HDR_TO_SDR] if info.get("hdr") else []) + _geometry_filters(params)
     vf = (
-        f"setpts={speed_val}*PTS,fps={fps},{scale},"
+        f"{''.join(f + ',' for f in pre)}setpts={speed_val}*PTS,fps={fps},{scale},"
         f"split[s0][s1];"
         f"[s0]palettegen=max_colors={gif_colors}:stats_mode=diff[p];"
         f"[s1][p]paletteuse=dither={gif_dither}:diff_mode=rectangle"
@@ -1236,16 +1480,15 @@ def _process_video_to_gif(
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
         *_trim_input_args(params), "-i", input_path,
+        "-map", "0:V:0",
         "-vf", vf,
         "-loop", str(gif_loop),
         output_path,
     ]
 
     total_us = 0
-    if job_id:
-        info = _get_video_info(input_path)
-        if info and info.get("duration", 0) > 0:
-            total_us = int(_effective_duration_us(info["duration"], params) * speed_val)
+    if job_id and info.get("duration", 0) > 0:
+        total_us = int(_effective_duration_us(info["duration"], params) * speed_val)
     _run_ffmpeg_tracked(cmd, job_id=job_id, total_us=total_us)
 
 
@@ -1269,13 +1512,19 @@ def _ffmpeg_error_summary(lines: list[str]) -> str:
     return msg
 
 
-def _run_ffmpeg_tracked(cmdline: list[str], job_id: str | None, total_us: int) -> None:
-    """Run an FFmpeg command; if job_id and total_us are given, update DB progress in real time."""
+def _run_ffmpeg_tracked(
+    cmdline: list[str],
+    job_id: str | None,
+    total_us: int,
+    pct_range: tuple[int, int] = (0, 99),
+) -> None:
+    """Run an FFmpeg command; if job_id and total_us are given, update DB progress
+    in real time, mapped onto pct_range (several passes share the bar)."""
     if job_id:
         _job_log_append(job_id, "$ " + " ".join(cmdline))
 
     if not job_id or total_us <= 0:
-        result = _run_capture(cmdline, timeout=VIDEO_PROC_TIMEOUT)
+        result = _run_capture(cmdline, timeout=VIDEO_PROC_TIMEOUT, job_id=job_id)
         stderr_lines = (result.stderr or "").splitlines()
         if job_id:
             _job_log_append(job_id, *stderr_lines)
@@ -1293,6 +1542,7 @@ def _run_ffmpeg_tracked(cmdline: list[str], job_id: str | None, total_us: int) -
         stderr=subprocess.PIPE,
         stdin=subprocess.DEVNULL,
         text=True,
+        errors="replace",
         bufsize=1,
     )
 
@@ -1330,7 +1580,8 @@ def _run_ffmpeg_tracked(cmdline: list[str], job_id: str | None, total_us: int) -
     watchdog = threading.Thread(target=_watch, daemon=True)
     watchdog.start()
 
-    last_pct = 0
+    pct_from, pct_to = pct_range
+    last_pct = pct_from
     last_out_us = -1
     for line in proc.stdout:
         # out_time_us (and the misnamed out_time_ms) are both microseconds.
@@ -1342,7 +1593,8 @@ def _run_ffmpeg_tracked(cmdline: list[str], job_id: str | None, total_us: int) -
             if out_us > last_out_us:
                 last_out_us = out_us
                 last_progress["t"] = time.monotonic()
-            pct = min(99, int(out_us / total_us * 100))
+            ratio = min(1.0, max(0.0, out_us / total_us))
+            pct = min(99, pct_from + int(ratio * (pct_to - pct_from)))
             if pct > last_pct:
                 last_pct = pct
                 _db_update_progress(job_id, pct)
@@ -1540,6 +1792,36 @@ def _grading_filters(params: dict) -> list[str]:
     return filters
 
 
+def _auto_height_for_bitrate(info: dict, video_k: int, vcodec: str) -> int | None:
+    """Short side to scale down to so a low bitrate (size target) still looks
+    decent: 1080p squeezed into 1 Mb/s is a smear, 540p at the same rate is fine.
+    None = keep the source resolution."""
+    width, height = int(info.get("width") or 0), int(info.get("height") or 0)
+    if not (width and height and video_k > 0):
+        return None
+    short, long_side = min(width, height), max(width, height)
+    fps = min(60.0, info.get("fps") or 30.0)
+    # Bits per pixel per frame below which detail falls apart.
+    floor = 0.06 if vcodec == "libx264" else 0.04
+    for tier in (2160, 1440, 1080, 720, 540, 480, 360):
+        if tier > short:
+            continue
+        pixels = tier * (tier * long_side / short)
+        if video_k * 1000 / (pixels * fps) >= floor:
+            return tier if tier < short else None
+    return 240 if short > 240 else None
+
+
+def _set_video_bitrate(cmd: list[str], bitrate_k: int) -> list[str]:
+    """Copy of an ffmpeg command line with another video bitrate."""
+    values = {"-b:v": f"{bitrate_k}k", "-maxrate": f"{int(bitrate_k * 1.5)}k", "-bufsize": f"{bitrate_k * 2}k"}
+    out = list(cmd)
+    for i, arg in enumerate(out[:-1]):
+        if arg in values:
+            out[i + 1] = values[arg]
+    return out
+
+
 def _process_with_ffmpeg(
     *,
     input_path: str,
@@ -1554,20 +1836,25 @@ def _process_with_ffmpeg(
 ) -> None:
     params = params or {}
     target_format = (target_format or ext.lstrip(".")).lower().strip()
+    from_video = ext in VIDEO_EXTENSIONS
     # A video can be turned into an audio file ("extract the soundtrack").
-    audio_only = ext not in VIDEO_EXTENSIONS or target_format in AUDIO_OUTPUT_FORMATS
+    audio_only = not from_video or target_format in AUDIO_OUTPUT_FORMATS
     is_video = not audio_only
 
     info = _get_video_info(input_path) or {}
+    if audio_only and info and not info.get("has_audio"):
+        raise RuntimeError("ce fichier n'a pas de piste son")
+    speed = _playback_speed(params)
     duration = float(info.get("duration") or 0)
-    effective_us = _effective_duration_us(duration, params) if duration > 0 else 0
+    effective_us = _effective_duration_us(duration, params, speed) if duration > 0 else 0
     effective_s = effective_us / 1_000_000
 
     cmd: list[str] = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
     cmd += _trim_input_args(params)
     cmd += ["-i", input_path]
 
-    remove_audio = is_video and _flag(params, "remove_audio")
+    remove_audio = is_video and (_flag(params, "remove_audio") or info.get("has_audio") is False)
+    copy_audio = str(params.get("audio_codec") or "") == "copy" and speed == 1.0
     if is_video:
         # First real video stream (V skips cover art) + first audio track.
         # Subtitles / data tracks (iPhone metadata, PGS subs) break mp4 muxing.
@@ -1575,6 +1862,7 @@ def _process_with_ffmpeg(
         if not remove_audio:
             cmd += ["-map", "0:a:0?"]
         cmd += ["-sn", "-dn"]
+        cmd += _ffmpeg_metadata_args(params)
     else:
         src_fmt = ext.lstrip(".")
         cmd += ["-map", "0:a:0"]
@@ -1583,7 +1871,14 @@ def _process_with_ffmpeg(
             cmd += ["-map", "0:v:0?", "-c:v", "copy"]
         else:
             cmd += ["-vn"]
-        cmd += ["-sn", "-dn", "-map_metadata", "0"]
+        cmd += ["-sn", "-dn"]
+        if from_video:
+            # Soundtrack of a phone video: same metadata choice as the video.
+            if _metadata_mode(params) != "strip":
+                cmd += ["-map_metadata", "0"]
+            cmd += _ffmpeg_metadata_args(params)
+        else:
+            cmd += ["-map_metadata", "0"]  # music tags (artist, album…)
 
     if params.get("audio_sample_rate"):
         sr = _parse_positive_int(params.get("audio_sample_rate"))
@@ -1595,6 +1890,9 @@ def _process_with_ffmpeg(
             cmd += ["-ac", str(ch)]
 
     target_bitrate_k: int | None = None
+    # Size the output must not exceed (size / percent targets): checked after
+    # the encode, which is redone once with a lower bitrate if it overshoots.
+    size_limit: int | None = None
     two_pass = False
 
     if is_video:
@@ -1610,32 +1908,47 @@ def _process_with_ffmpeg(
             # browsers, QuickTime and phones refuse to play.
             pixel_format = "yuv420p"
 
+        # ── Rate control ──
+        audio_k = 0 if remove_audio else 160
+        crf: int | None = None
+        qscale: int | None = None
+        quality = str(params.get("video_quality") or "").strip()
+        quality_mode = str(params.get("video_quality_mode") or "auto").strip()
+
+        if action == "compress" and comp_mode == "size" and effective_s > 0:
+            target_mb = _parse_float_range(comp_value, 0, 0, 100000)
+            if target_mb > 0:
+                total_k = target_mb * 8 * 1024 * 1024 / effective_s / 1000
+                if audio_k:
+                    audio_k = min(audio_k, max(64, int(total_k * 0.15)))
+                target_bitrate_k = max(100, int(total_k * 0.96 - audio_k))
+                size_limit = int(target_mb * 1024 * 1024)
+        elif action == "compress" and comp_mode == "percent" and info.get("bitrate") and effective_s > 0:
+            percent = _parse_float_range(comp_value, 50, 1, 95)
+            total_k = info["bitrate"] * (1 - percent / 100) / 1000
+            if audio_k:
+                audio_k = min(audio_k, max(64, int(total_k * 0.15)))
+            target_bitrate_k = max(100, int(total_k * 0.97) - audio_k)
+            size_limit = int(total_k * 1000 / 8 * effective_s * 1.03)
+        elif quality_mode == "bitrate" and params.get("video_bitrate_k"):
+            target_bitrate_k = int(_parse_float_range(params.get("video_bitrate_k"), 2500, 100, 200000))
+        elif params.get("video_crf") and str(params.get("video_crf")).strip().isdigit():
+            crf = max(0, min(63, int(str(params.get("video_crf")).strip())))
+
         filters: list[str] = []
         geometry_changed = False
 
         if _flag(params, "deinterlace"):
             filters.append("bwdif")
 
-        crop_top = _parse_positive_int(params.get("crop_top")) or 0
-        crop_bottom = _parse_positive_int(params.get("crop_bottom")) or 0
-        crop_left = _parse_positive_int(params.get("crop_left")) or 0
-        crop_right = _parse_positive_int(params.get("crop_right")) or 0
-        if any([crop_top, crop_bottom, crop_left, crop_right]):
-            filters.append(
-                f"crop=in_w-{crop_left}-{crop_right}:in_h-{crop_top}-{crop_bottom}:{crop_left}:{crop_top}"
-            )
-            geometry_changed = True
+        if speed != 1.0:
+            filters.append(f"setpts=PTS/{speed:g}")
 
-        rotate = str(params.get("rotate") or "none").strip().lower()
-        rotate_filter = {
-            "90": "transpose=1",
-            "270": "transpose=2",
-            "180": "hflip,vflip",
-            "hflip": "hflip",
-            "vflip": "vflip",
-        }.get(rotate)
-        if rotate_filter:
-            filters.append(rotate_filter)
+        geometry = _geometry_filters(params)
+        if geometry:
+            filters.extend(geometry)
+            # Crops (pixels or aspect ratio) can leave odd sizes.
+            geometry_changed = any(f.startswith("crop=") for f in geometry)
 
         denoise = {
             "light": "hqdn3d=2:1.5:2:1.5",
@@ -1653,10 +1966,7 @@ def _process_with_ffmpeg(
         hdr_setting = str(params.get("hdr_to_sdr") or "auto").strip().lower()
         wants_tonemap = hdr_setting in _TRUTHY or (hdr_setting == "auto" and not has_lut)
         if info.get("hdr") and wants_tonemap and not pixel_format.endswith("10le"):
-            filters.append(
-                "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,"
-                "tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p"
-            )
+            filters.append(_HDR_TO_SDR)
 
         if has_lut:
             lut_escaped = lut_path.replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
@@ -1698,6 +2008,10 @@ def _process_with_ffmpeg(
         max_height = _parse_positive_int(params.get("video_max_height"))
         if action == "compress" and comp_mode == "res" and not max_height:
             max_height = _parse_positive_int(comp_value)
+        if size_limit and target_bitrate_k and not resize_filter and not max_height:
+            max_height = _auto_height_for_bitrate(info, target_bitrate_k, vcodec)
+            if max_height and job_id:
+                _job_log_append(job_id, f"# poids visé : {target_bitrate_k} kb/s pour la vidéo -> réduite à {max_height}p")
         if resize_filter:
             filters.append(resize_filter)
             geometry_changed = True
@@ -1742,28 +2056,6 @@ def _process_with_ffmpeg(
             cmd += ["-tag:v", "hvc1"]  # required by QuickTime / iOS
         cmd += ["-pix_fmt", pixel_format]
 
-        # ── Rate control ──
-        audio_k = 0 if remove_audio else 160
-        crf: int | None = None
-        qscale: int | None = None
-        quality = str(params.get("video_quality") or "").strip()
-        quality_mode = str(params.get("video_quality_mode") or "auto").strip()
-
-        if action == "compress" and comp_mode == "size" and effective_s > 0:
-            target_mb = _parse_float_range(comp_value, 0, 0, 100000)
-            if target_mb > 0:
-                total_k = target_mb * 8 * 1024 * 1024 / effective_s / 1000
-                if audio_k:
-                    audio_k = min(audio_k, max(64, int(total_k * 0.15)))
-                target_bitrate_k = max(100, int(total_k * 0.97 - audio_k))
-        elif action == "compress" and comp_mode == "percent" and info.get("bitrate"):
-            percent = _parse_float_range(comp_value, 50, 1, 95)
-            target_bitrate_k = max(100, int(info["bitrate"] * (1 - percent / 100) / 1000) - audio_k)
-        elif quality_mode == "bitrate" and params.get("video_bitrate_k"):
-            target_bitrate_k = int(_parse_float_range(params.get("video_bitrate_k"), 2500, 100, 200000))
-        elif params.get("video_crf") and str(params.get("video_crf")).strip().isdigit():
-            crf = max(0, min(63, int(str(params.get("video_crf")).strip())))
-
         if target_bitrate_k is None and crf is None:
             if quality not in _CRF_BY_QUALITY:
                 quality = _LEGACY_COMPRESS_LEVEL.get((comp_value or "").strip(), "balanced") if action == "compress" else "balanced"
@@ -1780,7 +2072,8 @@ def _process_with_ffmpeg(
                 "-maxrate", f"{int(target_bitrate_k * 1.5)}k",
                 "-bufsize", f"{target_bitrate_k * 2}k",
             ]
-            two_pass = _flag(params, "two_pass") and vcodec == "libx264"
+            # Two passes land on the requested size; one pass can overshoot it.
+            two_pass = vcodec in {"libx264", "libvpx-vp9"} and (bool(size_limit) or _flag(params, "two_pass"))
         elif crf is not None:
             cmd += ["-crf", str(crf)]
             if vcodec in {"libvpx-vp9", "libaom-av1"}:
@@ -1794,12 +2087,12 @@ def _process_with_ffmpeg(
         # ── Audio track ──
         if remove_audio:
             cmd += ["-an"]
-        elif str(params.get("audio_codec") or "") == "copy":
+        elif copy_audio:
             cmd += ["-c:a", "copy"]
         else:
             cmd += ["-c:a", acodec]
             bitrate = str(params.get("audio_bitrate") or "").strip()
-            if not _AUDIO_BITRATE_RE.match(bitrate):
+            if size_limit or not _AUDIO_BITRATE_RE.match(bitrate):
                 bitrate = f"{audio_k}k" if audio_k else "160k"
             cmd += ["-b:a", bitrate]
     else:
@@ -1811,7 +2104,7 @@ def _process_with_ffmpeg(
             if action == "compress" and comp_mode == "size" and effective_s > 0:
                 target_mb = _parse_float_range(comp_value, 0, 0, 100000)
                 if target_mb > 0:
-                    bitrate_k = int(target_mb * 8 * 1024 * 1024 / effective_s / 1000 * 0.97)
+                    bitrate_k = int(target_mb * 8 * 1024 * 1024 / effective_s / 1000 * 0.96)
             elif action == "compress" and comp_mode == "percent" and info.get("bitrate"):
                 percent = _parse_float_range(comp_value, 50, 1, 95)
                 bitrate_k = int(info["bitrate"] * (1 - percent / 100) / 1000)
@@ -1828,8 +2121,10 @@ def _process_with_ffmpeg(
         if target_format == "mp3":
             cmd += ["-id3v2_version", "3"]
 
-    if not remove_audio and str(params.get("audio_codec") or "") != "copy":
+    if not remove_audio and not (is_video and copy_audio):
         audio_filters: list[str] = []
+        if speed != 1.0:
+            audio_filters.extend(_atempo_chain(speed))
         vol_db = _parse_float_range(params.get("audio_volume"), 0, -30, 30)
         if vol_db:
             audio_filters.append(f"volume={vol_db:g}dB")
@@ -1841,23 +2136,166 @@ def _process_with_ffmpeg(
         if audio_filters:
             cmd += ["-af", ",".join(audio_filters)]
 
-    def _run(cmdline: list[str]) -> None:
-        logging.info("FFmpeg command: %s", " ".join(cmdline))
-        _run_ffmpeg_tracked(cmdline, job_id=job_id, total_us=effective_us)
-
-    if two_pass:
+    def _encode(base: list[str], pct_range: tuple[int, int]) -> None:
+        if not two_pass:
+            logging.info("FFmpeg command: %s", " ".join(base + [output_path]))
+            _run_ffmpeg_tracked([*base, output_path], job_id=job_id, total_us=effective_us, pct_range=pct_range)
+            return
+        middle = (pct_range[0] + pct_range[1]) // 2
         passlog = os.path.join(DATA_DIR, f"ffpass_{uuid.uuid4().hex}")
         try:
-            _run([*cmd, "-pass", "1", "-passlogfile", passlog, "-an", "-f", "null", os.devnull])
-            _run([*cmd, "-pass", "2", "-passlogfile", passlog, output_path])
+            first = [*base, "-pass", "1", "-passlogfile", passlog, "-an", "-f", "null", os.devnull]
+            logging.info("FFmpeg command: %s", " ".join(first))
+            _run_ffmpeg_tracked(first, job_id=job_id, total_us=effective_us, pct_range=(pct_range[0], middle))
+            second = [*base, "-pass", "2", "-passlogfile", passlog, output_path]
+            logging.info("FFmpeg command: %s", " ".join(second))
+            _run_ffmpeg_tracked(second, job_id=job_id, total_us=effective_us, pct_range=(middle, pct_range[1]))
         finally:
             for suffix in ("", "-0.log", "-0.log.mbtree", ".log", ".log.mbtree"):
                 try:
                     os.remove(passlog + suffix)
                 except OSError:
                     pass
+
+    _encode(cmd, (0, 90) if size_limit else (0, 99))
+
+    if size_limit and target_bitrate_k and os.path.isfile(output_path):
+        produced = os.path.getsize(output_path)
+        if produced > size_limit:
+            # Container overhead / a hard-to-encode clip: one more try, aimed lower.
+            retry_k = max(50, int(target_bitrate_k * size_limit / produced * 0.93))
+            if job_id:
+                _job_log_append(job_id, f"# {produced} octets > {size_limit} visés : nouvel essai à {retry_k} kb/s")
+            _encode(_set_video_bitrate(cmd, retry_k), (90, 99))
+
+
+# Ghostscript presets: image resolution 300 / 150 / 72 dpi.
+_GS_PRESETS = {"low": "/printer", "medium": "/ebook", "high": "/screen"}
+PDF_IMAGE_MAX_PAGES = 500
+
+
+def _log_process_output(job_id: str | None, result: subprocess.CompletedProcess) -> None:
+    if job_id:
+        _job_log_append(job_id, *((result.stdout or "") + (result.stderr or "")).splitlines())
+
+
+def _gs_compress_pdf(input_path: str, output_path: str, preset: str, job_id: str | None) -> bool:
+    gs = shutil.which("gs")
+    if not gs:
+        return False
+    cmd = [
+        gs, "-q", "-dSAFER", "-dBATCH", "-dNOPAUSE", "-sDEVICE=pdfwrite",
+        "-dCompatibilityLevel=1.5", f"-dPDFSETTINGS={preset}",
+        "-dDetectDuplicateImages=true", "-dCompressFonts=true", "-dSubsetFonts=true",
+        # Without this, gs turns pages it thinks are sideways.
+        "-dAutoRotatePages=/None",
+        f"-sOutputFile={output_path}", input_path,
+    ]
+    if job_id:
+        _job_log_append(job_id, "$ " + " ".join(cmd))
+    result = _run_capture(cmd, timeout=PDF_PROC_TIMEOUT, job_id=job_id)
+    _log_process_output(job_id, result)
+    return result.returncode == 0 and os.path.isfile(output_path) and os.path.getsize(output_path) > 0
+
+
+def _pdf_compress_lossless(input_path: str, output_path: str) -> None:
+    """pypdf fallback (no Ghostscript, or a file it refuses): recompresses the
+    page streams and merges duplicate objects, images untouched."""
+    with open(input_path, "rb") as fh:
+        reader = PdfReader(fh)
+        if reader.is_encrypted:
+            raise RuntimeError("PDF protégé par un mot de passe : impossible de le compresser")
+        writer = PdfWriter(clone_from=reader)
+        for page in writer.pages:
+            page.compress_content_streams()
+        try:
+            writer.compress_identical_objects(remove_identicals=True, remove_orphans=True)
+        except Exception:
+            logging.debug("compress_identical_objects failed", exc_info=True)
+        with open(output_path, "wb") as out:
+            writer.write(out)
+
+
+def _compress_pdf(
+    *, input_path: str, output_path: str, comp_mode: str | None, comp_value: str | None, job_id: str | None = None,
+) -> None:
+    """Real PDF compression (images resampled by Ghostscript). With a size or
+    percent target, the levels are tried from the lightest until one fits."""
+    in_size = os.path.getsize(input_path)
+    target: int | None = None
+    if comp_mode == "size":
+        target = int(_parse_float_range(comp_value, 0, 0, 100000) * 1024 * 1024) or None
+        levels = ["low", "medium", "high"]
+    elif comp_mode == "percent":
+        target = int(in_size * (1 - _parse_float_range(comp_value, 50, 1, 95) / 100))
+        levels = ["low", "medium", "high"]
     else:
-        _run([*cmd, output_path])
+        level = (comp_value or "").strip()
+        levels = [level if level in _GS_PRESETS else "medium"]
+
+    if not shutil.which("gs"):
+        _pdf_compress_lossless(input_path, output_path)
+        return
+
+    best: tuple[str, int] | None = None
+    candidates: list[str] = []
+    try:
+        for i, level in enumerate(levels):
+            candidate = os.path.join(DATA_DIR, f"pdf_{uuid.uuid4().hex}.pdf")
+            candidates.append(candidate)
+            if _gs_compress_pdf(input_path, candidate, _GS_PRESETS[level], job_id):
+                size = os.path.getsize(candidate)
+                if best is None or size < best[1]:
+                    best = (candidate, size)
+                if target is None or size <= target:
+                    break
+            if job_id:
+                _db_update_progress(job_id, int((i + 1) / len(levels) * 90))
+        if best is None:
+            # Damaged or unusual file Ghostscript refuses: lossless pass instead.
+            _pdf_compress_lossless(input_path, output_path)
+            return
+        shutil.move(best[0], output_path)
+    finally:
+        for path in candidates:
+            _remove_path(path)
+
+
+def _pdf_to_images(
+    *, input_path: str, output_path: str, fmt: str, name_prefix: str, job_id: str | None = None, dpi: int = 150,
+) -> str:
+    """Pages as JPG / PNG: one image for a one-page PDF, else a ZIP.
+    Returns the path written (output_path, or the same name in .zip)."""
+    gs = shutil.which("gs")
+    if not gs:
+        raise RuntimeError("Ghostscript non installé : conversion de PDF en images indisponible")
+    ext = "jpg" if fmt in {"jpg", "jpeg"} else "png"
+    device = ["-sDEVICE=jpeg", "-dJPEGQ=90"] if ext == "jpg" else ["-sDEVICE=png16m"]
+    temp_dir = tempfile.mkdtemp(dir=DATA_DIR, prefix="pdf_pages_")
+    try:
+        cmd = [
+            gs, "-q", "-dSAFER", "-dBATCH", "-dNOPAUSE", *device, f"-r{dpi}",
+            "-dTextAlphaBits=4", "-dGraphicsAlphaBits=4",
+            "-dFirstPage=1", f"-dLastPage={PDF_IMAGE_MAX_PAGES}",
+            f"-sOutputFile={os.path.join(temp_dir, 'page-%04d.' + ext)}", input_path,
+        ]
+        if job_id:
+            _job_log_append(job_id, "$ " + " ".join(cmd))
+        result = _run_capture(cmd, timeout=PDF_PROC_TIMEOUT, job_id=job_id)
+        _log_process_output(job_id, result)
+        pages = sorted(n for n in os.listdir(temp_dir) if n.endswith(f".{ext}"))
+        if result.returncode != 0 or not pages:
+            raise RuntimeError("PDF illisible (abîmé ou protégé par un mot de passe)")
+        if len(pages) == 1:
+            shutil.move(os.path.join(temp_dir, pages[0]), output_path)
+            return output_path
+        zip_path = os.path.splitext(output_path)[0] + ".zip"
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED) as zf:
+            for index, name in enumerate(pages, start=1):
+                zf.write(os.path.join(temp_dir, name), arcname=f"{name_prefix}-page-{index:03d}.{ext}")
+        return zip_path
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def _process_pdf(
@@ -1866,47 +2304,59 @@ def _process_pdf(
     output_path: str,
     action: str,
     target_format: str | None,
+    comp_mode: str | None = None,
     comp_value: str | None,
-) -> None:
+    name_prefix: str = "document",
+    job_id: str | None = None,
+) -> str:
+    """Returns the path written (PDF -> images may produce a ZIP)."""
     if action == "compress":
-        reader = PdfReader(input_path)
-        writer = PdfWriter()
-
-        try:
-            for page in reader.pages:
-                writer.add_page(page)
-                page.compress_content_streams()
-
-            if (comp_value or "").strip() == "high":
-                writer.add_metadata({})
-            else:
-                if reader.metadata:
-                    writer.add_metadata(reader.metadata)
-
-            with open(output_path, "wb") as f:
-                writer.write(f)
-        finally:
-            reader.stream.close() if hasattr(reader, 'stream') and reader.stream else None
-        return
+        _compress_pdf(input_path=input_path, output_path=output_path, comp_mode=comp_mode,
+                      comp_value=comp_value, job_id=job_id)
+        return output_path
 
     if action == "convert":
-        if (target_format or "").lower() != "txt":
+        fmt = (target_format or "").lower()
+        if fmt in {"jpg", "jpeg", "png"}:
+            return _pdf_to_images(input_path=input_path, output_path=output_path, fmt=fmt,
+                                  name_prefix=name_prefix, job_id=job_id)
+        if fmt != "txt":
             raise ValueError("conversion pdf vers ce format non supportee")
 
-        reader = PdfReader(input_path)
-        try:
+        with open(input_path, "rb") as fh:
+            reader = PdfReader(fh)
+            if reader.is_encrypted:
+                raise RuntimeError("PDF protégé par un mot de passe")
             text = ""
             for page in reader.pages:
                 t = page.extract_text()
                 if t:
                     text += t + "\n"
-            with open(output_path, "w") as f:
-                f.write(text)
-        finally:
-            reader.stream.close() if hasattr(reader, 'stream') and reader.stream else None
-        return
+        if not text.strip():
+            raise RuntimeError("aucun texte dans ce PDF (pages scannées ?)")
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(text)
+        return output_path
 
     raise ValueError("action non supportee")
+
+
+# One LibreOffice profile per worker thread: two conversions sharing a
+# profile make the second one exit without producing anything.
+_lo_slot = threading.local()
+_lo_slot_lock = threading.Lock()
+_lo_slot_next = [0]
+
+
+def _libreoffice_profile_url() -> str:
+    slot = getattr(_lo_slot, "value", None)
+    if slot is None:
+        with _lo_slot_lock:
+            slot = _lo_slot_next[0]
+            _lo_slot_next[0] += 1
+        _lo_slot.value = slot
+    path = os.path.join(tempfile.gettempdir(), f"convertisseur_lo_{slot}")
+    return "file://" + path
 
 
 def _process_office(
@@ -1921,31 +2371,32 @@ def _process_office(
     if target_format not in {"pdf"}:
         raise ValueError(f"format de sortie non supporté pour les documents: {target_format}")
 
-    cmd = ["libreoffice", "--headless", "--convert-to", target_format,
-           "--outdir", PROCESSED_DIR, input_path]
-    _job_log_append(job_id or "", "$ " + " ".join(cmd))
-
+    out_dir = tempfile.mkdtemp(dir=DATA_DIR, prefix="office_")
     try:
-        result = _run_capture(cmd, timeout=OFFICE_PROC_TIMEOUT)
-    except FileNotFoundError:
-        raise RuntimeError("LibreOffice non installé — conversion de documents non disponible")
+        cmd = ["libreoffice", f"-env:UserInstallation={_libreoffice_profile_url()}", "--headless",
+               "--norestore", "--convert-to", target_format, "--outdir", out_dir, input_path]
+        _job_log_append(job_id or "", "$ " + " ".join(cmd))
 
-    for line in (result.stdout + result.stderr).splitlines():
-        _job_log_append(job_id or "", line)
+        try:
+            result = _run_capture(cmd, timeout=OFFICE_PROC_TIMEOUT, job_id=job_id)
+        except FileNotFoundError:
+            raise RuntimeError("LibreOffice non installé — conversion de documents non disponible")
 
-    if result.returncode != 0:
-        err = (result.stderr or result.stdout or "").strip()
-        raise RuntimeError(f"LibreOffice échoué: {err[:300] if err else 'erreur inconnue'}")
+        for line in (result.stdout + result.stderr).splitlines():
+            _job_log_append(job_id or "", line)
 
-    # LibreOffice names the output file after the input basename
-    base = os.path.splitext(os.path.basename(input_path))[0]
-    generated = os.path.join(PROCESSED_DIR, f"{base}.{target_format}")
+        if result.returncode != 0:
+            err = (result.stderr or result.stdout or "").strip()
+            raise RuntimeError(f"LibreOffice échoué: {err[:300] if err else 'erreur inconnue'}")
 
-    if not os.path.exists(generated):
-        raise RuntimeError("LibreOffice n'a pas produit de fichier de sortie")
-
-    if generated != output_path:
+        # LibreOffice names the output file after the input basename
+        base = os.path.splitext(os.path.basename(input_path))[0]
+        generated = os.path.join(out_dir, f"{base}.{target_format}")
+        if not os.path.exists(generated):
+            raise RuntimeError("LibreOffice n'a pas produit de fichier (document protégé ou abîmé ?)")
         shutil.move(generated, output_path)
+    finally:
+        shutil.rmtree(out_dir, ignore_errors=True)
 
 
 def _process_3d_model(
@@ -1971,12 +2422,28 @@ def _process_3d_model(
     _job_log_append(job_id or "", "Done.")
 
 
+# Slideshows: phones and players choke on 6000 px frames, and 4:2:0 video
+# needs even sizes (a 1081 px wide photo made x264 fail).
+SLIDESHOW_MAX_SIDE = 1920
+SLIDESHOW_GIF_MAX_SIDE = 800
+
+
+def _even_canvas(size: tuple[int, int], max_side: int) -> tuple[int, int]:
+    width, height = size
+    longest = max(width, height, 1)
+    scale = min(1.0, max_side / longest)
+    width = max(2, int(round(width * scale)))
+    height = max(2, int(round(height * scale)))
+    return width - width % 2, height - height % 2
+
+
 def _process_image_sequence_to_video(
     *,
     input_paths: list[str],
     output_path: str,
     target_format: str | None,
     params: dict | None = None,
+    job_id: str | None = None,
 ) -> None:
     if not input_paths:
         raise ValueError("aucune image fournie")
@@ -1984,9 +2451,13 @@ def _process_image_sequence_to_video(
     params = params or {}
     target_format = (target_format or "mp4").lower().strip()
     sequence_fps = _validate_fps(params.get("sequence_fps"), "1")
+    is_gif = target_format == "gif"
 
-    first_img = _load_image_for_processing(input_paths[0])
-    canvas_size = _sequence_target_size(first_img.size, params)
+    first_img = ImageOps.exif_transpose(_load_image_for_processing(input_paths[0]))
+    canvas_size = _even_canvas(
+        _sequence_target_size(first_img.size, params),
+        SLIDESHOW_GIF_MAX_SIDE if is_gif else SLIDESHOW_MAX_SIDE,
+    )
     first_img.close()
 
     temp_dir = tempfile.mkdtemp(dir=DATA_DIR, prefix=f"seq_frames_{uuid.uuid4().hex}_")
@@ -1994,70 +2465,37 @@ def _process_image_sequence_to_video(
         for index, path in enumerate(input_paths, start=1):
             img = _load_image_for_processing(path)
             frame = _save_sequence_frame(img, canvas_size)
-            frame.save(os.path.join(temp_dir, f"frame_{index:06d}.png"), format="PNG")
+            frame.save(os.path.join(temp_dir, f"frame_{index:06d}.png"), format="PNG", compress_level=1)
             img.close()
             frame.close()
+            if job_id:
+                _db_update_progress(job_id, int(index / len(input_paths) * 50))
 
         input_pattern = os.path.join(temp_dir, "frame_%06d.png")
-        if target_format == "gif":
-            vf = f"fps={sequence_fps},split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse"
-            cmd = [
-                "ffmpeg",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-y",
-                "-framerate",
-                sequence_fps,
-                "-i",
-                input_pattern,
-                "-vf",
-                vf,
-                output_path,
-            ]
-            result = _run_capture(cmd, timeout=VIDEO_PROC_TIMEOUT)
-            if result.returncode != 0:
-                stderr = (result.stderr or "").strip()
-                if stderr:
-                    raise RuntimeError(stderr.splitlines()[-1])
-                raise RuntimeError("ffmpeg gif sequence failed")
-            return
-
-        video_codec = "libx264"
-        if target_format == "webm":
-            video_codec = "libvpx-vp9"
-        elif target_format == "mkv":
-            video_codec = "libx264"
-
+        total_us = int(len(input_paths) / float(sequence_fps) * 1_000_000)
         cmd = [
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-y",
-            "-framerate",
-            sequence_fps,
-            "-i",
-            input_pattern,
-            "-c:v",
-            video_codec,
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-framerate", sequence_fps, "-i", input_pattern,
         ]
-
-        if video_codec == "libx264":
-            cmd.extend(["-pix_fmt", "yuv420p"])
+        if is_gif:
+            cmd += ["-vf", f"fps={sequence_fps},split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse", "-loop", "0"]
+        else:
+            # 1 image/s is legal but players and phones expect ~25 frames/s:
+            # repeat each image instead (costs almost nothing once encoded).
+            if float(sequence_fps) < 25:
+                cmd += ["-r", "25"]
+            if target_format == "webm":
+                cmd += ["-c:v", "libvpx-vp9", "-crf", "32", "-b:v", "0", "-deadline", "good",
+                        "-cpu-used", "4", "-row-mt", "1"]
+            else:
+                cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
+                if float(sequence_fps) <= 5:
+                    cmd += ["-tune", "stillimage"]
+            cmd += ["-pix_fmt", "yuv420p"]
             if target_format in {"mp4", "mov", "m4v"}:
-                cmd.extend(["-movflags", "+faststart"])
-        elif video_codec == "libvpx-vp9":
-            cmd.extend(["-pix_fmt", "yuv420p"])
-
+                cmd += ["-movflags", "+faststart"]
         cmd.append(output_path)
-
-        result = _run_capture(cmd, timeout=VIDEO_PROC_TIMEOUT)
-        if result.returncode != 0:
-            stderr = (result.stderr or "").strip()
-            if stderr:
-                raise RuntimeError(stderr.splitlines()[-1])
-            raise RuntimeError("ffmpeg sequence video failed")
+        _run_ffmpeg_tracked(cmd, job_id=job_id, total_us=total_us, pct_range=(50, 99))
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -2067,48 +2505,95 @@ def _process_video_to_sequence_zip(
     input_path: str,
     output_path: str,
     params: dict | None = None,
+    job_id: str | None = None,
 ) -> None:
     params = params or {}
     sequence_fps = _validate_fps(params.get("sequence_fps"), "1")
     resize_filter = _build_video_resize_filter(params)
+    info = _get_video_info(input_path) or {}
 
     temp_dir = tempfile.mkdtemp(dir=DATA_DIR, prefix=f"seq_extract_{uuid.uuid4().hex}_")
     try:
         cmd = [
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-y",
-            "-i",
-            input_path,
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            *_trim_input_args(params), "-i", input_path, "-map", "0:V:0",
         ]
 
-        filters: list[str] = [f"fps={sequence_fps}"]
+        filters: list[str] = ([_HDR_TO_SDR] if info.get("hdr") else []) + _geometry_filters(params)
+        filters.append(f"fps={sequence_fps}")
         if resize_filter:
             filters.append(resize_filter)
 
         cmd.extend(["-vf", ",".join(filters)])
         cmd.append(os.path.join(temp_dir, "frame_%06d.png"))
 
-        result = _run_capture(cmd, timeout=VIDEO_PROC_TIMEOUT)
-        if result.returncode != 0:
-            stderr = (result.stderr or "").strip()
-            if stderr:
-                raise RuntimeError(stderr.splitlines()[-1])
-            raise RuntimeError("ffmpeg frame extraction failed")
+        total_us = _effective_duration_us(float(info.get("duration") or 0), params)
+        _run_ffmpeg_tracked(cmd, job_id=job_id, total_us=total_us, pct_range=(0, 90))
 
         frame_names = sorted(
             name for name in os.listdir(temp_dir) if name.lower().endswith(".png")
         )
         if not frame_names:
-            raise RuntimeError("aucune image extraite")
+            raise RuntimeError("aucune image extraite (découpe hors de la vidéo ?)")
 
-        with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        # PNG is already compressed: storing is as small and much faster.
+        with zipfile.ZipFile(output_path, "w", zipfile.ZIP_STORED) as zf:
             for name in frame_names:
                 zf.write(os.path.join(temp_dir, name), arcname=name)
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+# A video can also give a single still ("capture").
+VIDEO_FRAME_FORMATS = {"jpg", "png", "webp"}
+
+
+def _process_video_frame(
+    *,
+    input_path: str,
+    output_path: str,
+    target_format: str,
+    params: dict | None = None,
+    job_id: str | None = None,
+) -> None:
+    params = params or {}
+    info = _get_video_info(input_path) or {}
+    if info and not info.get("has_video"):
+        raise RuntimeError("ce fichier ne contient pas d'image vidéo")
+    duration = float(info.get("duration") or 0)
+    at = _time_to_seconds(_validate_time(params.get("capture_at")))
+    if at is None:
+        # The very first frame is often black (fade in): a bit further in.
+        at = min(duration * 0.1, 3.0) if duration > 0 else 0.0
+    if duration > 0:
+        at = max(0.0, min(at, duration - 0.1))
+
+    filters = ([_HDR_TO_SDR] if info.get("hdr") else []) + _geometry_filters(params)
+    max_height = _parse_positive_int(params.get("video_max_height"))
+    if max_height:
+        h = min(max_height, 4320)
+        filters.append(f"scale=w='if(gt(iw,ih),-2,min(iw,{h}))':h='if(gt(iw,ih),min(ih,{h}),-2)':flags=lanczos")
+
+    cmd = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+        "-ss", f"{at:.3f}", "-i", input_path, "-map", "0:V:0", "-frames:v", "1",
+    ]
+    if filters:
+        cmd += ["-vf", ",".join(filters)]
+    fmt = target_format.lower()
+    if fmt == "jpg":
+        cmd += ["-pix_fmt", "yuvj420p", "-q:v", "2"]
+    elif fmt == "webp":
+        cmd += ["-c:v", "libwebp", "-quality", "90"]
+    else:
+        cmd += ["-pix_fmt", "rgb24"]
+    cmd += ["-update", "1", output_path]
+    if job_id:
+        _job_log_append(job_id, "$ " + " ".join(cmd))
+    result = _run_capture(cmd, timeout=max(120, PROBE_TIMEOUT * 4), job_id=job_id)
+    _log_process_output(job_id, result)
+    if result.returncode != 0:
+        raise RuntimeError(_ffmpeg_error_summary((result.stderr or "").splitlines()))
 
 
 def _resize_preserve_aspect(img: Image.Image, max_dim: int) -> Image.Image:
@@ -2152,16 +2637,21 @@ def _encode_image_bytes(
     quality: int,
     lossless: bool,
     has_alpha: bool,
+    meta: dict | None = None,
 ) -> bytes:
     buffer = io.BytesIO()
 
     if out_ext in (".jpg", ".jpeg"):
-        save_img = img.convert("RGB") if has_alpha else img
-        save_img.save(buffer, format="JPEG", quality=quality, optimize=True)
+        _save_image(_flatten_alpha(img), buffer, "JPEG", meta, quality=quality, optimize=True, progressive=True)
         return buffer.getvalue()
 
     if out_ext == ".webp":
-        img.save(buffer, format="WEBP", quality=quality, lossless=lossless, method=6)
+        _save_image(img, buffer, "WEBP", meta, quality=quality, lossless=lossless, method=6)
+        return buffer.getvalue()
+
+    if out_ext == ".avif":
+        _save_image(img if img.mode in ("RGB", "RGBA") else img.convert("RGBA" if has_alpha else "RGB"),
+                    buffer, "AVIF", meta, quality=quality)
         return buffer.getvalue()
 
     if out_ext == ".png":
@@ -2169,24 +2659,27 @@ def _encode_image_bytes(
             save_img = img.convert("RGBA")
         else:
             save_img = img.convert("RGB") if img.mode not in ("RGB", "L") else img
-        save_img.save(
-            buffer,
-            format="PNG",
-            optimize=True,
-            compress_level=9,
-        )
+        _save_image(save_img, buffer, "PNG", meta, optimize=True, compress_level=9)
         return buffer.getvalue()
 
     if out_ext == ".gif":
         buffer.write(_encode_static_gif_bytes(img=img, quality=quality))
         return buffer.getvalue()
 
-    # Best effort fallback for other image formats.
+    # Best effort for the other formats.
+    fmt = Image.registered_extensions().get(out_ext, "PNG")
     try:
-        img.save(buffer, quality=quality, optimize=True)
-    except TypeError:
-        img.save(buffer, optimize=True)
+        img.save(buffer, format=fmt, quality=quality, optimize=True)
+    except (TypeError, ValueError, OSError):
+        buffer.seek(0)
+        buffer.truncate()
+        img.save(buffer, format=fmt)
     return buffer.getvalue()
+
+
+# Below this JPEG / WebP / AVIF quality, shrinking the picture looks better
+# than crushing it further to reach a size target.
+_TARGET_QUALITY_FLOOR = 35
 
 
 def _save_image_with_target_size(
@@ -2195,6 +2688,7 @@ def _save_image_with_target_size(
     output_path: str,
     target_size_mb: float,
     has_alpha: bool,
+    meta: dict | None = None,
 ) -> bool:
     if target_size_mb <= 0:
         return False
@@ -2206,62 +2700,65 @@ def _save_image_with_target_size(
     _, out_ext = os.path.splitext(output_path)
     out_ext = out_ext.lower()
 
-    if out_ext in (".jpg", ".jpeg", ".webp", ".gif"):
-        lo, hi = 10, 95
+    if out_ext in (".jpg", ".jpeg", ".webp", ".gif", ".avif"):
+        def encode(picture: Image.Image, quality: int) -> bytes:
+            return _encode_image_bytes(img=picture, out_ext=out_ext, quality=quality, lossless=False,
+                                       has_alpha=has_alpha, meta=meta)
+
+        current = img
         best: bytes | None = None
-
-        while lo <= hi:
-            mid = (lo + hi) // 2
-            encoded = _encode_image_bytes(
-                img=img,
-                out_ext=out_ext,
-                quality=mid,
-                lossless=False,
-                has_alpha=has_alpha,
-            )
-            size = len(encoded)
-
-            if size <= target_bytes:
-                best = encoded
-                lo = mid + 1
-            else:
-                hi = mid - 1
+        for _attempt in range(8):
+            # Highest quality that fits, by bisection.
+            lo, hi = _TARGET_QUALITY_FLOOR, 95
+            while lo <= hi:
+                mid = (lo + hi) // 2
+                encoded = encode(current, mid)
+                if len(encoded) <= target_bytes:
+                    best = encoded
+                    lo = mid + 1
+                else:
+                    hi = mid - 1
+            if best is not None:
+                break
+            # Too heavy even at the floor quality: scale the picture down.
+            smallest = len(encode(current, _TARGET_QUALITY_FLOOR))
+            ratio = max(0.3, min(0.95, (target_bytes / smallest) ** 0.5 * 0.95))
+            size = (max(16, int(current.width * ratio)), max(16, int(current.height * ratio)))
+            if size == current.size or min(current.size) <= 16:
+                break
+            current = current.resize(size, resample=_LANCZOS)
 
         if best is None:
-            # Nothing reached the target, keep smallest trial at quality 10.
-            best = _encode_image_bytes(
-                img=img,
-                out_ext=out_ext,
-                quality=10,
-                lossless=False,
-                has_alpha=has_alpha,
-            )
+            best = encode(current, 10)  # tiny target: the smallest we can do
 
         with open(output_path, "wb") as f:
             f.write(best)
         return True
 
     if out_ext == ".png":
-        # PNG has no traditional quality slider; reduce palette progressively.
-        for colors in (256, 128, 64, 32, 16):
-            palette_img = img.convert("RGBA") if has_alpha else img.convert("RGB")
-            quantized = palette_img.quantize(colors=colors, method=Image.FASTOCTREE)
-            if has_alpha and "transparency" in img.info:
-                quantized.info["transparency"] = img.info.get("transparency")
+        # PNG has no quality slider: fewer colours, then fewer pixels.
+        base = img.convert("RGBA") if has_alpha else img.convert("RGB")
+        smallest: bytes | None = None
+        for _attempt in range(6):
+            for colors in (256, 128, 64, 32, 16):
+                quantized = base.quantize(colors=colors, method=Image.Quantize.FASTOCTREE)
+                buffer = io.BytesIO()
+                _save_image(quantized, buffer, "PNG", meta, optimize=True, compress_level=9)
+                encoded = buffer.getvalue()
+                if smallest is None or len(encoded) < len(smallest):
+                    smallest = encoded
+                if len(encoded) <= target_bytes:
+                    with open(output_path, "wb") as f:
+                        f.write(encoded)
+                    return True
+            ratio = max(0.3, min(0.9, (target_bytes / len(smallest)) ** 0.5))
+            size = (max(16, int(base.width * ratio)), max(16, int(base.height * ratio)))
+            if size == base.size or min(base.size) <= 16:
+                break
+            base = base.resize(size, resample=_LANCZOS)
 
-            buffer = io.BytesIO()
-            quantized.save(buffer, format="PNG", optimize=True, compress_level=9)
-            encoded = buffer.getvalue()
-            if len(encoded) <= target_bytes:
-                with open(output_path, "wb") as f:
-                    f.write(encoded)
-                return True
-
-        # Fallback to best effort even if target not reached.
-        buffer = io.BytesIO()
-        img.save(buffer, format="PNG", optimize=True, compress_level=9)
         with open(output_path, "wb") as f:
-            f.write(buffer.getvalue())
+            f.write(smallest or b"")
         return True
 
     return False
@@ -2410,6 +2907,36 @@ def _compress_animated_gif(
     return True
 
 
+# Inputs Pillow cannot write back: "Réduire le poids" turns them into a JPG.
+IMAGE_COMPRESS_AS_JPG = {
+    ".raw", ".cr2", ".nef", ".arw", ".dng", ".orf", ".rw2", ".pef",
+    ".psd", ".pict", ".qtif", ".jpf", ".jpm", ".icns",
+}
+
+
+def _compress_output_ext(ext: str) -> str:
+    return ".jpg" if ext in IMAGE_COMPRESS_AS_JPG else ext
+
+
+def _compress_png(img: Image.Image, output_path: str, colors: int | None, meta: dict) -> None:
+    """Lossless recompression, and with `colors` a palette version like
+    TinyPNG / pngquant (often 60-80 % lighter). The smallest one wins."""
+    has_alpha = _has_alpha(img)
+    base = img.convert("RGBA") if has_alpha else (img if img.mode in ("RGB", "L") else img.convert("RGB"))
+    candidates: list[bytes] = []
+    buffer = io.BytesIO()
+    _save_image(base, buffer, "PNG", meta, optimize=True, compress_level=9)
+    candidates.append(buffer.getvalue())
+    if colors:
+        source = base.convert("RGBA") if has_alpha else base.convert("RGB")
+        quantized = source.quantize(colors=colors, method=Image.Quantize.FASTOCTREE, dither=Image.Dither.FLOYDSTEINBERG)
+        buffer = io.BytesIO()
+        _save_image(quantized, buffer, "PNG", meta, optimize=True, compress_level=9)
+        candidates.append(buffer.getvalue())
+    with open(output_path, "wb") as f:
+        f.write(min(candidates, key=len))
+
+
 def _process_image(
     *,
     input_path: str,
@@ -2424,12 +2951,13 @@ def _process_image(
 
     _, input_ext = os.path.splitext(input_path)
     input_ext = (input_ext or "").lower()
+    out_ext = os.path.splitext(output_path)[1].lower()
 
     if input_ext == ".svg" and action == "compress":
         shutil.copyfile(input_path, output_path)
         return
 
-    if input_ext == ".gif" and action == "compress":
+    if input_ext == ".gif" and action == "compress" and out_ext == ".gif":
         if _compress_animated_gif(
             input_path=input_path,
             output_path=output_path,
@@ -2440,11 +2968,14 @@ def _process_image(
             return
 
     img = _load_image_for_processing(input_path)
-    # Bake the EXIF orientation in: the encoders below drop EXIF, so phone
-    # photos would otherwise come out sideways.
+    # Bake the EXIF orientation in: phone photos would otherwise come out
+    # sideways in apps that ignore the tag.
     img = ImageOps.exif_transpose(img)
+    meta = _image_metadata(img, params)
 
     try:
+        img = _normalize_image_mode(img, meta)
+
         lut_path = str(params.get("lut_path") or "").strip()
         if lut_path and os.path.exists(lut_path):
             img = _apply_lut_to_image(img, _parse_cube_lut(lut_path))
@@ -2502,9 +3033,8 @@ def _process_image(
                 new_height = max(1, int(img.height * scale))
                 img = img.resize((new_width, new_height), resample=_LANCZOS)
 
-        # Check if image has transparency
-        has_alpha = img.mode in ('RGBA', 'LA', 'PA') or (img.mode == 'P' and 'transparency' in img.info)
-        
+        has_alpha = _has_alpha(img)
+
         if action == "compress":
             if comp_mode == "size":
                 try:
@@ -2518,12 +3048,13 @@ def _process_image(
                         output_path=output_path,
                         target_size_mb=target_size_mb,
                         has_alpha=has_alpha,
+                        meta=meta,
                     ):
                         return
 
             # Quality mapping: "lossless", "90", "80", "70", "60", "50"
             quality_val = params.get("image_quality", comp_value or "80")
-            
+
             # Handle old CRF-style values
             if quality_val in ("low", "medium", "high"):
                 q_map = {"low": 90, "medium": 70, "high": 50}
@@ -2540,40 +3071,43 @@ def _process_image(
                     quality = 80
                 lossless = False
 
+            percent_value = None
             if comp_mode == "percent":
                 try:
-                    p_val = float(comp_value or 0)
-                    quality = max(10, 100 - int(p_val))
+                    percent_value = float(comp_value or 0)
+                    quality = max(10, 100 - int(percent_value))
                 except ValueError:
                     pass
                 lossless = False
 
-            # Determine output format from path
-            _, out_ext = os.path.splitext(output_path)
-            out_ext = out_ext.lower()
-            
-            # Handle transparency preservation
-            if out_ext in ('.png',):
-                # PNG supports transparency and lossless
-                if lossless:
-                    img.save(output_path, optimize=True, compress_level=9)
+            if out_ext == ".png":
+                # Level (or wanted reduction) -> palette size; légère stays lossless.
+                if percent_value is not None:
+                    colors = None if percent_value <= 25 else 256 if percent_value <= 60 else 128
                 else:
-                    # PNG doesn't have quality, use compression level
-                    img.save(output_path, optimize=True, compress_level=6)
-            elif out_ext in ('.webp',):
-                # WebP supports both transparency and quality
-                if lossless:
-                    img.save(output_path, lossless=True)
-                else:
-                    img.save(output_path, quality=quality, lossless=False)
-            elif out_ext in ('.jpg', '.jpeg'):
-                # JPEG doesn't support transparency - convert to RGB
-                save_img = img.convert("RGB") if has_alpha else img
-                save_img.save(output_path, quality=quality, optimize=True)
-            elif out_ext in ('.gif',):
+                    colors = {"low": None, "medium": 256, "high": 128}.get((comp_value or "").strip(), 256)
+                    if lossless:
+                        colors = None
+                _compress_png(img, output_path, colors, meta)
+            elif out_ext == ".webp":
+                _save_image(img, output_path, "WEBP", meta, quality=quality, lossless=lossless, method=6)
+            elif out_ext in (".jpg", ".jpeg"):
+                _save_image(_flatten_alpha(img), output_path, "JPEG", meta,
+                            quality=quality, optimize=True, progressive=True)
+            elif out_ext == ".avif":
+                _save_image(img if img.mode in ("RGB", "RGBA") else img.convert("RGBA" if has_alpha else "RGB"),
+                            output_path, "AVIF", meta, quality=quality)
+            elif out_ext in (".heic", ".heif"):
+                _save_image(img if img.mode in ("RGB", "RGBA") else img.convert("RGBA" if has_alpha else "RGB"),
+                            output_path, "HEIF", meta, quality=quality)
+            elif out_ext in (".tif", ".tiff"):
+                _save_image(img, output_path, "TIFF", meta, compression="tiff_adobe_deflate")
+            elif out_ext == ".gif":
                 # GIF static frame compression path (animated GIFs are handled above).
                 with open(output_path, "wb") as f:
                     f.write(_encode_static_gif_bytes(img=img, quality=quality))
+            elif out_ext == ".bmp":
+                _flatten_alpha(img).save(output_path, format="BMP")
             else:
                 # Default: try with quality if supported
                 try:
@@ -2588,10 +3122,9 @@ def _process_image(
                 convert_quality = max(10, min(100, int(str(params.get("image_quality") or "92"))))
             except ValueError:
                 convert_quality = 92
-            
+
             if tf == "pdf":
-                rgb_img = img.convert("RGB") if has_alpha else img
-                rgb_img.save(output_path, "PDF", resolution=100.0)
+                _flatten_alpha(img).save(output_path, "PDF", resolution=100.0)
                 return
 
             if tf == "ico":
@@ -2615,23 +3148,25 @@ def _process_image(
                 ico_img.save(output_path, format="ICO", sizes=[(ico_size, ico_size)])
                 return
 
-            # Handle transparency when converting
             if tf in {"jpg", "jpeg"}:
-                # JPEG doesn't support transparency
-                save_img = img.convert("RGB") if img.mode not in ("RGB", "L") else img
-                save_img.save(output_path, format="JPEG", quality=convert_quality, optimize=True)
+                # No transparency in JPEG: transparent areas become white, not black.
+                _save_image(_flatten_alpha(img), output_path, "JPEG", meta, quality=convert_quality, optimize=True)
             elif tf in {"png"}:
-                # PNG preserves transparency
-                img.save(output_path, format="PNG", compress_level=6)
+                _save_image(img, output_path, "PNG", meta, compress_level=6)
             elif tf in {"webp"}:
-                # WebP preserves transparency
-                img.save(output_path, format="WEBP", quality=convert_quality, lossless=_flag(params, "lossless"), method=4)
+                _save_image(img, output_path, "WEBP", meta, quality=convert_quality,
+                            lossless=_flag(params, "lossless"), method=4)
             elif tf in {"avif"}:
-                img.save(output_path, format="AVIF", quality=convert_quality)
+                _save_image(img if img.mode in ("RGB", "RGBA") else img.convert("RGBA" if has_alpha else "RGB"),
+                            output_path, "AVIF", meta, quality=convert_quality)
             elif tf in {"gif"}:
                 # GIF - convert to palette mode
                 with open(output_path, "wb") as f:
                     f.write(_encode_static_gif_bytes(img=img, quality=95))
+            elif tf in {"bmp"}:
+                _flatten_alpha(img).save(output_path, format="BMP")
+            elif tf in {"tif", "tiff"}:
+                _save_image(img, output_path, "TIFF", meta, compression="tiff_lzw")
             else:
                 img.save(output_path)
             return
@@ -2724,47 +3259,41 @@ def _run_job(job_id: str) -> None:
 
         if is_convert_like:
             out_ext = f".{(target_format or '').lower().strip()}"
-            output_filename = f"{base_name}{out_ext}"
-            storage_filename = f"{job_id}{out_ext}"
+        elif media_type == "image":
+            out_ext = _compress_output_ext(ext)  # RAW / PSD -> JPG
         else:
             out_ext = ext
-            output_filename = f"{base_name}{ext}"
-            storage_filename = f"{job_id}{ext}"
+        output_filename = f"{base_name}{out_ext}"
+        output_path = os.path.join(PROCESSED_DIR, f"{job_id}{out_ext}")
+        note = ""
 
-        output_path = os.path.join(PROCESSED_DIR, storage_filename)
+        def _finish(path: str, name: str, why: str = "") -> None:
+            done_at = _now_ts()
+            _db_update_job(
+                job_id,
+                status="done",
+                done_at=done_at,
+                expires_at=done_at + RETENTION_SECONDS,
+                output_path=path,
+                output_filename=name,
+                output_size=os.path.getsize(path),
+                error="",
+                note=why,
+            )
+            logging.info("job done %s type=%s%s", job_id, media_type, f" ({why})" if why else "")
 
-        if action == "compress" and comp_mode == "size" and os.path.isfile(input_path):
+        if action == "compress" and comp_mode == "size" and out_ext == ext and os.path.isfile(input_path):
             try:
                 target_size_mb = float(comp_value or 0)
             except (TypeError, ValueError):
                 target_size_mb = 0
 
             target_bytes = int(target_size_mb * 1024 * 1024)
-            if target_bytes > 0:
-                current_bytes = os.path.getsize(input_path)
-                if current_bytes <= target_bytes:
-                    # Already below target size: keep original file untouched.
-                    shutil.copyfile(input_path, output_path)
-                    done_at = _now_ts()
-                    expires_at = done_at + RETENTION_SECONDS
-                    _db_update_job(
-                        job_id,
-                        status="done",
-                        done_at=done_at,
-                        expires_at=expires_at,
-                        output_path=output_path,
-                        output_filename=output_filename,
-                        output_size=current_bytes,
-                        error="",
-                    )
-                    logging.info(
-                        "job done %s type=%s (skip compress size: %s <= %s)",
-                        job_id,
-                        media_type,
-                        current_bytes,
-                        target_bytes,
-                    )
-                    return
+            if target_bytes > 0 and os.path.getsize(input_path) <= target_bytes:
+                # Already below the target size: keep the original untouched.
+                shutil.copyfile(input_path, output_path)
+                _finish(output_path, output_filename, "kept")
+                return
 
         if media_type == "image_sequence":
             if not is_convert_like or (target_format or "").lower().strip() not in VIDEO_OUTPUT_FORMATS:
@@ -2778,6 +3307,7 @@ def _run_job(job_id: str) -> None:
                 output_path=output_path,
                 target_format=target_format,
                 params=params,
+                job_id=job_id,
             )
 
         elif ext in VIDEO_EXTENSIONS:
@@ -2795,6 +3325,15 @@ def _run_job(job_id: str) -> None:
                     input_path=input_path,
                     output_path=output_path,
                     params=params,
+                    job_id=job_id,
+                )
+            elif is_convert_like and target_format in VIDEO_FRAME_FORMATS:
+                _process_video_frame(
+                    input_path=input_path,
+                    output_path=output_path,
+                    target_format=target_format,
+                    params=params,
+                    job_id=job_id,
                 )
             else:
                 _process_with_ffmpeg(
@@ -2824,14 +3363,26 @@ def _run_job(job_id: str) -> None:
             )
 
         elif ext == ".pdf":
-            pdf_action = "convert" if action == "convert_compress" else action
-            _process_pdf(
+            # "Convertir + compresser" towards PDF is a compression.
+            pdf_action = action
+            if action == "convert_compress":
+                pdf_action = "compress" if (target_format or "pdf").lower() == "pdf" else "convert"
+            elif action == "convert" and (target_format or "").lower() == "pdf":
+                pdf_action = "compress"
+            written = _process_pdf(
                 input_path=input_path,
                 output_path=output_path,
                 action=pdf_action,
                 target_format=target_format,
+                comp_mode=comp_mode,
                 comp_value=comp_value,
+                name_prefix=base_name,
+                job_id=job_id,
             )
+            if written != output_path:
+                # Several pages -> a ZIP of images.
+                output_path = written
+                output_filename = f"{base_name}{os.path.splitext(written)[1]}"
 
         elif ext in IMAGE_EXTENSIONS:
             image_action = "compress" if (action == "convert_compress" and ext != ".svg") else ("convert" if action == "convert_compress" else action)
@@ -2873,19 +3424,19 @@ def _run_job(job_id: str) -> None:
             _remove_path(output_path)
             raise RuntimeError("la conversion n'a produit aucune donnee (fichier vide)")
 
-        done_at = _now_ts()
-        expires_at = done_at + RETENTION_SECONDS
-        _db_update_job(
-            job_id,
-            status="done",
-            done_at=done_at,
-            expires_at=expires_at,
-            output_path=output_path,
-            output_filename=output_filename,
-            output_size=os.path.getsize(output_path),
-            error="",
-        )
-        logging.info("job done %s type=%s", job_id, media_type)
+        if (
+            action == "compress"
+            and out_ext == ext
+            and media_type != "image_sequence"
+            and os.path.isfile(input_path)
+            and os.path.getsize(output_path) >= os.path.getsize(input_path)
+        ):
+            # "Compressing" made it heavier (already optimised file): hand
+            # back the original rather than a bigger copy.
+            shutil.copyfile(input_path, output_path)
+            note = "kept"
+
+        _finish(output_path, output_filename, note)
 
     except Exception as e:
         msg = _safe_error_message(e)
@@ -2950,6 +3501,11 @@ def health():
                 "pdf": PDF_WORKERS,
             },
             "retention_seconds": RETENTION_SECONDS,
+            "tools": {
+                "ffmpeg": shutil.which("ffmpeg") is not None,
+                "ghostscript": shutil.which("gs") is not None,
+                "libreoffice": shutil.which("libreoffice") is not None,
+            },
         }
     )
 
@@ -3204,6 +3760,7 @@ _PARAM_KEYS = (
     "photo_blacks", "photo_temperature", "photo_tint", "photo_saturation", "photo_sharpness",
     # edit
     "trim_start", "trim_end", "overlay_text", "overlay_text_x", "overlay_text_y", "sequence_fps",
+    "speed", "aspect", "capture_at", "metadata",
     "video_resize_width", "video_resize_height", "video_max_height", "rotate",
     "crop_top", "crop_bottom", "crop_left", "crop_right", "denoise", "hdr_to_sdr", "remove_audio",
     # colour grading
@@ -3293,10 +3850,13 @@ def create_job():
     if target_format and not _re.fullmatch(r"[a-z0-9]{1,8}", target_format):
         return jsonify({"error": "format de destination invalide"}), 400
 
+    # Several images -> one video (slideshow). A single image only when asked
+    # explicitly: one picture "to GIF" is a still GIF, not a 1-frame video.
     is_sequence_job = (
         is_convert_like
         and target_format in VIDEO_OUTPUT_FORMATS
         and all(_media_type_from_filename(name) == "image" for name, _, _ in incoming)
+        and (len(incoming) > 1 or bool(request.form.get("sequence_fps")))
     )
     if len(incoming) > 1 and not is_sequence_job:
         return jsonify({"error": "les lots ne sont supportes que pour les sequences d'images"}), 400
@@ -3404,6 +3964,41 @@ def delete_job(job_id: str):
         _db_delete_job(job_id)
         _delete_job_files(row)
     return jsonify({"deleted": bool(row)})
+
+
+@app.route("/jobs/<job_id>/preview.png", methods=["GET"])
+def job_pdf_preview(job_id: str):
+    """One page of a PDF result as an image: browsers can't show a PDF in a
+    frame of this cross-origin-isolated page. X-Page-Count gives the total."""
+    row = _db_get_job_for_session(job_id, g.session_id)
+    if not row or row["status"] != "done":
+        return jsonify({"error": "job introuvable"}), 404
+    out_path = row["output_path"] or ""
+    gs = shutil.which("gs")
+    if not out_path.lower().endswith(".pdf") or not os.path.isfile(out_path) or not gs:
+        return jsonify({"error": "aperçu indisponible"}), 404
+    try:
+        with open(out_path, "rb") as fh:
+            pages = len(PdfReader(fh).pages)
+    except Exception:
+        pages = 1
+    page = max(1, min(pages, _parse_positive_int(request.args.get("page")) or 1))
+    with tempfile.TemporaryDirectory(dir=DATA_DIR, prefix="pdf_preview_") as tmp:
+        png = os.path.join(tmp, "page.png")
+        result = _run_capture(
+            [gs, "-q", "-dSAFER", "-dBATCH", "-dNOPAUSE", "-sDEVICE=png16m", "-r110",
+             "-dTextAlphaBits=4", "-dGraphicsAlphaBits=4", f"-dFirstPage={page}", f"-dLastPage={page}",
+             f"-sOutputFile={png}", out_path],
+            timeout=120,
+        )
+        if result.returncode != 0 or not os.path.isfile(png):
+            return jsonify({"error": "aperçu impossible"}), 422
+        with open(png, "rb") as f:
+            data = f.read()
+    resp = Response(data, mimetype="image/png")
+    resp.headers["X-Page-Count"] = str(pages)
+    resp.headers["Cache-Control"] = "private, max-age=600"
+    return resp
 
 
 @app.route("/jobs/<job_id>/logs", methods=["GET"])

@@ -27,6 +27,10 @@ export interface QueueItem {
     error: string | null
     /** Images of an "images → vidéo" slideshow (the first one is `file`). */
     extraFiles?: File[]
+    /** Server remark on the result: "kept" = compressing would not have made it lighter. */
+    note?: string | null
+    /** Upload speed (bytes/s) while sending. */
+    speed?: number | null
 }
 
 const EXT: Record<MediaKind, string[]> = {
@@ -82,7 +86,8 @@ export const FORMATS: Record<MediaKind, FormatOption[]> = {
         opt('mp3', 'MP3', 'Son seul'), opt('m4a', 'M4A', 'Son seul'), opt('wav', 'WAV', 'Son seul'),
         opt('flac', 'FLAC', 'Son seul'), opt('ogg', 'OGG', 'Son seul'), opt('opus', 'Opus', 'Son seul'),
         opt('aac', 'AAC', 'Son seul'), opt('aiff', 'AIFF', 'Son seul'), opt('wma', 'WMA', 'Son seul'), opt('ac3', 'AC3', 'Son seul'),
-        opt('zip', 'PNG (zip)', 'Images'),
+        opt('jpg', 'Capture JPG', 'Images'), opt('png', 'Capture PNG', 'Images'),
+        opt('zip', 'Suite PNG (zip)', 'Images'),
     ],
     audio: [
         opt('mp3', 'MP3'), opt('m4a', 'M4A'), opt('aac', 'AAC'), opt('wav', 'WAV'), opt('flac', 'FLAC'),
@@ -92,7 +97,7 @@ export const FORMATS: Record<MediaKind, FormatOption[]> = {
         opt('jpg', 'JPG'), opt('png', 'PNG'), opt('webp', 'WebP'), opt('avif', 'AVIF'), opt('gif', 'GIF'),
         opt('bmp', 'BMP'), opt('tiff', 'TIFF'), opt('ico', 'ICO'), opt('pdf', 'PDF'),
     ],
-    pdf: [opt('pdf', 'PDF compressé'), opt('txt', 'Texte (TXT)')],
+    pdf: [opt('pdf', 'PDF compressé'), opt('jpg', 'Pages en JPG'), opt('png', 'Pages en PNG'), opt('txt', 'Texte (TXT)')],
     document: [opt('pdf', 'PDF')],
     '3d': [opt('glb', 'GLB'), opt('obj', 'OBJ'), opt('stl', 'STL'), opt('ply', 'PLY'), opt('3mf', '3MF'), opt('off', 'OFF')],
 }
@@ -128,6 +133,24 @@ export function formatSize(bytes: number): string {
     const i = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)))
     const value = bytes / 1024 ** i
     return `${value.toLocaleString('fr-FR', { maximumFractionDigits: value < 10 && i > 0 ? 1 : 0 })} ${units[i]}`
+}
+
+/** Video outputs that are a still image ("capture"), not a video. */
+export const VIDEO_STILL_FORMATS = new Set(['jpg', 'png'])
+
+/** Inputs the server cannot write back: "Réduire le poids" gives a JPG. */
+export const COMPRESS_AS_JPG = new Set(['raw', 'cr2', 'nef', 'arw', 'dng', 'orf', 'rw2', 'pef', 'psd', 'pict', 'qtif', 'jpf', 'jpm', 'icns'])
+
+export function formatSpeed(bytesPerSecond: number): string {
+    return `${formatSize(bytesPerSecond)}/s`
+}
+
+export function formatDuration(seconds: number): string {
+    if (!Number.isFinite(seconds) || seconds < 0) return ''
+    if (seconds < 60) return `${Math.max(1, Math.round(seconds))} s`
+    const m = Math.floor(seconds / 60)
+    if (m < 60) return `${m} min ${String(Math.round(seconds % 60)).padStart(2, '0')}`
+    return `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')}`
 }
 
 export function isActive(status: ItemStatus): boolean {

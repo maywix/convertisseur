@@ -19,3 +19,8 @@ tests
 scripts/*.log
 frontend/src
 frontend/public
+
+# Local tooling (the bun binary + cache alone weighed 132 MB in the image)
+.bun
+.claude
+.vscode

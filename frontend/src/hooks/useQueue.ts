@@ -10,7 +10,9 @@ import {
     type ServerConfig,
 } from '@/lib/api'
 import { releaseObjectUrl } from '@/lib/objectUrl'
+import type { MetadataPreference } from '@/lib/settings'
 import { releaseThumbnail } from '@/lib/thumbnails'
+import { toast } from '@/lib/toast'
 import { DEFAULT_FORMAT, isActive, kindOf, type MediaKind, type QueueItem } from '@/types'
 
 export interface ServerPlan {
@@ -91,6 +93,8 @@ export interface QueueOptions {
     exportMode: 'zip' | 'files'
     /** Keep server jobs across reloads / closing the tab. */
     background: boolean
+    /** Photo / video metadata on server conversions (sent with every job). */
+    metadata: MetadataPreference
 }
 
 interface Batch {
@@ -107,7 +111,7 @@ export function archivePath(it: QueueItem): string {
 }
 
 export function useQueue(config: ServerConfig, queueOptions: QueueOptions) {
-    const { rateLimit, autoDownload, exportMode, background } = queueOptions
+    const { rateLimit, autoDownload, exportMode, background, metadata } = queueOptions
     const [items, setItems] = useState<QueueItem[]>([])
     const itemsRef = useLatest(items)
 
@@ -122,6 +126,7 @@ export function useQueue(config: ServerConfig, queueOptions: QueueOptions) {
     const batchesRef = useRef<Batch[]>([])
     const autoDownloadRef = useLatest(autoDownload)
     const exportModeRef = useLatest(exportMode)
+    const metadataRef = useLatest(metadata)
 
     const patch = useCallback((id: string, update: Partial<QueueItem>) => {
         setItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...update } : it)))
@@ -140,11 +145,14 @@ export function useQueue(config: ServerConfig, queueOptions: QueueOptions) {
 
     // ── Adding / removing ──────────────────────────────────
     const add = useCallback((files: File[]): QueueItem[] => {
-        const added: QueueItem[] = files
-            .filter((f) => !f.name.startsWith('._') && !['.ds_store', 'thumbs.db'].includes(f.name.toLowerCase()))
+        const candidates = files.filter((f) => !f.name.startsWith('._') && !['.ds_store', 'thumbs.db', 'desktop.ini'].includes(f.name.toLowerCase()))
+        // Sidecars and the like (.xmp, .aae, .txt…) are left out instead of
+        // filling the list with errors when a whole folder is dropped.
+        const skipped = candidates.filter((f) => kindOf(f.name) === 'unknown' || f.size === 0)
+        const added: QueueItem[] = candidates
+            .filter((f) => kindOf(f.name) !== 'unknown' && f.size > 0)
             .map((file) => {
-                const kind = kindOf(file.name)
-                const known = kind !== 'unknown'
+                const kind = kindOf(file.name) as MediaKind
                 return {
                     id: newId(),
                     file,
@@ -152,18 +160,25 @@ export function useQueue(config: ServerConfig, queueOptions: QueueOptions) {
                     size: file.size,
                     kind,
                     relativePath: (file as File & { webkitRelativePath?: string }).webkitRelativePath || '',
-                    targetFormat: known ? kindFormats[kind] : '',
-                    status: known ? 'pending' : 'error',
+                    targetFormat: kindFormats[kind],
+                    status: 'pending',
                     progress: 0,
                     jobId: null,
                     local: false,
                     downloadUrl: null,
                     outputName: null,
                     outputSize: null,
-                    error: known ? null : 'Format non pris en charge',
+                    error: null,
                 }
             })
-        setItems((prev) => [...prev, ...added])
+        if (skipped.length) {
+            const names = skipped.slice(0, 4).map((f) => f.name).join(', ') + (skipped.length > 4 ? '…' : '')
+            toast(
+                skipped.length === 1 ? 'Fichier ignoré : format non pris en charge ou vide' : `${skipped.length} fichiers ignorés : formats non pris en charge ou vides`,
+                { detail: names, tone: added.length ? 'info' : 'error' },
+            )
+        }
+        if (added.length) setItems((prev) => [...prev, ...added])
         return added
     }, [kindFormats])
 
@@ -223,6 +238,7 @@ export function useQueue(config: ServerConfig, queueOptions: QueueOptions) {
                     signal,
                     onProgress: (r) => setProgress(item.id, r * 100),
                 })
+                if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
                 patch(item.id, {
                     status: 'done', progress: 100, local: true,
                     downloadUrl: URL.createObjectURL(blob), outputName: filename, outputSize: blob.size,
@@ -236,27 +252,46 @@ export function useQueue(config: ServerConfig, queueOptions: QueueOptions) {
 
         const server = plan.server
         if (!server) throw new Error('aucun traitement possible')
-        patch(item.id, { status: 'uploading', progress: 0, local: false })
+        patch(item.id, { status: 'uploading', progress: 0, local: false, speed: null })
         const files = [file, ...(item.extraFiles ?? [])]
         const total = files.reduce((n, f) => n + f.size, 0) || 1
         const uploadIds: string[] = []
         let sentBefore = 0
+        // Speed over ~1 s windows, smoothed, for "Envoi · 12 Mo/s · 20 s".
+        let mark = { t: performance.now(), sent: 0 }
+        let speed = 0
         for (const f of files) {
             const { chunkSize, rateLimit: rate } = transferRef.current
             uploadIds.push(await uploadFile(f, {
                 chunkSize,
                 rateLimit: rate,
                 signal,
-                onProgress: (sent) => setProgress(item.id, ((sentBefore + sent) / total) * 100),
+                onProgress: (sent) => {
+                    const done = sentBefore + sent
+                    const now = performance.now()
+                    if (now - mark.t >= 1000) {
+                        const instant = Math.max(0, done - mark.sent) / ((now - mark.t) / 1000)
+                        speed = speed ? speed * 0.6 + instant * 0.4 : instant
+                        mark = { t: now, sent: done }
+                        patch(item.id, { speed })
+                    }
+                    setProgress(item.id, (done / total) * 100)
+                },
             }))
             sentBefore += f.size
         }
-        const fields: Record<string, string> = { ...server.fields, action: server.action, upload_ids: uploadIds.join(',') }
+        const fields: Record<string, string> = {
+            metadata: metadataRef.current, ...server.fields, action: server.action, upload_ids: uploadIds.join(','),
+        }
         if (server.format) fields.format = server.format
         if (item.relativePath) fields.relative_path = item.relativePath
         const jobId = await createJob(fields, server.lut ? [{ name: 'lut_file', file: server.lut }] : [], signal)
-        patch(item.id, { status: 'queued', progress: 0, jobId })
-    }, [patch, setProgress, transferRef])
+        if (signal.aborted) {
+            deleteJob(jobId)
+            throw new DOMException('Aborted', 'AbortError')
+        }
+        patch(item.id, { status: 'queued', progress: 0, jobId, speed: null })
+    }, [patch, setProgress, transferRef, metadataRef])
 
     // Several files at once: while one uploads, another is sent or converted.
     // Through a rate-limited tunnel, one at a time so the limit holds.
@@ -299,7 +334,7 @@ export function useQueue(config: ServerConfig, queueOptions: QueueOptions) {
             if (it.jobId && !it.local) deleteJob(it.jobId)
         }
         setItems((prev) => prev.map((it) => (ids.has(it.id)
-            ? { ...it, status: 'queued', progress: 0, error: null, jobId: null, downloadUrl: null, outputName: null, outputSize: null, local: false }
+            ? { ...it, status: 'queued', progress: 0, error: null, jobId: null, downloadUrl: null, outputName: null, outputSize: null, local: false, note: null, speed: null }
             : it)))
         tasksRef.current = tasksRef.current.filter((t) => !ids.has(t.id)).concat(entries)
         // A re-run item leaves any earlier batch it was part of.
@@ -335,7 +370,7 @@ export function useQueue(config: ServerConfig, queueOptions: QueueOptions) {
                     if (!job) return { ...it, status: 'error', error: 'Tâche introuvable (expirée ou serveur redémarré)' }
                     if (job.status === 'done') {
                         return {
-                            ...it, status: 'done', progress: 100,
+                            ...it, status: 'done', progress: 100, note: job.note,
                             downloadUrl: job.download_url, outputName: job.output_filename, outputSize: job.output_size,
                         }
                     }
@@ -399,7 +434,7 @@ export function useQueue(config: ServerConfig, queueOptions: QueueOptions) {
                     id: newId(), file: null, name: s.name, size: s.size, kind: s.kind, relativePath: '',
                     targetFormat: s.targetFormat, status: job.status, progress: job.progress, jobId: job.id,
                     local: false, downloadUrl: job.download_url, outputName: job.output_filename,
-                    outputSize: job.output_size, error: null,
+                    outputSize: job.output_size, error: null, note: job.note,
                 })
             }
             if (restored.length) {
@@ -455,8 +490,35 @@ export function useQueue(config: ServerConfig, queueOptions: QueueOptions) {
         const it = itemsRef.current.find((i) => i.id === id)
         if (!it?.file) return
         releaseResult(it)
-        patch(id, { status: 'pending', progress: 0, error: null, jobId: null, downloadUrl: null, outputName: null, outputSize: null, local: false })
+        patch(id, { status: 'pending', progress: 0, error: null, jobId: null, downloadUrl: null, outputName: null, outputSize: null, local: false, note: null, speed: null })
     }, [patch, itemsRef])
+
+    /** Stop transfers / conversions; the files stay in the list, ready to start again. */
+    const cancel = useCallback((ids: string[]) => {
+        const set = new Set(ids)
+        tasksRef.current = tasksRef.current.filter((t) => !set.has(t.id))
+        for (const b of batchesRef.current) for (const id of set) b.ids.delete(id)
+        batchesRef.current = batchesRef.current.filter((b) => b.ids.size > 0)
+        const gone: string[] = []
+        for (const id of set) {
+            controllersRef.current.get(id)?.abort()
+            const it = itemsRef.current.find((i) => i.id === id)
+            if (!it) continue
+            if (it.jobId && !it.local) deleteJob(it.jobId)
+            if (!it.file) gone.push(id)
+        }
+        setItems((prev) => prev
+            .filter((it) => !gone.includes(it.id))
+            .map((it) => (set.has(it.id) && isActive(it.status)
+                ? { ...it, status: 'pending', progress: 0, error: null, jobId: null, local: false, speed: null }
+                : it)))
+    }, [itemsRef])
+
+    /** Take finished files out of the list (their results are freed on the server). */
+    const removeDone = useCallback(() => {
+        const done = itemsRef.current.filter((it) => it.status === 'done').map((it) => it.id)
+        if (done.length) remove(done)
+    }, [itemsRef, remove])
 
     return {
         items,
@@ -466,6 +528,8 @@ export function useQueue(config: ServerConfig, queueOptions: QueueOptions) {
         remove,
         clear,
         reset,
+        cancel,
+        removeDone,
         setFormat,
         setFormatForKind,
         run,

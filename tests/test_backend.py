@@ -378,3 +378,293 @@ def test_stalled_ffmpeg_is_killed(tmp_path, monkeypatch):
             job_id="0" * 32, total_us=10_000_000,
         )
     assert time.time() - t0 < 30
+
+
+# ───────────────────────── PDF (Ghostscript) ─────────────────────────
+
+HAS_GS = shutil.which("gs") is not None
+needs_gs = pytest.mark.skipif(not HAS_GS, reason="ghostscript not installed")
+
+
+def _photo_like(size=(1200, 900), alpha=False):
+    """Smooth gradient + noise: compresses like a real photo."""
+    import numpy as np
+    from PIL import Image
+    w, h = size
+    yy, xx = np.mgrid[0:h, 0:w]
+    base = np.stack([xx / w * 255, yy / h * 255, (xx + yy) / (w + h) * 255], axis=-1)
+    noise = np.random.default_rng(1).normal(0, 18, (h, w, 3))
+    rgb = np.clip(base + noise, 0, 255).astype("uint8")
+    img = Image.fromarray(rgb)
+    if alpha:
+        img = img.convert("RGBA")
+        a = img.getchannel("A").point(lambda _: 255)
+        a.paste(0, (0, 0, w // 3, h // 3))  # transparent top-left corner
+        img.putalpha(a)
+    return img
+
+
+def _image_pdf(path, pages=1, dpi=300):
+    imgs = [_photo_like() for _ in range(pages)]
+    imgs[0].save(path, "PDF", resolution=float(dpi), save_all=True, append_images=imgs[1:], quality=95)
+    return path
+
+
+@needs_gs
+def test_pdf_compress_shrinks_images(client, tmp_path):
+    src = _image_pdf(tmp_path / "scan.pdf")
+    job, out = run_job(client, src, {"action": "compress", "comp_mode": "crf", "comp_value": "high"}, tmp_path, "small.pdf")
+    assert job["output_filename"] == "scan.pdf"
+    assert job["output_size"] < os.path.getsize(src) * 0.5
+    assert out.read_bytes()[:5] == b"%PDF-"
+
+
+@needs_gs
+def test_pdf_size_target_tries_levels(client, tmp_path):
+    src = _image_pdf(tmp_path / "big.pdf")
+    target_mb = os.path.getsize(src) / 1024 / 1024 / 4
+    job, _ = run_job(client, src, {"action": "compress", "comp_mode": "size", "comp_value": f"{target_mb:.3f}"}, tmp_path, "t.pdf")
+    assert job["output_size"] <= target_mb * 1024 * 1024
+
+
+def test_compress_never_returns_a_heavier_file(client, tmp_path):
+    from pypdf import PdfWriter
+    w = PdfWriter()
+    w.add_blank_page(width=200, height=200)
+    src = tmp_path / "blank.pdf"
+    with open(src, "wb") as f:
+        w.write(f)
+    job, out = run_job(client, src, {"action": "compress", "comp_mode": "crf", "comp_value": "medium"}, tmp_path, "b.pdf")
+    assert job["output_size"] <= os.path.getsize(src)
+    if job["output_size"] == os.path.getsize(src):
+        assert job["note"] == "kept"
+        assert out.read_bytes() == src.read_bytes()
+
+
+@needs_gs
+def test_pdf_pages_to_images(client, tmp_path):
+    from PIL import Image
+    one = _image_pdf(tmp_path / "one.pdf", pages=1, dpi=150)
+    job, out = run_job(client, one, {"action": "convert", "format": "jpg"}, tmp_path, "one.jpg")
+    assert job["output_filename"] == "one.jpg"
+    assert Image.open(out).format == "JPEG"
+    two = _image_pdf(tmp_path / "two.pdf", pages=2, dpi=150)
+    job, out = run_job(client, two, {"action": "convert", "format": "png"}, tmp_path, "two.zip")
+    assert job["output_filename"] == "two.zip"
+    assert zipfile.ZipFile(out).namelist() == ["two-page-001.png", "two-page-002.png"]
+
+
+# ───────────────────────── Images ─────────────────────────
+
+def test_png_compress_uses_a_palette(client, tmp_path):
+    from PIL import Image
+    src = tmp_path / "shot.png"
+    _photo_like((600, 400), alpha=True).save(src, compress_level=1)
+    job, out = run_job(client, src, {"action": "compress", "comp_mode": "crf", "comp_value": "medium", "image_quality": "70"}, tmp_path, "s.png")
+    assert job["output_size"] < os.path.getsize(src) * 0.6
+    img = Image.open(out)
+    assert img.size == (600, 400)
+    assert img.convert("RGBA").getpixel((5, 5))[3] == 0  # transparency kept
+
+
+def test_raw_like_inputs_compress_to_jpg(client, tmp_path):
+    from PIL import Image
+    src = tmp_path / "layers.psd"
+    _photo_like((64, 48)).save(tmp_path / "tmp.tif")
+    os.rename(tmp_path / "tmp.tif", src)  # Pillow reads it by content; .psd cannot be written back
+    job, out = run_job(client, src, {"action": "compress", "comp_mode": "crf", "comp_value": "medium", "image_quality": "70"}, tmp_path, "l.jpg")
+    assert job["output_filename"] == "layers.jpg"
+    assert Image.open(out).format == "JPEG"
+
+
+def test_cmyk_and_transparency_conversions(client, tmp_path):
+    from PIL import Image
+    cmyk = tmp_path / "print.jpg"
+    Image.new("CMYK", (40, 30), (0, 255, 255, 0)).save(cmyk)  # red ink
+    _, out = run_job(client, cmyk, {"action": "convert", "format": "png"}, tmp_path, "p.png")
+    r, g, b = Image.open(out).convert("RGB").getpixel((5, 5))
+    assert r > 200 and g < 60 and b < 60
+
+    logo = tmp_path / "logo.png"
+    _photo_like((90, 90), alpha=True).save(logo)
+    _, out = run_job(client, logo, {"action": "convert", "format": "jpg"}, tmp_path, "l.jpg")
+    assert min(Image.open(out).convert("RGB").getpixel((3, 3))) > 235  # white, not black
+
+    deep = tmp_path / "deep.png"
+    Image.new("I;16", (20, 20), 40000).save(deep)
+    _, out = run_job(client, deep, {"action": "convert", "format": "jpg"}, tmp_path, "d.jpg")
+    assert 140 < Image.open(out).convert("L").getpixel((5, 5)) < 170  # 40000/65535 ≈ 61 %
+
+
+def _exif_photo(path):
+    from PIL import Image
+    img = _photo_like((80, 60))
+    exif = Image.Exif()
+    exif[0x0132] = "2024:05:06 07:08:09"  # DateTime
+    exif[0x010F] = "TestCam"  # Make
+    gps = exif.get_ifd(0x8825)
+    gps[1] = "N"
+    gps[2] = (48.0, 51.0, 24.0)
+    img.save(path, exif=exif, icc_profile=_srgb_icc())
+    return path
+
+
+def _srgb_icc():
+    from PIL import ImageCms
+    return ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+
+
+@pytest.mark.parametrize("mode,has_date,has_gps", [("nogps", True, False), ("keep", True, True), ("strip", False, False)])
+def test_photo_metadata_choices(client, tmp_path, mode, has_date, has_gps):
+    from PIL import Image
+    src = _exif_photo(tmp_path / f"exif_{mode}.jpg")
+    _, out = run_job(client, src, {"action": "convert", "format": "jpg", "metadata": mode}, tmp_path, f"m_{mode}.jpg")
+    img = Image.open(out)
+    exif = img.getexif()
+    assert (exif.get(0x0132) == "2024:05:06 07:08:09") is has_date
+    assert bool(exif.get_ifd(0x8825)) is has_gps
+    assert img.info.get("icc_profile")  # colour profile always kept
+
+
+# ───────────────────────── Video / audio ─────────────────────────
+
+@pytest.fixture(scope="session")
+def silent_video(tmp_path_factory):
+    if not HAS_FFMPEG:
+        pytest.skip("ffmpeg not installed")
+    path = tmp_path_factory.mktemp("silent") / "mute.mp4"
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25",
+         "-t", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(path)],
+        check=True,
+    )
+    return path
+
+
+def probe_duration(path):
+    out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json", str(path)],
+                         capture_output=True, text=True, check=True).stdout
+    return float(json.loads(out)["format"]["duration"])
+
+
+@needs_ffmpeg
+def test_sound_extraction_from_a_silent_video_says_why(client, silent_video):
+    upload_id = chunked_upload(client, silent_video)
+    job = wait_job(client, client.post("/jobs", data={"action": "convert", "format": "mp3", "upload_id": upload_id}).json["job_id"])
+    assert job["status"] == "error"
+    assert "piste son" in job["error"]
+
+
+@needs_ffmpeg
+def test_silent_video_converts(client, silent_video, tmp_path):
+    _, out = run_job(client, silent_video, {"action": "convert", "format": "webm"}, tmp_path, "mute.webm")
+    assert [s["codec_type"] for s in probe(str(out))] == ["video"]
+
+
+@needs_ffmpeg
+def test_speed_and_aspect_ratio(client, media, tmp_path):
+    _, out = run_job(client, media["video"], {"action": "convert", "format": "mp4", "speed": "2", "aspect": "1:1"}, tmp_path, "fast.mp4")
+    video = next(s for s in probe(str(out)) if s["codec_type"] == "video")
+    assert video["width"] == video["height"] == 240
+    assert 0.8 < probe_duration(out) < 1.3
+
+
+@needs_ffmpeg
+def test_slow_motion_audio(client, media, tmp_path):
+    _, out = run_job(client, media["video"], {"action": "convert", "format": "m4a", "speed": "0.25"}, tmp_path, "slow.m4a")
+    assert 7 < probe_duration(out) < 9
+
+
+@needs_ffmpeg
+def test_frame_capture(client, media, tmp_path):
+    from PIL import Image
+    job, out = run_job(client, media["video"], {"action": "convert", "format": "jpg", "capture_at": "1"}, tmp_path, "cap.jpg")
+    assert job["output_filename"] == "clip.jpg"
+    img = Image.open(out)
+    assert img.format == "JPEG" and img.size == (320, 240)
+
+
+@needs_ffmpeg
+def test_frames_zip_respects_trim(client, media, tmp_path):
+    _, out = run_job(client, media["video"], {"action": "convert", "format": "zip", "sequence_fps": "10", "trim_end": "1"}, tmp_path, "f.zip")
+    assert 9 <= len(zipfile.ZipFile(out).namelist()) <= 11
+
+
+@needs_ffmpeg
+def test_size_target_is_respected(client, media, tmp_path):
+    target_mb = 0.05
+    job, out = run_job(client, media["video"], {"action": "compress", "comp_mode": "size", "comp_value": str(target_mb)}, tmp_path, "t.mp4")
+    assert job["output_size"] <= target_mb * 1024 * 1024
+    assert any(s["codec_type"] == "audio" for s in probe(str(out)))
+
+
+@needs_ffmpeg
+def test_slideshow_with_odd_sizes(client, tmp_path):
+    from PIL import Image
+    ids = []
+    for i in range(3):
+        p = tmp_path / f"img{i}.png"
+        Image.new("RGB", (101, 75), (i * 80, 100, 150)).save(p)
+        ids.append(chunked_upload(client, p))
+    r = client.post("/jobs", data={"action": "convert", "format": "mp4", "upload_ids": ",".join(ids), "sequence_fps": "1"})
+    assert r.status_code == 202, r.json
+    job = wait_job(client, r.json["job_id"], timeout=120)
+    assert job["status"] == "done", job["error"]
+    out = download_to(client, job["download_url"], tmp_path, "show.mp4")
+    video = next(s for s in probe(str(out)) if s["codec_type"] == "video")
+    assert video["width"] % 2 == 0 and video["height"] % 2 == 0
+    assert 2.5 < probe_duration(out) < 3.5
+
+
+def test_single_image_to_gif_is_a_still_gif(client, media, tmp_path):
+    from PIL import Image
+    job, out = run_job(client, media["photo"], {"action": "convert", "format": "gif"}, tmp_path, "still.gif")
+    img = Image.open(out)
+    assert img.format == "GIF" and img.size == (32, 64)
+
+
+@needs_ffmpeg
+def test_video_location_metadata(client, tmp_path):
+    src = tmp_path / "phone.mov"
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=160x120:rate=25",
+         "-t", "1", "-metadata", "location=+48.8566+002.3522/", "-metadata", "title=Vacances",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", str(src)],
+        check=True,
+    )
+
+    def tags(path):
+        out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format_tags", "-of", "json", str(path)],
+                             capture_output=True, text=True, check=True).stdout
+        return {k.lower(): v for k, v in (json.loads(out).get("format", {}).get("tags") or {}).items()}
+
+    assert "location" in tags(src)
+    _, out = run_job(client, src, {"action": "convert", "format": "mov"}, tmp_path, "nogps.mov")
+    assert "location" not in tags(out) and tags(out).get("title") == "Vacances"
+    _, out = run_job(client, src, {"action": "convert", "format": "mov", "metadata": "strip"}, tmp_path, "strip.mov")
+    assert "title" not in tags(out)
+
+
+@pytest.mark.skipif(shutil.which("libreoffice") is None, reason="libreoffice not installed")
+def test_office_documents_convert_side_by_side(client, tmp_path):
+    ids = []
+    for i in range(2):
+        p = tmp_path / f"table{i}.csv"
+        p.write_text("a,b\n1,2\n", encoding="utf-8")
+        upload_id = chunked_upload(client, p)
+        r = client.post("/jobs", data={"action": "convert", "format": "pdf", "upload_id": upload_id})
+        ids.append(r.json["job_id"])
+    for job_id in ids:
+        job = wait_job(client, job_id, timeout=180)
+        assert job["status"] == "done", job["error"]
+        assert job["output_filename"].endswith(".pdf")
+
+
+@needs_gs
+def test_pdf_preview_pages(client, tmp_path):
+    src = _image_pdf(tmp_path / "pv.pdf", pages=2, dpi=150)
+    job, _ = run_job(client, src, {"action": "compress", "comp_mode": "crf", "comp_value": "medium"}, tmp_path, "pv_out.pdf")
+    r = client.get(f"/jobs/{job['id']}/preview.png?page=2")
+    assert r.status_code == 200
+    assert r.headers["X-Page-Count"] == "2"
+    assert r.data[:8] == b"\x89PNG\r\n\x1a\n"

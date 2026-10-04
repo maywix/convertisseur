@@ -1,6 +1,6 @@
 # Convertisseur Studio
 
-Convertisseur de médias auto-hébergé. Tu déposes des fichiers, tu choisis un format, tu récupères le résultat. Vidéo, audio, image, PDF, documents Office et modèles 3D dans une seule app web, plus un **Color Lab** pour étalonner vidéos et photos (LUT `.cube`, lumière, couleurs) avec un aperçu en direct.
+Convertisseur de médias auto-hébergé. Tu déposes des fichiers, tu choisis un format, tu récupères le résultat. Vidéo, audio, image, PDF, documents Office et modèles 3D dans une seule app web, plus un **Color Lab** pour étalonner vidéos et photos (LUT `.cube`, lumière, couleurs) avec un aperçu en direct. Chaque résultat peut être **prévisualisé** (avant / après) avant d'être sauvegardé.
 
 Pensé pour tourner chez soi et être utilisé à distance via un **Cloudflare Tunnel**.
 
@@ -23,11 +23,11 @@ Pensé pour tourner chez soi et être utilisé à distance via un **Cloudflare T
 
 ## L'interface
 
-Même style que Eclypse Downloader (fond noir, badge d'état du serveur en bas à droite). Deux onglets de même largeur (**Convertir** et **Color Lab · étalonnage**), qui partagent la même liste de fichiers : **Convertir** et **Color Lab · étalonnage**.
+Même style que Eclypse Downloader (fond noir, badge d'état du serveur en bas à droite). Deux onglets (**Convertir** et **Color Lab · étalonnage**) qui partagent la même liste de fichiers.
 
-Dans **Convertir**, un sélecteur **Simple | Avancé** (au-dessus de la page, mémorisé) donne deux pages, avec la même largeur et la même file d'attente :
+Dans **Convertir**, un sélecteur **Simple | Avancé** (à droite des onglets, mémorisé) donne deux pages, avec la même file d'attente :
 
-- **Simple** : choix rapides (Auto, Vidéo → MP4, Vidéo → GIF, Extraire le son, Image → JPG / PNG / WebP, Réduire le poids avec niveau), zone d'ajout, file d'attente (menu « en [format] » par fichier), bouton **Convertir**.
+- **Simple** : choix rapides (Auto, Vidéo → MP4, Vidéo → GIF, Extraire le son, Image → JPG / PNG / WebP, Réduire le poids), zone d'ajout, file d'attente (menu « en [format] » par fichier), bouton **Convertir**. **Réduire le poids** propose un niveau (légère / moyenne / forte) ou un **poids maximum par fichier** : 10 Mo (Discord), 25 Mo (e-mail), 50 Mo ou une valeur libre.
 - **Avancé** : la colonne **Réglages** à gauche, avec tous les réglages étape par étape, et la zone d'ajout + la file d'attente à droite :
 
 | Étape | Choix |
@@ -44,19 +44,29 @@ En bas de la colonne : **Export** (un ZIP ou fichiers séparés), **Traitement e
 
 Paramètres disponibles dans la page Avancé :
 
-- **Vidéo** : qualité (préréglage, CRF, débit fixe en 1 ou 2 passes), résolution max ou taille exacte, codec (H.264, H.265, VP9, AV1), images/s, rotation / miroir, piste son (garder, copier sans réencoder, supprimer). Les vidéos HDR (iPhone…) sont ramenées en SDR automatiquement pour ne pas sortir grises. On peut aussi extraire le son d'une vidéo (MP3, M4A, WAV…).
+- **Vidéo** : qualité (préréglage, CRF, débit fixe en 1 ou 2 passes), résolution max ou taille exacte, codec (H.264, H.265, VP9, AV1), images/s, rotation / miroir, **format d'image** (recadrage au centre en 16:9, 9:16 Reels / TikTok, 1:1, 4:5…), piste son (garder, copier sans réencoder, supprimer). Les vidéos HDR (iPhone…) sont ramenées en SDR automatiquement pour ne pas sortir grises (GIF et captures compris). On peut aussi extraire le son d'une vidéo (MP3, M4A, WAV…), en tirer **une image** (Capture JPG / PNG à l'instant choisi) ou une suite d'images (ZIP).
 - **Vidéo (suite)** : preset, tune, profil, format de pixels, débruitage, HDR → SDR, désentrelacement, rognage, texte incrusté avec position.
 - **Son** : débit, fréquence, mono / stéréo, volume en dB ou normalisation.
 - **GIF** : largeur, images/s, vitesse, 8 à 256 couleurs, tramage, lecture en boucle / une fois / N fois.
 - **Images** : qualité, taille max en px ou en %, agrandissement, poids cible en Mo, WebP sans perte, taille des icônes ICO, diaporama.
-- **Découper** : début / fin pour vidéos, GIF et sons.
+- **Découper et vitesse** : début / fin pour vidéos, GIF et sons, et **vitesse de lecture** (× 0,25 à × 4, le son garde sa tonalité).
 - Un bouton **Journal** sur chaque fichier affiche la commande FFmpeg exécutée et ses messages. Une barre de progression globale suit le lot en cours.
+
+**Aperçu** : l'œil (ou la miniature) d'un fichier terminé ouvre le résultat en grand : images avec **avant / après** à faire glisser et affichage en pixels réels (100 %) pour juger la compression, vidéos et sons lisibles, pages des PDF, texte. ← / → passe au fichier suivant.
+
+**File d'attente** : **Réessayer** relance les fichiers en erreur, **Tout arrêter** interrompt les envois et conversions en cours (les fichiers restent prêts à repartir), **Retirer les terminés** fait de la place. Pendant un envoi, la vitesse et le temps restant s'affichent. Les fichiers non pris en charge d'un dossier (.xmp, .aae, .txt…) sont ignorés avec un message au lieu de remplir la liste d'erreurs.
+
+**Compression honnête** : si « compresser » ne rend pas un fichier plus léger (fichier déjà optimisé), l'original est rendu tel quel (« déjà optimisé ») au lieu d'une copie plus lourde. Avec un poids cible, la vidéo est encodée en **2 passes** (et refaite plus bas si elle dépasse) et sa définition est réduite automatiquement quand le débit ne suffit plus (ex. 1080p → 540p pour 1 Mo). Les images trop lourdes même en basse qualité sont réduites en taille plutôt qu'écrasées.
 
 **Téléchargements** : bouton vert **Sauvegarder** par fichier, et **Tout sauvegarder** pour le lot, au choix en **un ZIP** ou en **fichiers séparés** (Réglages). Quand on dépose un dossier, le ZIP **garde l'arborescence** (dossiers et sous-dossiers), que la conversion se soit faite sur le serveur ou dans le navigateur. Option « Télécharger automatiquement à la fin ».
 
 **Arrière-plan** (activé par défaut) : les conversions serveur continuent si on ferme l'onglet, et la liste revient au rechargement de la page. Désactivé, la page prévient avant de se fermer et ne restaure rien. Les fichiers sont supprimés du serveur automatiquement après 3 h.
 
-Le menu **Réglages** (roue dentée) regroupe : où convertir, téléchargement auto, ZIP / fichiers séparés, arrière-plan, limite de débit via le tunnel et thème (sombre par défaut, clair, système).
+Le menu **Réglages** (roue dentée) regroupe : où convertir, **infos des photos et vidéos** (garder sans la position GPS — par défaut —, tout garder, tout supprimer), téléchargement auto, ZIP / fichiers séparés, arrière-plan, **me prévenir à la fin** (son, et notification en HTTPS), limite de débit via le tunnel et thème (sombre par défaut, clair, système).
+
+**Photos** : la date de prise de vue, l'appareil et le **profil couleur** (Display P3 des iPhone) sont conservés, l'orientation est appliquée. Les JPEG CMYK, PNG 16 bits, etc. sont convertis correctement, et la transparence devient du blanc (pas du noir) en JPG / BMP / PDF.
+
+L'app s'installe sur l'écran d'accueil (icône et manifeste).
 
 ---
 
@@ -64,7 +74,7 @@ Le menu **Réglages** (roue dentée) regroupe : où convertir, téléchargement 
 
 | Réglage | Comportement |
 |---|---|
-| **Auto** (par défaut) | Les images que le navigateur sait lire (JPG, PNG, WebP, AVIF, BMP) sont converties **sur l'appareil**, rien n'est envoyé. Tout le reste va au serveur. |
+| **Auto** (par défaut) | Les images que le navigateur sait lire (PNG, WebP, AVIF, BMP) sont converties **sur l'appareil**, rien n'est envoyé. Les photos JPEG passent par le serveur pour garder leurs infos (date, appareil), sauf si « Tout supprimer » est choisi. Tout le reste va au serveur. |
 | **Serveur** | Tout passe par le serveur (FFmpeg, Pillow, LibreOffice). Le plus fiable. |
 | **Navigateur** | Essaie aussi les vidéos dans le navigateur avec ffmpeg.wasm (fichiers < 700 Mo). Utile pour éviter d'envoyer de grosses vidéos via un tunnel lent. |
 
@@ -127,7 +137,7 @@ Navigation entre fichiers : ← / → ou la bande de miniatures sous l'aperçu.
 
 ### PDF
 
-**Sortie** : PDF compressé, texte (txt)
+**Sortie** : PDF compressé (Ghostscript : images ré-échantillonnées à 300 / 150 / 72 ppp selon le niveau, ou essai des niveaux jusqu'au poids visé), pages en JPG / PNG (une image, ou un ZIP pour plusieurs pages), texte (txt)
 
 ### Documents Office
 
@@ -225,7 +235,7 @@ Toutes les actions sont enregistrées dans `scripts/manage.log`.
 
 - FFmpeg (paquet Debian : x264, x265, VP9, AV1, Opus, Vorbis, zscale, drawtext)
 - Pillow + pillow-heif + rawpy + cairosvg pour les images, numpy pour appliquer les LUT aux photos
-- pypdf, LibreOffice headless, trimesh
+- Ghostscript (compression des PDF, PDF → images, aperçu des pages), pypdf, LibreOffice headless (un profil par conversion simultanée), trimesh
 - Uploads découpés et reprenables (`/uploads`), jobs (`/jobs`), téléchargements avec `Range` et limite de débit optionnelle (`?rate=`), ZIP en streaming (`/download-all?ids=`), config (`/api/config`)
 
 **Frontend** : React 19, Vite, Tailwind 4, sans bibliothèque de composants.
@@ -246,7 +256,13 @@ pip install -r requirements.txt pytest
 python -m pytest tests -q
 ```
 
-Les tests lancent de vraies conversions FFmpeg (ignorées si FFmpeg n'est pas installé) : LUT Resolve, lecture du H.264 exporté, envois découpés et reprise, limite de débit, ZIP, noms de fichiers accentués…
+Les tests lancent de vraies conversions FFmpeg (ignorées si FFmpeg n'est pas installé) : LUT Resolve, lecture du H.264 exporté, envois découpés et reprise, limite de débit, ZIP, noms de fichiers accentués, poids cible respecté, vitesse et format d'image, capture, diaporama aux tailles impaires, PDF (Ghostscript), métadonnées et GPS, CMYK / 16 bits / transparence…
+
+Le plus simple est de les lancer dans l'image Docker, qui a tous les outils :
+
+```bash
+docker run --rm -v "$PWD/tests:/app/tests:ro" convertisseur-backend sh -c "pip install -q pytest && python -m pytest tests -q"
+```
 
 Côté frontend : `bun run build` (type-check + build) et `bun run lint`.
 

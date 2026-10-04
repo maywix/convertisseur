@@ -5,16 +5,19 @@ import {
 import { DropCard } from '@/components/DropZone'
 import { FileRow } from '@/components/FileRow'
 import { JobLogDialog } from '@/components/JobLogDialog'
-import { IconArrowDown, IconAudio, IconDownload, IconImage, IconPlus, IconTrash, IconVideo, IconWand } from '@/components/icons'
-import { Button, Label, ProgressBar, Select, Toggle } from '@/components/ui'
+import { PreviewDialog } from '@/components/PreviewDialog'
+import {
+    IconArrowDown, IconAudio, IconBroom, IconDownload, IconImage, IconPlus, IconRefresh, IconStop, IconTrash, IconVideo, IconWand,
+} from '@/components/icons'
+import { Button, Label, ProgressBar, Select, TextInput, Toggle } from '@/components/ui'
 import type { QueueApi } from '@/hooks/useQueue'
 import {
     CATEGORY_FORMATS, CATEGORY_KINDS, DEFAULT_CONVERT_OPTIONS, categoryOfItem, groupsFor, groupsForKinds, inferCategory, planForItem,
     type Category, type CompressLevel, type ConvertOptions,
 } from '@/lib/convertPlan'
-import type { ProcessingPreference } from '@/lib/settings'
+import type { MetadataPreference, ProcessingPreference } from '@/lib/settings'
 import { cn } from '@/lib/utils'
-import { AUDIO_FORMATS, FORMATS, KIND_LABEL, formatSize, isActive, type MediaKind, type QueueItem } from '@/types'
+import { AUDIO_FORMATS, COMPRESS_AS_JPG, FORMATS, KIND_LABEL, extOf, formatSize, isActive, type MediaKind, type QueueItem } from '@/types'
 
 const OPTIONS_KEY = 'convertisseur_convert_options_v3'
 
@@ -30,8 +33,8 @@ function loadOptions(): ConvertOptions {
             delete o.detail
             delete o.videoTargetMb
             delete o.videoPercent
-            // Action, type, cuts and text are per-batch choices: never restored.
-            return { ...o, action: 'convert', category: null, trimStart: '', trimEnd: '', slideshow: false, overlayText: '' }
+            // Action, type, cuts, speed, capture and text are per-batch choices: never restored.
+            return { ...o, action: 'convert', category: null, trimStart: '', trimEnd: '', slideshow: false, overlayText: '', speed: '1', captureAt: '' }
         }
     } catch {
         // ignore
@@ -83,6 +86,8 @@ const PRESETS: Preset[] = [
 ]
 
 const LEVELS: [CompressLevel, string][] = [['low', 'Légère'], ['medium', 'Moyenne'], ['high', 'Forte']]
+/** Common upload limits: Discord (free), e-mail attachments. */
+const SIZE_TARGETS: [string, string][] = [['10', '10 Mo · Discord'], ['25', '25 Mo · e-mail'], ['50', '50 Mo']]
 
 function Pill({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }) {
     return (
@@ -112,7 +117,10 @@ function Step({ n, title, aside, children }: { n: number; title: string; aside?:
 
 export function ConvertPage({
     queue,
+    sub,
     processing,
+    metadata,
+    rateLimit,
     retentionHours,
     autoDownload,
     onAutoDownload,
@@ -122,7 +130,12 @@ export function ConvertPage({
     onBackground,
 }: {
     queue: QueueApi
+    /** "Simple" presets or the "Avancé" step-by-step page (switch in the header). */
+    sub: 'simple' | 'advanced'
     processing: ProcessingPreference
+    metadata: MetadataPreference
+    /** Bytes/s for previews through the tunnel (0 = unlimited). */
+    rateLimit: number
     retentionHours: number
     autoDownload: boolean
     onAutoDownload: (v: boolean) => void
@@ -148,14 +161,8 @@ export function ConvertPage({
     const optionsFor = useCallback((it: QueueItem) => overrides[it.id] ?? options, [overrides, options])
 
     const [logItem, setLogItem] = useState<QueueItem | null>(null)
+    const [previewId, setPreviewId] = useState<string | null>(null)
     const [preset, setPreset] = useState<PresetId>('auto')
-    const [sub, setSubState] = useState<'simple' | 'advanced'>(() => {
-        try { return localStorage.getItem('convertisseur_sub') === 'advanced' ? 'advanced' : 'simple' } catch { return 'simple' }
-    })
-    const setSub = (v: 'simple' | 'advanced') => {
-        setSubState(v)
-        try { localStorage.setItem('convertisseur_sub', v) } catch { /* ignore */ }
-    }
 
     // Step 2 preselects a type from the files until one is picked.
     const category = options.category ?? inferCategory(items)
@@ -179,6 +186,8 @@ export function ConvertPage({
             errors: items.filter((it) => it.status === 'error').length,
             overall,
             doneBytes: done.reduce((n, it) => n + (it.outputSize ?? 0), 0),
+            doneInputBytes: done.reduce((n, it) => n + (it.size ?? 0), 0),
+            failed: items.filter((it) => it.status === 'error' && it.file && it.kind !== 'unknown'),
             pendingImages: pending.filter((it) => it.kind === 'image').length,
             kinds: KIND_ORDER.filter((k) => kinds.has(k)),
             counts: {
@@ -229,16 +238,20 @@ export function ConvertPage({
             })
             queue.remove(images.map((it) => it.id))
             pending = pending.filter((it) => it.kind !== 'image')
-            queue.run([{ id, plan: planForItem({ ...first, kind: 'sequence', targetFormat: options.slideshowFormat }, options, processing) }])
+            queue.run([{ id, plan: planForItem({ ...first, kind: 'sequence', targetFormat: options.slideshowFormat }, options, processing, metadata) }])
         }
         setEditingId(null)
-        queue.run(pending.map((it) => ({ id: it.id, plan: planForItem(it, optionsFor(it), processing) })))
-    }, [stats.pending, slideshow, options, processing, queue, optionsFor])
+        queue.run(pending.map((it) => ({ id: it.id, plan: planForItem(it, optionsFor(it), processing, metadata) })))
+    }, [stats.pending, slideshow, options, processing, metadata, queue, optionsFor])
 
     const retry = useCallback((id: string) => {
         const it = queue.items.find((i) => i.id === id)
-        if (it) queue.run([{ id, plan: planForItem(it, optionsFor(it), processing) }])
-    }, [queue, optionsFor, processing])
+        if (it) queue.run([{ id, plan: planForItem(it, optionsFor(it), processing, metadata) }])
+    }, [queue, optionsFor, processing, metadata])
+
+    const retryFailed = useCallback(() => {
+        queue.run(stats.failed.map((it) => ({ id: it.id, plan: planForItem(it, optionsFor(it), processing, metadata) })))
+    }, [queue, stats.failed, optionsFor, processing, metadata])
 
     const onFormat = useCallback((id: string, fmt: string) => {
         queue.setFormat(id, fmt)
@@ -397,13 +410,17 @@ export function ConvertPage({
     )
 
     // ── Shared blocks ──
+    const savedPct = stats.doneInputBytes > 0 ? Math.round((1 - stats.doneBytes / stats.doneInputBytes) * 100) : 0
     const doneCard = allFinished && stats.done.length > 0 && (
         <div className="fade-up flex flex-wrap items-center gap-3.5 rounded-[4px] border border-success/25 bg-success/[0.06] px-5 py-4">
             <span className="text-lg text-success">✓</span>
             <div className="min-w-0 flex-1">
                 <p className="text-[13px] font-semibold">Terminé</p>
                 <p className="truncate text-[11px] text-faint">
-                    {stats.done.length} fichier{stats.done.length > 1 ? 's' : ''}{stats.doneBytes ? ` · ${formatSize(stats.doneBytes)}` : ''}
+                    {stats.done.length} fichier{stats.done.length > 1 ? 's' : ''}
+                    {savedPct > 1
+                        ? ` · ${formatSize(stats.doneInputBytes)} → ${formatSize(stats.doneBytes)} (−${savedPct} %)`
+                        : stats.doneBytes ? ` · ${formatSize(stats.doneBytes)}` : ''}
                     {stats.errors ? ` · ${stats.errors} en erreur` : ''}
                 </p>
             </div>
@@ -418,12 +435,28 @@ export function ConvertPage({
     )
 
     const pro = sub === 'advanced'
+    const previewItems = stats.done.filter((it) => it.downloadUrl)
     const queueCard = (
         <div className="overflow-hidden rounded-[4px] border border-border bg-card">
-            <div className="flex items-center gap-1 border-b border-border px-4 py-3">
+            <div className="flex flex-wrap items-center gap-1 border-b border-border px-4 py-3">
                 <h2 className="mr-auto text-[14px] font-bold">
                     File d'attente <span className="font-normal text-faint tabular-nums">({items.length})</span>
                 </h2>
+                {stats.failed.length > 0 && stats.running.length === 0 && (
+                    <Button size="sm" variant="ghost" onClick={retryFailed} title="Relancer les fichiers en erreur">
+                        <IconRefresh size={14} /> <span className="hidden sm:inline">Réessayer</span> ({stats.failed.length})
+                    </Button>
+                )}
+                {stats.running.length > 0 && (
+                    <Button size="sm" variant="ghost" onClick={() => queue.cancel(stats.running.map((it) => it.id))} title="Arrêter les envois et conversions en cours">
+                        <IconStop size={14} /> <span className="hidden sm:inline">Tout arrêter</span>
+                    </Button>
+                )}
+                {stats.done.length > 0 && stats.done.length < items.length && (
+                    <Button size="sm" variant="ghost" onClick={queue.removeDone} title="Retirer de la liste les fichiers terminés">
+                        <IconBroom size={14} /> <span className="hidden sm:inline">Retirer les terminés</span>
+                    </Button>
+                )}
                 <Button size="sm" variant="ghost" disabled={stats.done.length === 0} onClick={() => void queue.downloadMany(stats.done)}>
                     <IconDownload size={14} /> <span className="hidden sm:inline">Exporter les fichiers</span><span className="sm:hidden">Exporter</span>
                 </Button>
@@ -471,11 +504,12 @@ export function ConvertPage({
                                 onRemove={queue.remove}
                                 onRetry={retry}
                                 onDownload={queue.download}
+                                onPreview={(item) => setPreviewId(item.id)}
                                 onShowLog={pro ? setLogItem : undefined}
                                 onEdit={pro ? onEdit : undefined}
                                 formatNote={
                                     it.status === 'pending' && itemAction === 'compress' && it.kind !== 'document' && it.kind !== '3d'
-                                        ? 'compressé · même format'
+                                        ? COMPRESS_AS_JPG.has(extOf(it.name)) ? 'compressé · en JPG' : 'compressé · même format'
                                         : it.status === 'pending' && slideshow && it.kind === 'image' ? 'dans le diaporama' : undefined
                                 }
                             />
@@ -492,25 +526,28 @@ export function ConvertPage({
         </p>
     )
 
+    const dialogs = (
+        <>
+            {logItem && <JobLogDialog item={logItem} onClose={() => setLogItem(null)} />}
+            {previewId && previewItems.some((it) => it.id === previewId) && (
+                <PreviewDialog
+                    items={previewItems}
+                    startId={previewId}
+                    rateLimit={rateLimit}
+                    onDownload={queue.download}
+                    onClose={() => setPreviewId(null)}
+                />
+            )}
+        </>
+    )
+
     // ── One page: presets, files, Convertir, then the full settings below ──
     const current = PRESETS.find((p) => p.id === preset) ?? PRESETS[0]
     const doing = options.action === 'compress' ? 'Compresser' : 'Convertir'
-    const subSwitch = (
-        <div className="inline-flex rounded-[4px] border border-input p-0.5" role="radiogroup" aria-label="Mode de conversion">
-            {([['simple', 'Simple'], ['advanced', 'Avancé']] as const).map(([v, label]) => (
-                <button key={v} type="button" role="radio" aria-checked={sub === v} onClick={() => setSub(v)}
-                    className={cn('h-8 rounded-[3px] px-4 text-[13px] font-semibold transition-colors',
-                        sub === v ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground')}>
-                    {label}
-                </button>
-            ))}
-        </div>
-    )
 
     if (pro) {
         return (
             <>
-                <div>{subSwitch}</div>
                 <div className="grid items-start gap-5 lg:grid-cols-[390px_minmax(0,1fr)] lg:gap-6">
                     <aside className="order-2 min-w-0 lg:sticky lg:top-4 lg:order-1">{settings}</aside>
                     <div className="order-1 min-w-0 space-y-5 lg:order-2">
@@ -520,13 +557,15 @@ export function ConvertPage({
                         {retention}
                     </div>
                 </div>
-                {logItem && <JobLogDialog item={logItem} onClose={() => setLogItem(null)} />}
+                {dialogs}
             </>
         )
     }
+
+    const sizeTarget = options.compressMode === 'size'
+    const customSize = sizeTarget && !SIZE_TARGETS.some(([v]) => v === options.compressTargetMb)
     return (
         <>
-            <div>{subSwitch}</div>
             <section>
                 <p className="mb-3 text-[10px] font-bold tracking-[0.1em] text-faint uppercase">Que veux-tu faire ?</p>
                 <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Que veux-tu faire ?">
@@ -539,14 +578,43 @@ export function ConvertPage({
                 </div>
                 <p className="mt-3 text-[12px] text-muted-foreground">{current.hint}</p>
                 {preset === 'compress' && (
-                    <div className="mt-3 flex flex-wrap items-center gap-2" role="radiogroup" aria-label="Niveau de compression">
-                        <span className="mr-1 text-[12px] text-faint">Niveau</span>
-                        {LEVELS.map(([v, label]) => (
-                            <Pill key={v} active={options.compressMode === 'level' && options.compressLevel === v}
-                                onClick={() => setOptions({ compressMode: 'level', compressLevel: v })}>
-                                {label}
-                            </Pill>
-                        ))}
+                    <div className="fade-up mt-4 space-y-3 rounded-[4px] border border-border bg-card p-4">
+                        <div className="flex flex-wrap items-center gap-2" role="radiogroup" aria-label="Niveau de compression">
+                            <span className="w-full text-[12px] text-faint sm:mr-1 sm:w-24">Niveau</span>
+                            {LEVELS.map(([v, label]) => (
+                                <Pill key={v} active={options.compressMode === 'level' && options.compressLevel === v}
+                                    onClick={() => setOptions({ compressMode: 'level', compressLevel: v })}>
+                                    {label}
+                                </Pill>
+                            ))}
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2" role="radiogroup" aria-label="Poids maximum par fichier">
+                            <span className="w-full text-[12px] text-faint sm:mr-1 sm:w-24">ou poids max</span>
+                            {SIZE_TARGETS.map(([v, label]) => (
+                                <Pill key={v} active={sizeTarget && options.compressTargetMb === v}
+                                    onClick={() => setOptions({ compressMode: 'size', compressTargetMb: v })}>
+                                    {label}
+                                </Pill>
+                            ))}
+                            <span className={cn('inline-flex items-center gap-1.5 rounded-[4px] border px-2 py-1', customSize ? 'border-foreground' : 'border-border')}>
+                                <TextInput
+                                    value={customSize ? options.compressTargetMb : ''}
+                                    onChange={(v) => setOptions({ compressMode: 'size', compressTargetMb: v.replace(',', '.').replace(/[^\d.]/g, '') })}
+                                    placeholder="Autre"
+                                    inputMode="decimal"
+                                    ariaLabel="Autre poids maximum (Mo)"
+                                    className="h-7 w-16 border-0 bg-transparent px-1 text-center"
+                                />
+                                <span className="pr-1 text-[12px] text-faint">Mo</span>
+                            </span>
+                        </div>
+                        <p className="text-[11px] leading-relaxed text-faint">
+                            {sizeTarget
+                                ? `Chaque fichier passe sous ${options.compressTargetMb || '…'} Mo : qualité ajustée, et définition réduite pour les vidéos longues. Un fichier déjà plus léger est gardé tel quel.`
+                                : options.compressMode === 'percent'
+                                    ? `Réduction de ${options.compressPercent} % (réglée dans le mode Avancé).`
+                                    : 'Si un fichier ne peut pas être allégé, l’original est rendu tel quel : jamais un fichier plus lourd.'}
+                        </p>
                     </div>
                 )}
             </section>
@@ -561,7 +629,7 @@ export function ConvertPage({
                         <Button variant="primary" size="lg" className="w-full" disabled={startCount === 0} onClick={start} title="Ctrl + Entrée">
                             {startCount > 0
                                 ? `${doing} ${startCount > 1 ? `${startCount} fichiers` : 'le fichier'}`
-                                : allFinished && stats.done.length > 0 ? 'Tout est prêt' : 'Conversion en cours…'}
+                                : allFinished && stats.done.length > 0 ? 'Tout est prêt' : stats.running.length ? 'Conversion en cours…' : 'Ajoute des fichiers'}
                         </Button>
                         <div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-2">
                             <label className="flex cursor-pointer items-center gap-2 text-[12px] text-muted-foreground select-none">
@@ -585,7 +653,7 @@ export function ConvertPage({
             )}
 
             {items.length === 0 && <Compat />}
-            {logItem && <JobLogDialog item={logItem} onClose={() => setLogItem(null)} />}
+            {dialogs}
         </>
     )
 }

@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from 'react'
 
 export type ProcessingPreference = 'auto' | 'server' | 'browser'
 export type ThemePreference = 'system' | 'light' | 'dark'
+/** Photo / video metadata: everything, everything but the location, nothing. */
+export type MetadataPreference = 'keep' | 'nogps' | 'strip'
 
 export interface Settings {
     /**
@@ -18,6 +20,9 @@ export interface Settings {
     /** Server conversions keep going when the page is closed, and come back on reload. */
     background: boolean
     theme: ThemePreference
+    metadata: MetadataPreference
+    /** Notification + sound when a batch finishes while the tab is in the background. */
+    notify: boolean
 }
 
 const KEY = 'convertisseur_settings_v2'
@@ -29,6 +34,8 @@ const DEFAULTS: Settings = {
     exportMode: 'zip',
     background: true,
     theme: 'dark',
+    metadata: 'nogps',
+    notify: false,
 }
 
 function load(): Settings {

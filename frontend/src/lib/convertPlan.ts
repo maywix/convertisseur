@@ -8,8 +8,8 @@
 // ──────────────────────────────────────────────────────────
 import type { JobPlan } from '@/hooks/useQueue'
 import { BROWSER_DECODABLE, BROWSER_ENCODABLE, processImageInBrowser } from '@/lib/clientProcessor'
-import type { ProcessingPreference } from '@/lib/settings'
-import { AUDIO_FORMATS, FORMATS, extOf, type FormatOption, type MediaKind, type QueueItem } from '@/types'
+import type { MetadataPreference, ProcessingPreference } from '@/lib/settings'
+import { AUDIO_FORMATS, FORMATS, VIDEO_STILL_FORMATS, extOf, type FormatOption, type MediaKind, type QueueItem } from '@/types'
 
 export type VideoQuality = 'high' | 'balanced' | 'small' | 'crf' | 'bitrate'
 export type Action = 'convert' | 'compress' | 'convert_compress'
@@ -56,6 +56,12 @@ export interface ConvertOptions {
     overlayText: string
     overlayPosition: TextPosition
     removeAudio: boolean
+    /** Centre crop to an aspect ratio ("9:16"…), '' = unchanged. */
+    aspect: string
+    /** Playback speed of videos and sounds ("2" = twice as fast). */
+    speed: string
+    /** Video → still image: when (s or h:mm:ss), '' = automatic. */
+    captureAt: string
     // ── Son
     audioBitrate: string
     audioCopy: boolean
@@ -120,6 +126,9 @@ export const DEFAULT_CONVERT_OPTIONS: ConvertOptions = {
     overlayText: '',
     overlayPosition: 'bottom',
     removeAudio: false,
+    aspect: '',
+    speed: '1',
+    captureAt: '',
     audioBitrate: '192k',
     audioCopy: false,
     audioSampleRate: '',
@@ -191,8 +200,8 @@ export function inferCategory(items: QueueItem[]): Category | null {
     return null
 }
 
-/** Groups of options, in display order. */
-export type GroupKey = 'video' | 'gif' | 'frames' | 'image' | 'audio' | 'slideshow' | 'trim'
+/** Groups of options, in display order. "timing" = cut + playback speed. */
+export type GroupKey = 'video' | 'gif' | 'frames' | 'capture' | 'image' | 'audio' | 'slideshow' | 'trim' | 'timing'
 
 export function groupsFor(category: Category | null, format: string, o: ConvertOptions): GroupKey[] {
     const withAudio = !o.removeAudio && !o.audioCopy
@@ -200,9 +209,10 @@ export function groupsFor(category: Category | null, format: string, o: ConvertO
         case 'video':
             if (format === 'gif') return ['gif', 'trim']
             if (format === 'zip') return ['frames', 'trim']
-            return withAudio ? ['video', 'audio', 'trim'] : ['video', 'trim']
+            if (VIDEO_STILL_FORMATS.has(format)) return ['capture']
+            return withAudio ? ['video', 'audio', 'timing'] : ['video', 'timing']
         case 'audio':
-            return ['audio', 'trim']
+            return ['audio', 'timing']
         case 'image':
             return ['image']
         case 'slideshow':
@@ -218,7 +228,7 @@ export function groupsForKinds(kinds: MediaKind[], o: ConvertOptions): GroupKey[
     if (kinds.includes('video')) out.push('video')
     if (kinds.includes('image')) out.push('image')
     if ((kinds.includes('video') && !o.removeAudio && !o.audioCopy) || kinds.includes('audio')) out.push('audio')
-    if (kinds.includes('video') || kinds.includes('audio')) out.push('trim')
+    if (kinds.includes('video') || kinds.includes('audio')) out.push('timing')
     return out
 }
 
@@ -264,6 +274,13 @@ function trimFields(o: ConvertOptions): Record<string, string> {
     return f
 }
 
+/** Cut + playback speed (videos and sounds). */
+function timingFields(o: ConvertOptions): Record<string, string> {
+    const f = trimFields(o)
+    if (num(o.speed) && num(o.speed) !== 1) f.speed = String(num(o.speed))
+    return f
+}
+
 function audioFields(o: ConvertOptions, forVideo: boolean, compressing = false): Record<string, string> {
     const f: Record<string, string> = {}
     if (forVideo && o.audioCopy) {
@@ -280,7 +297,7 @@ function audioFields(o: ConvertOptions, forVideo: boolean, compressing = false):
 }
 
 function videoFields(o: ConvertOptions, fmt: string, compressing = false): Record<string, string> {
-    const f: Record<string, string> = { ...trimFields(o) }
+    const f: Record<string, string> = { ...timingFields(o) }
     if (compressing) {
         // The compression target decides the quality.
         if (o.compressMode === 'level') f.video_quality = LEVEL_VIDEO_QUALITY[o.compressLevel]
@@ -306,6 +323,7 @@ function videoFields(o: ConvertOptions, fmt: string, compressing = false): Recor
     }
     if (num(o.videoFps)) f.fps = String(num(o.videoFps))
     if (o.rotate !== 'none') f.rotate = o.rotate
+    if (o.aspect) f.aspect = o.aspect
     for (const [key, value] of [['crop_top', o.cropTop], ['crop_bottom', o.cropBottom], ['crop_left', o.cropLeft], ['crop_right', o.cropRight]]) {
         if (num(value)) f[key] = String(Math.round(num(value)))
     }
@@ -332,9 +350,18 @@ function browserVideoCompatible(o: ConvertOptions): boolean {
         && !o.cropRight && !o.deinterlace && o.denoise === 'none' && !o.overlayText.trim()
         && o.pixelFormat === 'auto' && !o.videoPreset && o.videoProfile === 'auto' && o.videoTune === 'none'
         && !o.audioCopy && !o.audioSampleRate && !o.audioChannels && !o.audioVolume
+        && !o.aspect && (num(o.speed) || 1) === 1
 }
 
-export function planForItem(item: QueueItem, o: ConvertOptions, processing: ProcessingPreference): JobPlan {
+/** JPEG photos carry the date / camera / location: the browser path would drop them. */
+const CAMERA_PHOTO_EXTS = new Set(['jpg', 'jpeg'])
+
+export function planForItem(
+    item: QueueItem,
+    o: ConvertOptions,
+    processing: ProcessingPreference,
+    metadata: MetadataPreference = 'nogps',
+): JobPlan {
     const compressing = o.action !== 'convert'
     // "Compresser" keeps the file's own format (the server keeps its extension).
     const keepFormat = o.action === 'compress'
@@ -354,13 +381,22 @@ export function planForItem(item: QueueItem, o: ConvertOptions, processing: Proc
                 }
                 if (o.gifWidth !== '0') fields.gif_width = o.gifWidth
                 else fields.gif_resolution = '-1'
+                if (o.aspect) fields.aspect = o.aspect
                 return { server: { action: 'convert', format: 'gif', fields } }
             }
             if (!keepFormat && fmt === 'zip') {
                 return { server: { action: 'convert', format: 'zip', fields: { ...trimFields(o), sequence_fps: o.frameFps } } }
             }
+            if (!keepFormat && VIDEO_STILL_FORMATS.has(fmt)) {
+                const fields: Record<string, string> = {}
+                if (o.captureAt.trim()) fields.capture_at = o.captureAt.trim()
+                if (o.aspect) fields.aspect = o.aspect
+                if (o.rotate !== 'none') fields.rotate = o.rotate
+                if (o.videoMaxHeight) fields.video_max_height = o.videoMaxHeight
+                return { server: { action: 'convert', format: fmt, fields } }
+            }
             if (AUDIO_FORMATS.has(fmt)) {
-                return { server: { action, format, fields: { ...trimFields(o), ...audioFields(o, false, compressing), ...comp } } }
+                return { server: { action, format, fields: { ...timingFields(o), ...audioFields(o, false, compressing), ...comp } } }
             }
             const plan: JobPlan = { server: { action, format, fields: { ...videoFields(o, fmt, compressing), ...comp } } }
             if (!compressing && processing === 'browser' && browserVideoCompatible(o)) {
@@ -377,7 +413,7 @@ export function planForItem(item: QueueItem, o: ConvertOptions, processing: Proc
             return plan
         }
         case 'audio':
-            return { server: { action, format, fields: { ...trimFields(o), ...audioFields(o, false, compressing), ...comp } } }
+            return { server: { action, format, fields: { ...timingFields(o), ...audioFields(o, false, compressing), ...comp } } }
         case 'image': {
             const fields: Record<string, string> = {
                 image_quality: String(compressing ? LEVEL_IMAGE_QUALITY[o.compressLevel] : o.imageQuality),
@@ -399,6 +435,7 @@ export function planForItem(item: QueueItem, o: ConvertOptions, processing: Proc
                 : { server: { action: 'convert', format: fmt, fields } }
             const browserOk = o.imageUpscale === '1' && !target && !(o.imageLossless && fmt === 'webp')
                 && !(o.imageResizeMode === 'percent' && o.imagePercent !== 100) && fmt !== 'ico'
+                && (metadata === 'strip' || !CAMERA_PHOTO_EXTS.has(src))
             if (processing !== 'server' && browserOk && BROWSER_DECODABLE.has(src) && BROWSER_ENCODABLE.has(fmt)) {
                 plan.local = {
                     run: ({ file }) => processImageInBrowser(file, fmt, {
@@ -410,8 +447,9 @@ export function planForItem(item: QueueItem, o: ConvertOptions, processing: Proc
             return plan
         }
         case 'pdf':
+            // A PDF "to PDF" is a compression (Ghostscript), at the chosen level.
             return fmt === 'pdf' || keepFormat
-                ? { server: { action: 'compress', format: '', fields: { comp_mode: 'crf', comp_value: 'high' } } }
+                ? { server: { action: 'compress', format: '', fields: compressing ? compressFields(o) : { comp_mode: 'crf', comp_value: 'medium' } } }
                 : { server: { action: 'convert', format: fmt, fields: {} } }
         case 'sequence':
             return { server: { action: 'convert', format: item.targetFormat, fields: { sequence_fps: o.slideshowFps } } }
